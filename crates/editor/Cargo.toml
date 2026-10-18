@@ -1,0 +1,25 @@
+[package]
+name = "editor"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "animj-editor"
+path = "src/bin/animj_editor.rs"
+
+[[bin]]
+name = "animj-dev"
+path = "src/bin/animj_dev.rs"
+
+[features]
+default = []
+# 继承 game 的 dev 子 feature（刻意不用 `bevy/dev` 集合，理由见 crates/game/Cargo.toml）。
+dev = ["game/dev"]
+
+[dependencies]
+bevy = { workspace = true }
+bevy_egui = { workspace = true }
+game = { workspace = true }
+level_format = { workspace = true }
+ron = { workspace = true }
+png = { workspace = true }

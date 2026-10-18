@@ -1,0 +1,31 @@
+[workspace]
+resolver = "3"
+members = ["crates/level_format", "crates/game", "crates/editor"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+
+[workspace.dependencies]
+# 版本唯一真相源：本文件。成员 crate 一律用 `workspace = true` 继承。
+bevy = { version = "0.20.0", default-features = false, features = ["2d", "ui", "audio", "wav"] }
+serde = { version = "1.0.229", features = ["derive"] }
+ron = "0.12.2"
+bevy_egui = "0.43.1"
+# 仅 crates/editor 的 animj-dev 工具使用（占位资产 PNG 编码），见 docs/09-dependencies.md §9.1
+png = "0.18.1"
+
+level_format = { path = "crates/level_format" }
+game = { path = "crates/game" }
+
+# —— 编译性能：依赖用 O3 编，自己的代码用 O1 编（官方 Quick Start 推荐）——
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
+
+# —— 发布 ——
+[profile.release]
+codegen-units = 1
+lto = "thin"

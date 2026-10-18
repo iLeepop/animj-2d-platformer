@@ -1,0 +1,8 @@
+# 仓库文本统一 UTF-8 + LF（见 docs/03-level-format.md §3.1）
+* text=auto eol=lf
+
+# 二进制资产：禁止换行符转换
+*.png binary
+*.wav binary
+*.zip binary
+*.ttf binary

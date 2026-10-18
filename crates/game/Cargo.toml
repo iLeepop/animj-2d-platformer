@@ -1,0 +1,29 @@
+[package]
+name = "game"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+name = "game"
+path = "src/lib.rs"
+
+[[bin]]
+name = "animj"
+path = "src/main.rs"
+
+[features]
+default = []
+# 开发期专用：热重载 + 调试工具。发布构建**不带**该 feature。
+#
+# ★ 刻意**不用** `bevy/dev` 集合：它包含 `render_dev_tools`，而那个 feature 会启用
+#   `bevy_dev_tools/render`（拖入 `bevy_pbr`）并注册 `render_debug` 的初始化系统，
+#   该系统要求 `MeshPipelineViewLayouts`（3D 网格管线资源）——在本项目的 2D-only feature 集下
+#   该资源不存在，启动即 panic。因此逐个列出我们真正需要的子 feature。
+#   证据与完整说明见 docs/07-rendering.md §7.9.2、docs/09-dependencies.md §9.4。
+dev = ["bevy/debug", "bevy/bevy_dev_tools", "bevy/file_watcher"]
+
+[dependencies]
+bevy = { workspace = true }
+level_format = { workspace = true }
+serde = { workspace = true }
+ron = { workspace = true }

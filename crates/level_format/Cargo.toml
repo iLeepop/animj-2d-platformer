@@ -1,0 +1,8 @@
+[package]
+name = "level_format"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+ron = { workspace = true }

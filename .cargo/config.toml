@@ -1,0 +1,16 @@
+[alias]
+# 别名把 `--features dev` 固化，避免"忘了开热重载"。见 docs/09-dependencies.md §9.5.5。
+#
+# ★ 为什么每个入口都要带 `--features dev`：不带会解析出与其它入口不同的 bevy feature 集，
+#   触发 Bevy 全量重编译（实测 ~6 分钟）。
+#
+# ★ 已知代价：`game`/`editor`/`dev-cli` 用 `-p <单个包>`（`--workspace` 不能与 `--bin` 组合，cargo 会报用法错），
+#   而 `build-all`/`test-all`/`check-all` 用 `--workspace`。两者的包集合不同 ⇒ bevy feature 集不同
+#   ⇒ 在「单包入口」与「workspace 入口」之间来回切换会各触发一次 Bevy 重编。
+#   实践建议：一次会话里只用一类入口；提交前的完整检查再跑 `cargo test-all`。
+game = ["run", "-p", "game", "--bin", "animj", "--features", "dev"]
+editor = ["run", "-p", "editor", "--bin", "animj-editor", "--features", "dev"]
+dev-cli = ["run", "-p", "editor", "--bin", "animj-dev", "--features", "dev"]
+build-all = ["build", "--workspace", "--features", "dev"]
+test-all = ["test", "--workspace", "--features", "dev"]
+check-all = ["check", "--workspace", "--all-targets", "--features", "dev"]
