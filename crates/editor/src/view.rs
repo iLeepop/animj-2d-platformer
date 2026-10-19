@@ -15,6 +15,16 @@ use crate::EditorMode;
 #[derive(Component)]
 pub struct EditorProjectionRoom(pub u32);
 
+/// 关卡图集缓存：`(路径, mtime, 列数, 最大 cell, 图像, 布局)`。
+type AtlasCache = Option<(
+    String,
+    Option<std::time::SystemTime>,
+    u32,
+    u32,
+    Handle<Image>,
+    Handle<TextureAtlasLayout>,
+)>;
+
 /// 旧的投影已经建过哪些房间、基于哪个修订。
 #[derive(Resource, Default)]
 pub struct ProjectionState {
@@ -54,8 +64,10 @@ impl Plugin for EditorViewPlugin {
                 Update,
                 (
                     hide_game_world,
+                    watch_doc_tileset,
                     ensure_projection.run_if(in_state(EditorMode::Editing)),
-                ),
+                )
+                    .chain(),
             );
     }
 }
@@ -78,6 +90,37 @@ fn hide_game_world(
     }
 }
 
+/// 贴图文件被外部改动（美术软件重画）⇒ 整体重建投影（`04` §5.6）。
+///
+/// 与关卡数据无关：不碰 `doc`/`dirty`/undo，只让下一次 `ensure_projection` 走全量分支。
+fn watch_doc_tileset(
+    mut commands: Commands,
+    session: Option<Res<EditorSession>>,
+    mut state: ResMut<ProjectionState>,
+    roots: Query<Entity, With<EditorProjectionRoom>>,
+    mut last: Local<Option<(Option<String>, Option<std::time::SystemTime>)>>,
+) {
+    let Some(session) = session else {
+        return;
+    };
+    let path = session.doc.tileset.clone();
+    let stamp = path.as_deref().and_then(game::assets::texture_stamp);
+    let now = (path, stamp);
+    match last.as_ref() {
+        // 首次观察只记录基准：启动时投影本来就会全量生成
+        None => *last = Some(now),
+        Some(previous) if *previous == now => {}
+        Some(_) => {
+            *last = Some(now.clone());
+            for entity in &roots {
+                commands.entity(entity).despawn();
+            }
+            state.revision = None;
+            info!("编辑器：贴图文件外部改动，重建全部房间投影");
+        }
+    }
+}
+
 /// 首次建全图；之后只重建**当前房间**（工具只写当前房间，`08` §8.5.3）。
 fn ensure_projection(
     mut commands: Commands,
@@ -85,8 +128,7 @@ fn ensure_projection(
     tileset: Option<Res<game::render::tiles::Tileset>>,
     mut images: ResMut<Assets<Image>>,
     mut layouts: ResMut<Assets<TextureAtlasLayout>>,
-    mut atlas_cache:
-        Local<Option<(String, u32, u32, Handle<Image>, Handle<TextureAtlasLayout>)>>,
+    mut atlas_cache: Local<AtlasCache>,
     roots: Query<(Entity, &EditorProjectionRoom)>,
     mut state: ResMut<ProjectionState>,
 ) {
@@ -108,12 +150,14 @@ fn ensure_projection(
         .map(|entry| entry.cell)
         .max()
         .unwrap_or(0);
+    let stamp = game::assets::texture_stamp(&key);
     let (image, layout) = if key.is_empty() {
         (tileset.image.clone(), tileset.layout.clone())
     } else {
         match atlas_cache.as_ref() {
-            Some((cached, cached_columns, cached_max_cell, image, layout))
+            Some((cached, cached_stamp, cached_columns, cached_max_cell, image, layout))
                 if cached == &key
+                    && *cached_stamp == stamp
                     && *cached_columns == columns
                     && *cached_max_cell == max_cell =>
             {
@@ -130,8 +174,14 @@ fn ensure_projection(
                 ));
                 let image = game::render::tiles::load_tileset_image(&key, &mut images)
                     .unwrap_or_else(|| tileset.image.clone());
-                *atlas_cache =
-                    Some((key.clone(), columns, max_cell, image.clone(), layout.clone()));
+                *atlas_cache = Some((
+                    key.clone(),
+                    stamp,
+                    columns,
+                    max_cell,
+                    image.clone(),
+                    layout.clone(),
+                ));
                 (image, layout)
             }
         }

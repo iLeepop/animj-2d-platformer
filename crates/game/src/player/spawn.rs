@@ -56,13 +56,27 @@ fn rebuild_player_sheets(
     mut commands: Commands,
     mut images: ResMut<Assets<Image>>,
     mut layouts: ResMut<Assets<TextureAtlasLayout>>,
-    mut done: Local<Option<u64>>,
+    // 修订号 + 每个状态贴图的 mtime：外部重画 PNG 后也必须重建（`04` §5.6）
+    mut done: Local<Option<(u64, Vec<Option<std::time::SystemTime>>)>>,
 ) {
     let Some(active) = active else {
         return;
     };
-    if *done == Some(active.revision) {
+    let stamps: Vec<_> = active
+        .set
+        .states
+        .iter()
+        .map(|state| crate::assets::texture_stamp(&state.sheet))
+        .collect();
+    let key = (active.revision, stamps);
+    if done.as_ref() == Some(&key) {
         return;
+    }
+    if let Some((revision, previous)) = done.as_ref()
+        && *revision == active.revision
+        && previous != &key.1
+    {
+        info!("检测到角色贴图外部改动，重建图集");
     }
     let mut states = Vec::new();
     for state in &active.set.states {
@@ -89,7 +103,7 @@ fn rebuild_player_sheets(
         error!("动画状态贴图全部加载失败，继续使用内置图集");
         return;
     }
-    *done = Some(active.revision);
+    *done = Some(key);
     let (_, image, layout) = states[0].clone();
     commands.insert_resource(PlayerSheet {
         image,

@@ -304,6 +304,9 @@ fn install_cjk_font(mut contexts: EguiContexts, mut done: Local<bool>) -> Result
     Ok(())
 }
 
+/// 同步读盘的图集缓存：`(路径, mtime, 图像)`；mtime 变化即重新解码（`04` §5.6）。
+type ImageCache = Option<(String, Option<std::time::SystemTime>, Handle<Image>)>;
+
 /// 纹理上传：角色图集（动画预览）与瓦片图集（左栏缩略图 / 地块选格）。
 fn prepare_textures(
     mut contexts: EguiContexts,
@@ -311,13 +314,13 @@ fn prepare_textures(
     mut images: ResMut<Assets<Image>>,
     sheet: Option<Res<game::player::spawn::PlayerSheet>>,
     anim_edit: Option<Res<AnimEdit>>,
-    mut sheet_cache: Local<Option<(String, Handle<Image>)>>,
+    mut sheet_cache: Local<ImageCache>,
     mut uploaded_sheet: Local<Option<Handle<Image>>>,
     mut sheet_texture: ResMut<SheetTexture>,
     tileset: Option<Res<game::render::tiles::Tileset>>,
     mut tile_texture: ResMut<TileTexture>,
     mut tile_texture_handle: Local<Option<Handle<Image>>>,
-    mut sync_cache: Local<Option<(String, Handle<Image>)>>,
+    mut sync_cache: Local<ImageCache>,
 ) -> Result {
     let ctx = contexts.ctx_mut()?;
     // 动画图集：跟随 `AnimEdit.doc.sheet`（可编辑路径）；同样同步读盘
@@ -332,12 +335,17 @@ fn prepare_textures(
         .map(|state| state.sheet.clone())
         .unwrap_or_else(|| "sprites/player/cat_sheet.png".to_string());
     let sheet_key = level_format::normalize_asset_path(&anim_sheet).unwrap_or_default();
+    let sheet_stamp = game::assets::texture_stamp(&sheet_key);
     let sheet_handle = match sheet_cache.as_ref() {
-        Some((cached, handle)) if cached == &sheet_key => Some(handle.clone()),
+        Some((cached, cached_stamp, handle))
+            if cached == &sheet_key && *cached_stamp == sheet_stamp =>
+        {
+            Some(handle.clone())
+        }
         _ => {
             let loaded = game::render::tiles::load_tileset_image(&sheet_key, &mut images);
             if let Some(handle) = &loaded {
-                *sheet_cache = Some((sheet_key.clone(), handle.clone()));
+                *sheet_cache = Some((sheet_key.clone(), sheet_stamp, handle.clone()));
             }
             loaded
         }
@@ -362,12 +370,17 @@ fn prepare_textures(
             // 同步读盘（运行期 `AssetServer::load` 的图像会永远停在 Loading，
             // 见 `game::render::tiles::load_tileset_image` 的说明）
             let key = level_format::normalize_asset_path(path).unwrap_or_default();
+            let stamp = game::assets::texture_stamp(&key);
             match sync_cache.as_ref() {
-                Some((cached, handle)) if cached == &key => Some(handle.clone()),
+                Some((cached, cached_stamp, handle))
+                    if cached == &key && *cached_stamp == stamp =>
+                {
+                    Some(handle.clone())
+                }
                 _ => {
                     let loaded = game::render::tiles::load_tileset_image(&key, &mut images);
                     if let Some(handle) = &loaded {
-                        *sync_cache = Some((key.clone(), handle.clone()));
+                        *sync_cache = Some((key.clone(), stamp, handle.clone()));
                     }
                     loaded
                 }

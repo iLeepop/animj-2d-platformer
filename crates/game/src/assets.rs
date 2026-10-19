@@ -23,6 +23,18 @@ pub fn asset_file_path() -> String {
     }
 }
 
+/// 贴图文件的修改时间（外部改动检测，`docs/04-assets.md` §5.6）。
+///
+/// 返回 `None` 表示文件不存在或无法读取；调用方把它当作"尚未观察到"，
+/// **不要**把它当作"没变化"（新增文件时也必须能触发一次重载）。
+pub fn texture_stamp(path: &str) -> Option<std::time::SystemTime> {
+    let relative = level_format::normalize_asset_path(path)?;
+    let full = Path::new(&asset_file_path()).join(&relative);
+    std::fs::metadata(full)
+        .and_then(|metadata| metadata.modified())
+        .ok()
+}
+
 /// 把资产根路径暴露成资源，供 HUD / 编辑器 / 诊断显示。
 #[derive(Resource, Debug, Clone)]
 pub struct AssetRoot(pub String);

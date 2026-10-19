@@ -327,6 +327,26 @@ fn spawn_player(mut commands: Commands, assets: Res<AssetServer>,
 | 缺文件 | 用内置默认值（等价当前常量），只打一条 warn |
 | 校验 | 索引必须落在 `columns × rows` 内（图集尺寸由 `columns` 与图片高度推出） |
 
+### 5.6 贴图文件的外部改动（热重载）
+
+贴图可能在编辑器/游戏运行期间被外部软件（Aseprite、Photoshop…）重画。所有**同步读盘**的贴图统一按
+「路径 + 文件 `mtime`」判定变化，变化后重建使用它的实体；不重启、不写盘、不改 `doc`/`dirty`/undo。
+
+| 贴图 | 检测与重建 | 生效范围 |
+|---|---|---|
+| 关卡瓦片图集（`level.tileset`） | `game::render::tiles::watch_level_tileset` 轮询 mtime → 置位 `TilesetReloadRequest` → `spawn_level_tiles` 全量重建 | 发布 bin 的瓦片、编辑器试玩 |
+| 编辑器投影 / 左栏缩略图 | 缓存键加入 `game::assets::texture_stamp`；`editor::view::watch_doc_tileset` 变化时销毁全部 `EditorProjectionRoom` ⇒ 全量重建 | 编辑态画布、地块调色板缩略图 |
+| 角色各状态图集（`player.anim.ron` 的 `sheet`） | `player::spawn::rebuild_player_sheets` 把每个状态图集的 mtime 纳入重建键 | 试玩与发布 bin 的角色贴图 |
+| 动画面板预览 | `prepare_textures` 的图集缓存键加入 mtime | 编辑器动画面板 |
+| 内置图集 / 装饰品（走 `AssetServer`） | Bevy `file_watcher`（`dev` feature） | 同上 |
+
+规则：
+
+- 只用 `metadata().modified()` 轮询，不引入 `notify` 等新依赖；与 `anim_data::watch_anim_file` 同一套机制。
+- 解码失败保留旧贴图并打 `error!`；文件被写一半时，下一次 mtime 变化会再次触发。
+- 重画只允许覆盖 PNG 字节；`TILE_PX`、图集行列数、帧序列（§3、§5）不变。
+- mtime 精度不足的文件系统（如 1 s 粒度）可能在同秒内漏掉一次改动；保存后隔一秒再观察即可。
+
 ## 6. 装饰品图层
 
 ### 6.1 图层顺序（从最靠近角色到最外层）

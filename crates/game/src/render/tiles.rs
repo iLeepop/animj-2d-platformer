@@ -34,6 +34,15 @@ pub struct Tileset {
 #[derive(Resource, Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RoomCulling(pub bool);
 
+/// 关卡图集缓存：`(路径, mtime, 图像)`；mtime 变化即重新解码。
+type TilesetCache = Option<(String, Option<std::time::SystemTime>, Handle<Image>)>;
+
+/// 关卡贴图文件的外部改动请求（`docs/04-assets.md` §5.6）。
+///
+/// 仅由 [`watch_level_tileset`] 置位，由 [`spawn_level_tiles`] 消费并复位。
+#[derive(Resource, Default)]
+pub struct TilesetReloadRequest(pub bool);
+
 impl Default for RoomCulling {
     fn default() -> Self {
         Self(true)
@@ -45,13 +54,19 @@ pub struct TileRenderPlugin;
 impl Plugin for TileRenderPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<RoomCulling>()
+            .init_resource::<TilesetReloadRequest>()
             .add_systems(Startup, setup_tileset)
-            // 关卡加载完成（`LoadedLevel` 出现）那一帧生成全部房间
+            // 关卡加载完成（`LoadedLevel` 出现）那一帧生成全部房间；
+            // 贴图文件被外部改动时由 watcher 置位并重建（`04` §5.6）。
             .add_systems(
                 Update,
-                spawn_level_tiles
-                    .run_if(resource_exists_and_changed::<LoadedLevel>)
-                    .before(sync_room_visibility),
+                (
+                    watch_level_tileset,
+                    spawn_level_tiles
+                        .run_if(tiles_need_rebuild)
+                        .before(sync_room_visibility),
+                )
+                    .chain(),
             )
             .add_systems(Update, sync_room_visibility);
     }
@@ -111,6 +126,45 @@ pub fn load_tileset_image(path: &str, images: &mut Assets<Image>) -> Option<Hand
     }
 }
 
+/// 轮询关卡贴图文件的 mtime：外部软件重画贴图后无需重启即可重建（`04` §5.6）。
+///
+/// 只比较「路径 + 修改时间」：路径变化由关卡热重载负责，这里也会跟随并重置基准。
+fn watch_level_tileset(
+    loaded: Option<Res<LoadedLevel>>,
+    mut reload: ResMut<TilesetReloadRequest>,
+    mut last: Local<Option<(Option<String>, Option<std::time::SystemTime>)>>,
+) {
+    let Some(loaded) = loaded else {
+        return;
+    };
+    let path = loaded.level.tileset.clone();
+    let stamp = path.as_deref().and_then(crate::assets::texture_stamp);
+    let now = (path, stamp);
+    match last.as_ref() {
+        // 首次观察只记录基准，不触发重建：关卡加载本身已经会生成瓦片
+        None => *last = Some(now),
+        Some(previous) if *previous == now => {}
+        Some(_) => {
+            *last = Some(now.clone());
+            if let Some(path) = &now.0 {
+                info!("检测到贴图外部改动：{path}，重建瓦片");
+            }
+            reload.0 = true;
+        }
+    }
+}
+
+/// `LoadedLevel` 首次出现 / 热重载 / 贴图外部改动时重建瓦片。
+fn tiles_need_rebuild(
+    loaded: Option<Res<LoadedLevel>>,
+    reload: Res<TilesetReloadRequest>,
+) -> bool {
+    reload.0
+        || loaded
+            .as_ref()
+            .is_some_and(|loaded| loaded.is_changed())
+}
+
 /// `LoadedLevel` 出现的同一帧生成瓦片实体。
 fn spawn_level_tiles(
     mut commands: Commands,
@@ -119,12 +173,14 @@ fn spawn_level_tiles(
     level_tiles: Option<Res<crate::tiles::LevelTiles>>,
     mut layouts: ResMut<Assets<TextureAtlasLayout>>,
     mut images: ResMut<Assets<Image>>,
-    mut sync_cache: Local<Option<(String, Handle<Image>)>>,
+    mut sync_cache: Local<TilesetCache>,
+    mut reload: ResMut<TilesetReloadRequest>,
     _assets: Res<AssetServer>,
     current: Res<CurrentRoom>,
     culling: Res<RoomCulling>,
     old_roots: Query<Entity, With<RoomRoot>>,
 ) {
+    reload.0 = false;
     // 热重载会再次进入本系统：先销毁旧的房间根（其 `ChildOf` 子树一并销毁），避免残影
     for entity in &old_roots {
         commands.entity(entity).despawn();
@@ -145,14 +201,20 @@ fn spawn_level_tiles(
         Some(path) => (
             {
                 let key = level_format::normalize_asset_path(path).unwrap_or_default();
+                // mtime 也是键的一部分：只按路径缓存会在外部重画贴图后继续用旧图
+                let stamp = crate::assets::texture_stamp(&key);
                 let reused = match sync_cache.as_ref() {
-                    Some((cached, handle)) if cached == &key => Some(handle.clone()),
+                    Some((cached, cached_stamp, handle))
+                        if cached == &key && *cached_stamp == stamp =>
+                    {
+                        Some(handle.clone())
+                    }
                     _ => None,
                 };
                 let handle = reused.or_else(|| {
                     let loaded = load_tileset_image(&key, &mut images);
                     if let Some(handle) = &loaded {
-                        *sync_cache = Some((key.clone(), handle.clone()));
+                        *sync_cache = Some((key.clone(), stamp, handle.clone()));
                     }
                     loaded
                 });
