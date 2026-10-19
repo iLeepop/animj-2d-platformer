@@ -109,7 +109,7 @@
 ### 9.4.1 目标写法
 
 ```toml
-bevy = { version = "0.20.0", default-features = false, features = ["2d", "ui", "audio"] }
+bevy = { version = "0.20.0", default-features = false, features = ["2d", "ui", "audio", "wav", "complex_script_segmentation"] }
 ```
 
 | 开关 | 为什么 | 标记与证据 |
@@ -117,6 +117,7 @@ bevy = { version = "0.20.0", default-features = false, features = ["2d", "ui", "
 | `default-features = false` + `features = ["2d"]` | 0.20 官方文档（Profiles 小节）给出的正是这个写法；`default` profile = `2d` + `3d` + `ui` + `audio`，关掉默认可以少编译整个 3D 渲染器 | 【已验证】<https://docs.rs/bevy/0.20.0/bevy/>（§Profiles） |
 | `ui` | 屏幕空间 UI 用 `bevy_ui` 自带的 `ZIndex`（见 `00` §0.4），且 `assets/sprites/ui/` 需要一个 UI 层（见 `04`）；另外 `bevy_egui 0.43.1` 的默认特性就含 `bevy_ui` → `bevy_ui_render`，game 与 editor 开同一套 bevy feature 可避免两个 crate 解析出不同特性集 | 【已验证】`ui` 是与 `2d` 并列的独立 profile（§Profiles）；【已验证】bevy_egui 默认特性含 `bevy_ui`（features 页） |
 | `audio` | 拾取/通关反馈音效与 BGM 用内建 `bevy_audio` 即可，零第三方依赖；`2d` 单独写**不会**带上它（`audio` 是与 `2d` 并列的独立 profile） | 【已验证】`audio` 集合 = `bevy_audio` + `vorbis`；`default` = 2d+3d+ui+audio（§Profiles / §Collections） |
+| `complex_script_segmentation` | 中文/日文的**字典式断行**。不开时 parley 走 `LineSegmenter::new_for_non_complex_scripts`，遇到 CJK 每个文本布局都会打印 `ICU4X data error: No segmentation model for complex script: Chinese/Japanese`，且断行退化。开启后 bevy_text → `parley/complex-scripts` → `LineSegmenter::new_dictionary`（ICU4X 编译期数据） | 【已验证】<https://docs.rs/crate/bevy_text/0.20.0/features>（`complex_script_segmentation = ["parley/complex-scripts"]`）；<https://docs.rs/parley/0.11.1/src/parley/analysis/mod.rs.html>（`line_segmenter_impl` 两个 cfg 分支）；<https://docs.rs/icu_segmenter/2.3.0/src/icu_segmenter/complex/mod.rs.html>（`select` 的错误）；本仓实测：开启后中文菜单与 300 帧 HUD 均 0 条该错误 |
 | **不**加 `tonemapping_luts` | `Camera2d` 用默认 `Tonemapping`（见 `07`），不需要 LUT；feature 表原文："If everything is pink, you need to enable this feature or change the `Tonemapping` method for your `Camera2d`" | 【已验证】<https://docs.rs/bevy/0.20.0/bevy/>（Feature List 行 `tonemapping_luts`） |
 | **不**加 `bevy/serialize` | 本项目的 serde 类型在自己的 crate 里（`level_format` / `game`），不需要 bevy 的反射序列化（`03`、`00` §0.7） | 设计决策 |
 | `dev`（**逐个子 feature，仅开发期**） | ★ **不要**直接用 `bevy/dev` 集合：它含 `render_dev_tools` → 启用 `bevy_dev_tools/render` → 拖入 `bevy_pbr`（3D），而 `render_debug` 的初始化系统要求 `MeshPipelineViewLayouts`（3D 运行期资源）⇒ **2D-only 构建启动即 panic**（实测，见 `07` §7.9.2.1）。因此我们自己的 `dev` feature 只列三个子 feature：`bevy/debug` + `bevy/bevy_dev_tools` + `bevy/file_watcher`（`.level.ron` 热重载依赖最后一个，见 `08`） | 【已验证】`bevy_dev_tools` 的 `render` feature 依赖 `bevy_pbr ^0.20.0` <https://docs.rs/crate/bevy_dev_tools/0.20.0/features> ；panic 现场见 `07` §7.9.2.1 |
@@ -170,7 +171,7 @@ edition = "2024"
 
 [workspace.dependencies]
 # 版本唯一真相源：本文件。成员 crate 一律用 `workspace = true` 继承。
-bevy = { version = "0.20.0", default-features = false, features = ["2d", "ui", "audio"] }
+bevy = { version = "0.20.0", default-features = false, features = ["2d", "ui", "audio", "wav", "complex_script_segmentation"] }
 serde = { version = "1.0.229", features = ["derive"] }
 ron = "0.12.2"
 bevy_egui = "0.43.1"
@@ -433,7 +434,7 @@ DefaultPlugins
 
 | ID | 结果 | 实测证据摘要 |
 |---|---|---|
-| **V1** | ✅ **通过，且盲区全消** | `cargo tree -p bevy_internal --depth 1` 实际拉入约 50 个 `bevy_*` 子 crate：`bevy_sprite` `bevy_sprite_render` `bevy_ui` `bevy_ui_render` `bevy_ui_widgets` `bevy_text` **`bevy_winit`** `bevy_window` `bevy_audio` `bevy_gilrs` `bevy_gizmos(+_render)` `bevy_picking` `bevy_scene` `bevy_input_focus` …；**`bevy_pbr` 计数 = 0**。⇒ U1/U2/U3 全部为「是」，`features = ["2d","ui","audio","wav"]` 锁定，§9.4.3 的保底方案**不需要** |
+| **V1** | ✅ **通过，且盲区全消** | `cargo tree -p bevy_internal --depth 1` 实际拉入约 50 个 `bevy_*` 子 crate：`bevy_sprite` `bevy_sprite_render` `bevy_ui` `bevy_ui_render` `bevy_ui_widgets` `bevy_text` **`bevy_winit`** `bevy_window` `bevy_audio` `bevy_gilrs` `bevy_gizmos(+_render)` `bevy_picking` `bevy_scene` `bevy_input_focus` …；**`bevy_pbr` 计数 = 0**。⇒ U1/U2/U3 全部为「是」，`features = ["2d","ui","audio","wav"]` 锁定（M7 为中文断行追加 `complex_script_segmentation`），§9.4.3 的保底方案**不需要** |
 | **V2** | ✅ 窗口与渲染后端；**输入链路已由进程内测试机器验证** | `Creating new window animj (67v0)` + `AdapterInfo { … backend: Vulkan }`；90 帧后正常退出。**F3 切换**两条测试覆盖：(a) 纯函数 `render::debug::toggled()` 的 `just_pressed` 语义（长按/松开不翻转）；(b) **端到端**：注入 winit 后端同型的 `KeyboardInput`（0.20 里是 `Message`）→ `InputPlugin` 的输入系统 → `ButtonInput<KeyCode>` → 本系统翻转，**不依赖窗口/GPU/OS 按键注入**，且顺带钉住「系统必须排在输入系统之后」这一调度契约。⚠️ **OS 级按键注入在本会话仍不可行**（试过 `AppActivate`（撞上标题同为 `animj` 的 Zed 窗口）/`FindWindow`（`$null` 被 marshaling 成空串）/`SetForegroundWindow`（返回 False）/`PostMessage(WM_KEYDOWN)`（winit 只处理有焦点窗口））；真机人工确认方式：`cargo game` 后按 `F3`/`Esc` |
 | **V3** | ✅ 通过（附带一条新约束） | HUD 的 `Node`+`Text` 三行文本渲染成功（非背景像素 x ∈ [8,453]），`TextureAtlas` sprite 渲染成功。⚠️ **非 ASCII 文本会被静默截断**（内置字体仅 ASCII）⇒ 已写入 `04` §9 |
 | **V4** | ✅ **客观证明无模糊** | 内层画布截图（当时的 512×512）与窗口截图（1024×1024）逐像素比较：**1 048 576 像素、0 差异** ⇒ 严格 2 倍整数放大 + 最近邻 + 无插值。（方法：`animj --frames 90 --screenshot <prefix>` 后比对两张 PNG。现行视口为 320² / 窗口 640²，见 V13） |

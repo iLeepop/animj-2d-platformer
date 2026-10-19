@@ -197,7 +197,7 @@ fn update_hud(
         ""
     };
 
-    text.0 = format!(
+    let next = format!(
         "{HUD_LABEL}  {state} x{scale}  {level} {size}\n\
          {room_label} {room} {flags}  {clear_label} {cleared}/{total_rooms}  {decor_label} {decor}\n\
          {goals_label} {goals}\n\
@@ -212,6 +212,10 @@ fn update_hud(
         goals_label = s.goals,
         assets_label = s.assets,
     );
+    // 只在内容变化时写回：避免每帧触发 CJK 文本的重新断行/排版（ICU4X 的开销与日志噪声）。
+    if text.0 != next {
+        text.0 = next;
+    }
 }
 
 /// 进入 `GameComplete` 时展示结算（`01` §1.6）。

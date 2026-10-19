@@ -8,7 +8,7 @@ edition = "2024"
 
 [workspace.dependencies]
 # 版本唯一真相源：本文件。成员 crate 一律用 `workspace = true` 继承。
-bevy = { version = "0.20.0", default-features = false, features = ["2d", "ui", "audio", "wav"] }
+bevy = { version = "0.20.0", default-features = false, features = ["2d", "ui", "audio", "wav", "complex_script_segmentation"] }
 serde = { version = "1.0.229", features = ["derive"] }
 ron = "0.12.2"
 bevy_egui = "0.43.1"
