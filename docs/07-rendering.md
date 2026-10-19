@@ -951,6 +951,55 @@ fn spawn_world_label(commands: &mut Commands, font: &Handle<Font>, at: Vec2, tex
 
 ---
 
+## 7.13 2D 视差背景
+
+数据形状与校验见 `03` §3.10（`Level.background`，最多 3 层）。本节只定义运行时怎么画。
+
+### 7.13.1 结构（每层一个 sprite）
+
+| 项 | 取值 |
+|---|---|
+| 实体 | 一个 `Sprite` + `ParallaxLayer { index, period }` + `PIXEL_PERFECT_LAYERS` |
+| 平铺 | `SpriteImageMode::Tiled { tile_x: true, tile_y: true, stretch_value: 1.0 }`【已验证】<https://docs.rs/bevy/0.20.0/bevy/sprite/enum.SpriteImageMode.html>；`stretch_value = 1.0` ⇒ 一个 texel = 一个世界像素 |
+| 尺寸 | `custom_size = 视口世界尺寸 + 2 × 贴图尺寸`（保证任意相位都盖满视口） |
+| Z | `z::PARALLAX + index`，`index` 越大越靠近镜头；见 `00` §0.4 |
+| 采样 | 贴图用 `load_image` 同步解码，`ImageSampler::nearest`（`04` §3.2） |
+
+### 7.13.2 相位公式（唯一实现：`game::render::parallax::parallax_placement`）
+
+记 `c` = 相机中心（世界像素），`v` = 视口世界尺寸，`p` = 贴图尺寸，`s ∈ [0,1]` = 滚动百分比 / 100：
+
+```
+offset = (-c * s).rem_euclid(p)          // 贴图原点相对视口左上角的屏幕偏移
+center = c + offset                     // sprite 中心（贴图原点在 sprite 左上角）
+size   = v + 2 * p
+```
+
+- `s = 0`：`offset = 0` ⇒ 背景固定在屏幕上（无限远）。
+- `s = 1`：`offset = (-c) mod p` ⇒ 贴图相对世界固定（与地形同速）。
+- 中心取整到整像素：像素风不允许亚像素采样（`00` §0.4 / `06` §6.8）。
+
+### 7.13.3 调度与相机
+
+- 系统在 `PostUpdate`、`.before(TransformSystems::Propagate)` 执行；**读相机的 `Transform` 而不是 `GlobalTransform`**（后者在本帧尚未传播，会晚一帧、平移时产生拖影）。
+- 视口世界尺寸 = `Camera::logical_viewport_size() * OrthographicProjection::scale`；相机中心 = `Transform::translation.truncate()`。
+- 需要背景的相机插 `ParallaxCamera`：发布 bin 是内层 `InGameCamera`；编辑器是 `EditorCamera`（编辑器没有离屏管线，见 `08` §8.1.4）。
+
+### 7.13.4 与房间背景板的关系
+
+`z::ROOM_BG` 的房间背景板是**完全不透明**的整房间色块。关卡配置了 `background` 时：
+**不生成房间背景板**（否则会整片盖住 `z=-100` 的视差层）。无背景时保持原行为，
+截图里仍能靠色块区分房间与窗口黑边。
+
+### 7.13.5 编辑器预览与外部改动
+
+- 编辑器插入资源 `BackgroundOverride(doc.background)`（`08` §8.5.7 C），优先于 `LoadedLevel.background`，
+  因此改图层/滚动百分比**无需保存、无需试玩**即可在画布看到。
+- 贴图身份键 = `(路径, mtime)`：美术软件重画背景 PNG 后自动重新解码（`04` §5.6）。
+- 滚动百分比变化只更新 `Transform`/`custom_size`，**不重新解码贴图**。
+
+---
+
 ## 7.11 验收检查表（渲染部分）
 
 | # | 检查项 | 通过标准 |
@@ -978,8 +1027,9 @@ fn spawn_world_label(commands: &mut Commands, font: &Handle<Font>, at: Vec2, tex
 | `00` §0.1 | **D5**（房间 = 512×512 = 一屏）、**D11**（60 Hz 固定步长）、**D13**（双层相机） |
 | `02` | 相机落点（房间中心）、当前房间判定、房间无缝衔接的语义 |
 | `03` §3.3 | legend → 瓦片语义、`Air` 不生成实体、`tileset.png` 索引语义 |
+| `03` §3.10 | `Level.background` 的字段形状、层数上限与 V20 校验 |
 | `04` §3.1 / §7.1 / §8 / §10 | 图集零 padding/零 margin、PNG 规格与 sRGB、字体资源、`tileset.png` 物理布局 |
-| `05` §5.x | 模块划分（`render/pixel_camera.rs`、`render/snap.rs`、`render/tiles.rs`）、`GameSet::Snap` |
+| `05` §5.x | 模块划分（`render/pixel_camera.rs`、`render/snap.rs`、`render/tiles.rs`、`render/parallax.rs`）、`GameSet::Snap` |
 | `06` §6.1 / §6.8 | `Aabb` 是逻辑真相、投影单向、取整用 `f32::round`、不做插值 |
 | `09` §9.2 / §9.4 / §9.5 | 依赖矩阵（瓦片/像素相机 crate 不可用）、feature 集合、`dev` feature |
 | `10` §10.2.8 / §10.2.9 / §10.2.10 | `Sprite` / 相机的 0.20 精确字段与黑名单（C5/C6/C7 与本文章节一一对应） |

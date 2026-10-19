@@ -387,6 +387,7 @@ fn setup(
   <https://docs.rs/bevy/0.20.0/bevy/prelude/struct.TextureAtlasLayout.html>
 - `Sprite::from_image` / `from_atlas_image` / `from_color` / `sized`；字段含 `image` / `texture_atlas` / `custom_size` / `image_mode` / **`alpha_mode`**。用结构体字面量**必须**带 `..default()`。【已验证】
   <https://docs.rs/bevy/0.20.0/bevy/prelude/struct.Sprite.html> ；<https://bevy.org/learn/migration-guides/0-19-to-0-20/#migrate-sprite-to-use-mesh2d-spritematerial>
+- 平铺 sprite：`Sprite { image, custom_size: Some(size), image_mode: SpriteImageMode::Tiled { tile_x: true, tile_y: true, stretch_value: 1.0 }, ..default() }`（`SpriteImageMode` 在 `bevy::sprite`）。UV 在 shader 内取模，**不要求** sampler 为 `Repeat`；`stretch_value = 1.0` 表示一个 texel 对应一个世界像素。【已验证】（源码核对 `bevy_sprite-0.20.0/src/sprite.rs` 的 `SpriteImageMode::Tiled` 与 `sprite_mesh/functions.wesl::apply_tiling`）<https://docs.rs/bevy/0.20.0/bevy/sprite/enum.SpriteImageMode.html>
 - **`Anchor` 不在 prelude**：`use bevy::sprite::Anchor;`（`Anchor(pub Vec2)`，常量 `TOP_LEFT…BOTTOM_RIGHT`）。`bevy/prelude/struct.Anchor.html` 在 0.20 返回 404。【已验证】
   <https://docs.rs/bevy/0.20.0/bevy/sprite/struct.Anchor.html>
 - **`ScalingMode` / `RenderTarget` 不在 prelude**（分别在 `bevy::camera::ScalingMode`、`bevy::camera::RenderTarget`）。【已验证】<https://docs.rs/bevy/0.20.0/bevy/prelude/index.html> ；<https://docs.rs/bevy/0.20.0/bevy/camera/enum.RenderTarget.html>

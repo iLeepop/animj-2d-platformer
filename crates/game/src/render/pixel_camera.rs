@@ -88,6 +88,7 @@ fn setup_pixel_camera(mut commands: Commands, mut images: ResMut<Assets<Image>>)
         // z 必须为 0.0 —— 见 `config::render::CAMERA_Z` 的说明（远景视差在 -100）。
         Transform::from_xyz(0.0, 0.0, CAMERA_Z),
         InGameCamera,
+        crate::render::parallax::ParallaxCamera,
         PIXEL_PERFECT_LAYERS,
         PixelSnap,
         // HUD 走内层相机 ⇒ HUD 与游戏画面共用一个像素格（07 §7.10.1）

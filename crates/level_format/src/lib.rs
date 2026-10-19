@@ -21,7 +21,10 @@ pub use legend::{LEGEND, RENDERABLE_TILE_KINDS, TileKind};
 pub use types::{
     columns_from_sheet_width,
     normalize_asset_path,
+    Background,
+    BackgroundLayer,
     EntitySpec,
+    MAX_BACKGROUND_LAYERS,
     Goal,
     Grid,
     Level,

@@ -38,6 +38,8 @@ assets/
 │  │  └─ tileset.png                # 唯一瓦片图集（§3.3 / §10）
 │  ├─ decorations/
 │  │  └─ <id>.png                   # 每个装饰品一张 32×32 静态贴图（§6）
+│  ├─ backgrounds/
+│  │  └─ <name>.png                 # 视差背景层（`03` §3.10 / `07` §7.13）；尺寸自定
 │  └─ ui/
 │     ├─ ui_atlas.png               # UI 图标图集（可选，§9）
 │     └─ <name>.png                 # UI 单图（可选，§9）
@@ -58,6 +60,7 @@ assets/
 | 角色图集 | 固定文件名 `assets/sprites/player/cat_sheet.png` | — | `00` §0.6 |
 | 瓦片图集 | 固定文件名 `assets/sprites/tiles/tileset.png` | — | `00` §0.5 / §0.6 |
 | 装饰品 | `snake_case`，**文件名（去扩展名）严格等于装饰品 id** | id `straw_hat` → `assets/sprites/decorations/straw_hat.png` | `00` §0.5 |
+| 背景层 | `snake_case`，可自由命名；尺寸自定（建议 ≥ 512×512），必须能无缝平铺 | `assets/sprites/backgrounds/sky.png` | `03` §3.10 / `07` §7.13 |
 | 关卡文件 | `assets/levels/<level_id>.level.ron`，文件内 `name` 必须等于 `<level_id>` | — | `00` §0.5 |
 | 字体 | `<font_name>.ttf`，`snake_case` | `assets/fonts/pixel_sans.ttf` | 本文 §9 |
 | UI 图集/单图 | `snake_case`，图集固定名 `ui_atlas.png` | `assets/sprites/ui/heart.png` | 本文 §9 |
@@ -338,6 +341,7 @@ fn spawn_player(mut commands: Commands, assets: Res<AssetServer>,
 | 编辑器投影 / 左栏缩略图 | 缓存键加入 `game::assets::texture_stamp`；`editor::view::watch_doc_tileset` 变化时销毁全部 `EditorProjectionRoom` ⇒ 全量重建 | 编辑态画布、地块调色板缩略图 |
 | 角色各状态图集（`player.anim.ron` 的 `sheet`） | `player::spawn::rebuild_player_sheets` 把每个状态图集的 mtime 纳入重建键 | 试玩与发布 bin 的角色贴图 |
 | 动画面板预览 | `prepare_textures` 的图集缓存键加入 mtime | 编辑器动画面板 |
+| 背景层贴图 | `game::render::parallax` 的贴图身份键 = 路径 + mtime，变化即重新解码并用新尺寸重建 | 编辑器画布、试玩、发布 bin |
 | 内置图集 / 装饰品（走 `AssetServer`） | Bevy `file_watcher`（`dev` feature） | 同上 |
 
 规则：

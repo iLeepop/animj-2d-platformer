@@ -65,6 +65,7 @@ impl Plugin for EditorViewPlugin {
                 (
                     hide_game_world,
                     watch_doc_tileset,
+                    sync_background_preview,
                     ensure_projection.run_if(in_state(EditorMode::Editing)),
                 )
                     .chain(),
@@ -88,6 +89,24 @@ fn hide_game_world(
     for entity in &zones {
         commands.entity(entity).despawn();
     }
+}
+
+/// 把未落盘的 `doc.background` 交给背景层（编辑器画布实时预览，`08` §8.5.7 C）。
+fn sync_background_preview(
+    mut commands: Commands,
+    session: Option<Res<EditorSession>>,
+    mut last: Local<Option<Option<level_format::Background>>>,
+) {
+    let Some(session) = session else {
+        return;
+    };
+    if last.as_ref() == Some(&session.doc.background) {
+        return;
+    }
+    *last = Some(session.doc.background.clone());
+    commands.insert_resource(game::render::parallax::BackgroundOverride(
+        session.doc.background.clone(),
+    ));
 }
 
 /// 贴图文件被外部改动（美术软件重画）⇒ 整体重建投影（`04` §5.6）。
@@ -172,7 +191,7 @@ fn ensure_projection(
                     None,
                     None,
                 ));
-                let image = game::render::tiles::load_tileset_image(&key, &mut images)
+                let image = game::render::tiles::load_image(&key, &mut images)
                     .unwrap_or_else(|| tileset.image.clone());
                 *atlas_cache = Some((
                     key.clone(),
@@ -310,3 +329,56 @@ fn spawn_room(
 
 
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn level(background: Option<level_format::Background>) -> level_format::Level {
+        level_format::Level {
+            version: level_format::VERSION,
+            name: "t".into(),
+            grid: level_format::Grid { cols: 1, rows: 1 },
+            start: level_format::RoomCoord { col: 0, row: 0 },
+            tileset: None,
+            tileset_columns: 8,
+            palette: Vec::new(),
+            background,
+            rooms: Vec::new(),
+        }
+    }
+
+    /// 编辑器画布的预览必须实时跟随 `doc.background`（不保存、不试玩）。
+    #[test]
+    fn background_preview_follows_document() {
+        let mut app = App::new();
+        app.add_systems(Update, sync_background_preview)
+            .insert_resource(EditorSession::new(level(None), None));
+        app.world_mut().run_schedule(Update);
+        assert_eq!(
+            app.world()
+                .resource::<game::render::parallax::BackgroundOverride>()
+                .0,
+            None
+        );
+
+        let background = level_format::Background {
+            layers: vec![level_format::BackgroundLayer {
+                image: "sprites/backgrounds/sky.png".into(),
+                scroll_x: 30,
+                scroll_y: 0,
+            }],
+        };
+        app.world_mut()
+            .resource_mut::<EditorSession>()
+            .doc
+            .background = Some(background.clone());
+        app.world_mut().run_schedule(Update);
+        assert_eq!(
+            app.world()
+                .resource::<game::render::parallax::BackgroundOverride>()
+                .0
+                .as_ref(),
+            Some(&background)
+        );
+    }
+}

@@ -28,7 +28,15 @@ pub struct Level {
     pub name: String,            // snake_case，等于文件名
     pub grid: Grid,              // (cols, rows)
     pub start: RoomCoord,        // 起始房间
+    pub background: Option<Background>, // 背景视差层（§3.10）；None = 无背景
     pub rooms: Vec<Room>,        // 行主序，len == cols * rows，row 0 = 地图最上一行
+}
+
+pub struct Background { pub layers: Vec<BackgroundLayer> }       // 最多 3 层（V20）
+pub struct BackgroundLayer {
+    pub image: String,        // 相对 assets/ 的 PNG；加载时规范化
+    pub scroll_x: u8,         // 0..=100（百分比）：0 = 屏幕固定，100 = 与世界同速
+    pub scroll_y: u8,         // 同上
 }
 
 pub struct Grid { pub cols: u32, pub rows: u32 }
@@ -107,6 +115,30 @@ pub struct EntitySpec {
 | 渲染 | 瓦片按 `cell` 从 `tileset` 取图；`tileset: None` ⇒ 用内置 `assets/sprites/tiles/tileset.png` 与内置 palette（等价 v1 外观） |
 | 校验 | V6 改为"字符 ∈ palette"；新增 **V19**：`palette` 字符唯一、非 `.`、`name` 非空 |
 | 存档兼容 | `SaveData` 只依赖 `level_name` + `grid`，与 palette 无关 |
+
+## 3.10 背景视差（v2 可选字段）
+
+```ron
+(
+    version: 2,
+    // ...
+    background: Some((
+        layers: [
+            (image: "sprites/backgrounds/sky.png",   scroll_x: 10, scroll_y: 0),
+            (image: "sprites/backgrounds/hills.png", scroll_x: 40, scroll_y: 20),
+        ],
+    )),
+)
+```
+
+| 规则 | 说明 |
+|---|---|
+| 缺省 | 字段缺失或 `None`/空层列表 = 无背景：只显示 `z::ROOM_BG` 的房间背景板 |
+| 顺序 | `layers[0]` 最远，索引越大越靠近镜头；渲染 Z = `z::PARALLAX + index`（`00` §0.4） |
+| 滚动 | `scroll_x/y` 是**屏幕滚动百分比**：`0` = 屏幕固定（无限远），`100` = 与世界同速；物理意义与渲染公式见 `07` §7.13 |
+| 贴图 | 相对 `assets/` 的 PNG，按**自身像素尺寸**平铺；建议放 `sprites/backgrounds/` |
+| 数量 | `layers.len() <= 3`（V20）；上限常量是 `MAX_BACKGROUND_LAYERS` |
+| 非破坏性 | 新增 `Option` 字段（serde 默认值），**不升版本**；旧文件读取后 `background = None` |
 
 ## 3.4 实体 kind 注册表（v1）
 
@@ -253,7 +285,7 @@ pub fn validate(level: &Level) -> Vec<LevelIssue>
 
 | # | 规则 | 严重度 |
 |---|---|---|
-| V1 | `version == 1` | Fatal |
+| V1 | `version == VERSION`（当前 `2`） | Fatal |
 | V2 | `name` 匹配 `^[a-z0-9_]+$`，且等于文件名主干 | Error |
 | V3 | `grid.cols >= 1 && grid.rows >= 1 && cols * rows <= 256` | Error |
 | V3b | `cols * rows > 64` | Warning（见 `02` §2.4 的裁剪 Roadmap） |
@@ -272,6 +304,8 @@ pub fn validate(level: &Level) -> Vec<LevelIssue>
 | V16 | 房间 `name` 若为 `Some`，全关卡唯一；`start` 的 `col < cols && row < rows` | Error |
 | V17 | 实体的 AABB（`at ± size/2`）与任何 `Solid` 瓦片重叠 | Warning |
 | V18 | 相邻房间边界不连续（一侧 `Solid`、另一侧 `Air`，形成单像素墙） | Warning |
+| V19 | `palette`：`char` 唯一且非 `.`；`name` 非空 | Error |
+| V20 | `background`：`layers.len() <= 3`；每层 `image` 非空；`scroll_x/y <= 100` | Error |
 
 > 上表的严重度语义见本节开头三态表。`V4`（房间数与网格不符）同样属于结构不变式，但可以由编辑器改变 `cols/rows` 而合法地瞬时出现，故定为 `Error` 而非 `Fatal`。
 
@@ -280,7 +314,7 @@ pub fn validate(level: &Level) -> Vec<LevelIssue>
 | 规则 | 说明 |
 |---|---|
 | 版本字段 | `version` 是首个字段，缺省即非法 |
-| 未知版本 | Loader **必须硬失败**，错误信息包含"文件版本 X，本引擎支持 1"。禁止宽容解析或猜测 |
+| 未知版本 | Loader **必须硬失败**，错误信息包含"文件版本 X，本引擎支持 2"。禁止宽容解析或猜测 |
 | 破坏性变更 | legend 增删字符、字段改名/删除、坐标语义改变、`Goal` 变体语义改变 |
 | 非破坏性变更 | 新增 `Option` 字段（必须带 serde 默认值）、新增 Roadmap 中已预留的 `kind` |
 | 迁移 | 破坏性变更必须在 `crates/level_format/src/migrate.rs` 提供 `migrate_vN_to_vN_plus_1`，并更新本节的变更历史表 |
@@ -290,3 +324,5 @@ pub fn validate(level: &Level) -> Vec<LevelIssue>
 | 版本 | 日期 | 变更 |
 |---|---|---|
 | `1` | 2026-10-16 | 初版：2D 房间网格 + legend 瓦片 + 实体列表 + 三种条件 |
+| `2` | 2026-10-18 | 关卡自带贴图 `tileset`/`tileset_columns` + 地块调色板 `palette`（§3.9） |
+| `2`（增补） | 2026-10-19 | 新增可选字段 `background`（§3.10，V20）；**不升版本**，旧文件读取为 `None` |

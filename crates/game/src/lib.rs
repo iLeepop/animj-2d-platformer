@@ -79,6 +79,8 @@ pub fn add_game_plugins(app: &mut App) {
         checkpoint::CheckpointPlugin,
         (audio::AudioFxPlugin, anim_data::AnimDataPlugin),
     ));
+    // 背景视差：编辑器与游戏共用（`07` §7.13）。
+    app.add_plugins(render::parallax::ParallaxPlugin);
 }
 
 /// 注册像素完美渲染管线（**仅发布 bin `animj`**）。

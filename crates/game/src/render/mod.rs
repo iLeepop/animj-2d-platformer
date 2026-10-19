@@ -2,6 +2,7 @@
 
 pub mod debug;
 pub mod hud;
+pub mod parallax;
 pub mod pause;
 pub mod pixel_camera;
 pub mod snap;

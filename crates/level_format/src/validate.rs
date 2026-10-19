@@ -3,7 +3,7 @@
 use crate::error::{LevelIssue, Severity};
 use crate::legend::TileKind;
 use crate::types::{
-    EntitySpec, Goal, Level, ROOM_PX, ROOM_TILES, Room, TILE_PX, VERSION,
+    EntitySpec, Goal, Level, MAX_BACKGROUND_LAYERS, ROOM_PX, ROOM_TILES, Room, TILE_PX, VERSION,
 };
 
 /// 房间总数上限，见 `docs/03-level-format.md` §3.7 V3。
@@ -40,6 +40,7 @@ pub fn validate(level: &Level) -> Vec<LevelIssue> {
     check_player_spawn(level, &mut issues);
     check_start(level, &mut issues);
     check_palette(level, &mut issues);
+    check_background(level, &mut issues);
     check_room_boundaries(level, &mut issues);
 
     issues
@@ -510,6 +511,55 @@ fn check_palette(level: &Level, issues: &mut Vec<LevelIssue>) {
                 &path,
                 "V19",
                 "地块名称不能为空".to_string(),
+            );
+        }
+    }
+}
+
+/// V20：背景层合法——层数上限、贴图路径非空、滚动百分比在 `0..=100`。
+fn check_background(level: &Level, issues: &mut Vec<LevelIssue>) {
+    let Some(background) = &level.background else {
+        return;
+    };
+    if background.layers.len() > MAX_BACKGROUND_LAYERS {
+        push(
+            issues,
+            Severity::Error,
+            "background.layers",
+            "V20",
+            format!(
+                "图层数 {} 超过上限 {MAX_BACKGROUND_LAYERS}",
+                background.layers.len()
+            ),
+        );
+    }
+    for (index, layer) in background.layers.iter().enumerate() {
+        let path = format!("background.layers[{index}]");
+        if layer.image.trim().is_empty() {
+            push(
+                issues,
+                Severity::Error,
+                &path,
+                "V20",
+                "image 不能为空".to_string(),
+            );
+        }
+        if layer.scroll_x > 100 {
+            push(
+                issues,
+                Severity::Error,
+                &path,
+                "V20",
+                format!("scroll_x {} 超出 0..=100", layer.scroll_x),
+            );
+        }
+        if layer.scroll_y > 100 {
+            push(
+                issues,
+                Severity::Error,
+                &path,
+                "V20",
+                format!("scroll_y {} 超出 0..=100", layer.scroll_y),
             );
         }
     }

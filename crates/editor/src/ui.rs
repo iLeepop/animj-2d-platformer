@@ -246,6 +246,7 @@ pub enum BottomTab {
     #[default]
     Tiles,
     Animation,
+    Background,
 }
 
 /// 面板根 Ui。egui 0.36 的 `Panel::show` 以传入 Ui 的可用矩形为容器，
@@ -343,7 +344,7 @@ fn prepare_textures(
             Some(handle.clone())
         }
         _ => {
-            let loaded = game::render::tiles::load_tileset_image(&sheet_key, &mut images);
+            let loaded = game::render::tiles::load_image(&sheet_key, &mut images);
             if let Some(handle) = &loaded {
                 *sheet_cache = Some((sheet_key.clone(), sheet_stamp, handle.clone()));
             }
@@ -368,7 +369,7 @@ fn prepare_textures(
     let tile_image = match &session.doc.tileset {
         Some(path) => {
             // 同步读盘（运行期 `AssetServer::load` 的图像会永远停在 Loading，
-            // 见 `game::render::tiles::load_tileset_image` 的说明）
+            // 见 `game::render::tiles::load_image` 的说明）
             let key = level_format::normalize_asset_path(path).unwrap_or_default();
             let stamp = game::assets::texture_stamp(&key);
             match sync_cache.as_ref() {
@@ -378,7 +379,7 @@ fn prepare_textures(
                     Some(handle.clone())
                 }
                 _ => {
-                    let loaded = game::render::tiles::load_tileset_image(&key, &mut images);
+                    let loaded = game::render::tiles::load_image(&key, &mut images);
                     if let Some(handle) = &loaded {
                         *sync_cache = Some((key.clone(), stamp, handle.clone()));
                     }
@@ -817,6 +818,12 @@ fn bottom_panel(
             {
                 *bottom_tab = BottomTab::Animation;
             }
+            if ui
+                .selectable_label(*bottom_tab == BottomTab::Background, "背景")
+                .clicked()
+            {
+                *bottom_tab = BottomTab::Background;
+            }
         });
         let tab_height = (ui.available_height() - 130.0).max(100.0);
         egui::ScrollArea::vertical().max_height(tab_height).show(ui, |ui| {
@@ -829,6 +836,9 @@ fn bottom_panel(
                         tile_texture.0.as_ref(),
                         picker,
                     )
+                }
+                BottomTab::Background => {
+                    background_panel(ui, session, picker);
                 }
                 BottomTab::Animation => match anim_edit {
                     Some(anim_edit) => {
@@ -877,6 +887,96 @@ fn bottom_panel(
             }
         });
     });
+}
+
+/// 背景视差编辑（`08` §8.5.7 C）：图层贴图 + 水平/垂直滚动百分比。
+fn background_panel(
+    ui: &mut egui::Ui,
+    session: &mut EditorSession,
+    picker: &mut crate::tile_tool::AssetPickerState,
+) {
+    use level_format::{BackgroundLayer, MAX_BACKGROUND_LAYERS};
+
+    ui.heading("背景视差");
+    ui.label("0% = 屏幕固定；100% = 与世界同速。列表自上而下由远到近。");
+
+    let mut background = session.doc.background.clone().unwrap_or_default();
+    let mut changed = false;
+    let mut remove = None;
+    const PICKER_IDS: [&str; MAX_BACKGROUND_LAYERS] = ["bg0", "bg1", "bg2"];
+
+    for (index, layer) in background.layers.iter_mut().enumerate() {
+        ui.group(|ui| {
+            ui.horizontal(|ui| {
+                ui.label(format!(
+                    "图层 {}（{}）",
+                    index + 1,
+                    if index == 0 { "最远" } else { "更近" }
+                ));
+                if ui.small_button("删除").clicked() {
+                    remove = Some(index);
+                }
+            });
+            ui.horizontal(|ui| {
+                ui.label("贴图");
+                changed |= ui
+                    .add(
+                        egui::TextEdit::singleline(&mut layer.image)
+                            .desired_width(320.0)
+                            .hint_text("sprites/backgrounds/sky.png"),
+                    )
+                    .changed();
+                // 外部文件可能带超过上限的图层（V20）；超过时仍可删除，但不给浏览按钮
+                if let Some(id) = PICKER_IDS.get(index).copied()
+                    && let Some(picked) = crate::tile_tool::asset_picker(ui, picker, id)
+                {
+                    layer.image = picked;
+                    changed = true;
+                }
+            });
+            ui.horizontal(|ui| {
+                ui.label("水平");
+                let mut horizontal = layer.scroll_x as i32;
+                if ui
+                    .add(egui::DragValue::new(&mut horizontal).range(0..=100).suffix("%"))
+                    .changed()
+                {
+                    layer.scroll_x = horizontal.clamp(0, 100) as u8;
+                    changed = true;
+                }
+                ui.label("垂直");
+                let mut vertical = layer.scroll_y as i32;
+                if ui
+                    .add(egui::DragValue::new(&mut vertical).range(0..=100).suffix("%"))
+                    .changed()
+                {
+                    layer.scroll_y = vertical.clamp(0, 100) as u8;
+                    changed = true;
+                }
+            });
+        });
+    }
+
+    if let Some(index) = remove {
+        background.layers.remove(index);
+        changed = true;
+    }
+    if background.layers.len() < MAX_BACKGROUND_LAYERS && ui.button("添加图层").clicked() {
+        background.layers.push(BackgroundLayer {
+            image: String::new(),
+            scroll_x: 30,
+            scroll_y: 0,
+        });
+        changed = true;
+    }
+    if changed {
+        session.begin_edit();
+        session.doc.background = if background.layers.is_empty() {
+            None
+        } else {
+            Some(background)
+        };
+    }
 }
 
 /// 面板系统：一个根 Ui 上按 顶 → 底 → 左 → 右 显示四个面板。
@@ -1010,6 +1110,7 @@ mod tests {
             tileset: None,
             tileset_columns: 8,
             palette: Vec::new(),
+            background: None,
             grid: level_format::Grid { cols: 2, rows: 3 },
             start: level_format::RoomCoord { col: 0, row: 0 },
             rooms: (0..6)

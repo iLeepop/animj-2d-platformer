@@ -131,7 +131,7 @@ Bevy 0.20 的 2D 透明排序依据**视图空间 Z**，且排序不稳定 ⇒ *
 
 | 用途 | Z | 所有者 |
 |---|---|---|
-| 远景视差 | `-100.0` | `07` |
+| 远景视差 | `-100.0 + layer_index`（`layer_index ∈ 0..=2`，0 最远） | `07` |
 | 房间背景板 | `-50.0` | `07` |
 | 瓦片贴花（草、砖纹） | `-10.0` | `07` |
 | **实体瓦片** | `0.0` | `07` |
@@ -145,6 +145,7 @@ Bevy 0.20 的 2D 透明排序依据**视图空间 Z**，且排序不稳定 ⇒ *
 | 世界空间文字（`Text2d`） | `80.0` | `07` |
 | 相机 | `z = 0.0`（`config::render::CAMERA_Z`）。**不是**「保持默认」：`OrthographicProjection::default_2d()` 的深度范围是 ±1000，相机必须在 0 附近，`-100.0`（远景视差）才落在范围内 | `07` |
 
+- 关卡配置了 `background` 时**不生成**房间背景板（`z::ROOM_BG` 完全不透明，会盖住视差层，见 `07` §7.13.4）。
 - 屏幕空间 UI（`Node`）不使用 Z，用 `bevy_ui` 自己的 `ZIndex`。
 - 所有 sprite 的 Z **必须显式写入**、来自本表；禁止依赖 `spawn` 顺序。
 
@@ -186,7 +187,7 @@ animj/
 ├─ docs/
 ├─ assets/                    # 运行时资产根（两个 bin 共用，见 05 §资产路径）
 │  ├─ levels/
-│  ├─ sprites/{player,tiles,decorations,ui}/
+│  ├─ sprites/{player,tiles,decorations,ui,backgrounds}/
 │  └─ fonts/
 └─ crates/
    ├─ level_format/           # lib：纯 serde 数据 + 解析 + 校验，不依赖 bevy
@@ -202,7 +203,7 @@ animj/
 
 ## 0.7 关卡格式版本化
 
-- `Level.version: u32`，当前 **`1`**。
+- `Level.version: u32`，当前 **`2`**。
 - Loader 遇到不认识的 `version` **必须硬失败并给出清晰错误**，禁止猜测或宽容解析。
 - 版本升级时在 `crates/level_format/src/migrate.rs` 提供 `migrate_vN_to_vN1`，并在 `03` 记录变更历史。
 

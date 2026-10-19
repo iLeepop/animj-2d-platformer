@@ -94,18 +94,20 @@ fn setup_tileset(
     });
 }
 
-/// 同步加载关卡自带 tileset：直接读盘 + 解码后插入 `Assets<Image>`。
+/// 同步加载一张贴图：直接读盘 + 解码后插入 `Assets<Image>`。
+///
+/// 用于瓦片图集、角色图集与背景层（凡是不走 `AssetServer` 的图像）。
 ///
 /// **不用 `AssetServer::load`**：实测编辑器进程里**运行期**请求的新图像会永远停在
 /// `Loading`（同一进程启动期请求的图像正常），导致"设置贴图路径没有效果"。
 /// 同步读盘对编辑器（改一次路径加载一次）和游戏（启动一次）都足够快。
-pub fn load_tileset_image(path: &str, images: &mut Assets<Image>) -> Option<Handle<Image>> {
+pub fn load_image(path: &str, images: &mut Assets<Image>) -> Option<Handle<Image>> {
     let relative = level_format::normalize_asset_path(path)?;
     let full = std::path::Path::new(&crate::assets::asset_file_path()).join(&relative);
     let bytes = match std::fs::read(&full) {
         Ok(bytes) => bytes,
         Err(error) => {
-            error!("tileset `{}` 读取失败：{error}", full.display());
+            error!("贴图 `{}` 读取失败：{error}", full.display());
             return None;
         }
     };
@@ -120,7 +122,7 @@ pub fn load_tileset_image(path: &str, images: &mut Assets<Image>) -> Option<Hand
     ) {
         Ok(image) => Some(images.add(image)),
         Err(error) => {
-            error!("tileset `{}` 解码失败：{error}", full.display());
+            error!("贴图 `{}` 解码失败：{error}", full.display());
             None
         }
     }
@@ -212,7 +214,7 @@ fn spawn_level_tiles(
                     _ => None,
                 };
                 let handle = reused.or_else(|| {
-                    let loaded = load_tileset_image(&key, &mut images);
+                    let loaded = load_image(&key, &mut images);
                     if let Some(handle) = &loaded {
                         *sync_cache = Some((key.clone(), stamp, handle.clone()));
                     }
@@ -255,13 +257,16 @@ fn spawn_level_tiles(
                 ))
                 .id();
 
-            // 房间背景板：整房间一张，用非黑色以便在截图里与窗口黑边区分
-            commands.spawn((
-                Sprite::from_color(room_bg_color(), Vec2::splat(ROOM_PX as f32)),
-                Anchor::BOTTOM_CENTER,
-                Transform::from_xyz(0.0, -half, z::ROOM_BG),
-                ChildOf(root),
-            ));
+            // 房间背景板：整房间一张，用非黑色以便在截图里与窗口黑边区分。
+            // 有视差背景时不画：它是完全不透明的，会把 z=-100 的背景整片盖住（`07` §7.13.4）。
+            if level.background.is_none() {
+                commands.spawn((
+                    Sprite::from_color(room_bg_color(), Vec2::splat(ROOM_PX as f32)),
+                    Anchor::BOTTOM_CENTER,
+                    Transform::from_xyz(0.0, -half, z::ROOM_BG),
+                    ChildOf(root),
+                ));
+            }
 
             let Some(room_tiles) = level_tiles
                 .as_ref()

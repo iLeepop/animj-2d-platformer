@@ -51,6 +51,28 @@ pub fn default_tileset_columns() -> u32 {
     8
 }
 
+/// 背景视差层数上限（`03` §3.2 / `07` §7.13）。
+pub const MAX_BACKGROUND_LAYERS: usize = 3;
+
+/// 关卡背景：按列表顺序从远到近绘制（`03` §3.2、`07` §7.13）。
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Default)]
+#[serde(deny_unknown_fields)]
+pub struct Background {
+    pub layers: Vec<BackgroundLayer>,
+}
+
+/// 一层视差背景。贴图按自身像素尺寸平铺整个视口。
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct BackgroundLayer {
+    /// 相对 `assets/` 的 PNG 路径（加载时规范化）。
+    pub image: String,
+    /// 水平滚动百分比：`0` = 屏幕固定，`100` = 与世界同速。范围 `0..=100`（V20）。
+    pub scroll_x: u8,
+    /// 垂直滚动百分比：`0` = 屏幕固定，`100` = 与世界同速。范围 `0..=100`（V20）。
+    pub scroll_y: u8,
+}
+
 
 /// 一个完整关卡 = `grid.cols × grid.rows` 个房间。见 `docs/03-level-format.md` §3.2
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -73,6 +95,9 @@ pub struct Level {
     /// v2：字符 → 名称/行为/贴图格。空 ⇒ 内置 4 种（等价 v1）。
     #[serde(default)]
     pub palette: Vec<PaletteEntry>,
+    /// 背景视差层（`07` §7.13）。缺省 / 空 ⇒ 无背景（只显示房间背景板）。
+    #[serde(default)]
+    pub background: Option<Background>,
     /// 行主序排列的房间，`len() == grid.cols * grid.rows`，`row 0` 是地图最上一行。
     pub rooms: Vec<Room>,
 }

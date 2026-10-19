@@ -3,9 +3,9 @@
 //! 测试只使用 crate 的公共 API（`tests/` 是独立 crate），因此也顺带验证了导出面。
 
 use level_format::{
-    EntitySpec, Goal, Grid, LEGEND, Level, LevelError, LevelIssue, RENDERABLE_TILE_KINDS, ROOM_PX,
-    ROOM_TILES, Room, RoomCoord, Severity, TILE_PX, TileKind, VERSION, name_matches_file, read,
-    room_index, validate, write,
+    Background, BackgroundLayer, EntitySpec, Goal, Grid, LEGEND, Level, LevelError, LevelIssue,
+    MAX_BACKGROUND_LAYERS, RENDERABLE_TILE_KINDS, ROOM_PX, ROOM_TILES, Room, RoomCoord, Severity,
+    TILE_PX, TileKind, VERSION, name_matches_file, read, room_index, validate, write,
 };
 
 // ---------------------------------------------------------------- 构造辅助
@@ -58,6 +58,7 @@ fn valid_level() -> Level {
         tileset: None,
         tileset_columns: 8,
         palette: Vec::new(),
+        background: None,
         rooms: vec![Room {
             name: None,
             tiles,
@@ -82,6 +83,7 @@ fn valid_level_2x1() -> Level {
         tileset: None,
         tileset_columns: 8,
         palette: Vec::new(),
+        background: None,
         rooms: vec![
             plain_room(
                 vec![Goal::ReachExit],
@@ -105,6 +107,7 @@ fn valid_level_1x2() -> Level {
         tileset: None,
         tileset_columns: 8,
         palette: Vec::new(),
+        background: None,
         rooms: vec![
             plain_room(
                 vec![Goal::ReachExit],
@@ -171,6 +174,7 @@ fn featureful_level() -> Level {
         tileset: None,
         tileset_columns: 8,
         palette: Vec::new(),
+        background: None,
         rooms: vec![
             left_room,
             start_room,
@@ -1460,6 +1464,7 @@ fn v19_rejects_bad_palette_entries() {
             level_format::PaletteEntry { char: 'x', name: "".into(), behavior: level_format::Behavior::Solid, cell: 1 },
             level_format::PaletteEntry { char: 'x', name: "dup".into(), behavior: level_format::Behavior::Solid, cell: 2 },
         ],
+        background: None,
         grid: level_format::Grid { cols: 1, rows: 1 },
         start: level_format::RoomCoord { col: 0, row: 0 },
         rooms: vec![level_format::Room {
@@ -1480,4 +1485,73 @@ fn v19_rejects_bad_palette_entries() {
         .filter(|issue| issue.message.starts_with("V19"))
         .collect();
     assert_eq!(v19.len(), 3, "{issues:?}");
+}
+
+#[test]
+fn background_defaults_to_none_when_field_missing() {
+    // 既有 v1 示例没有 `background` 字段，必须继续可读（加可选字段不升版本）。
+    let example = read(EXAMPLE_LEVEL_RON).expect("v1 示例必须可读");
+    assert_eq!(example.background, None);
+
+    // v2 写出再删掉该行，模拟旧文件。
+    let text = write(&valid_level());
+    let without = text
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("background:"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let parsed = read(&without).expect("缺少 background 字段必须可读");
+    assert_eq!(parsed.background, None);
+}
+
+#[test]
+fn background_layers_round_trip() {
+    let mut level = valid_level();
+    level.background = Some(Background {
+        layers: vec![
+            BackgroundLayer {
+                image: "sprites/backgrounds/sky.png".to_string(),
+                scroll_x: 10,
+                scroll_y: 0,
+            },
+            BackgroundLayer {
+                image: "sprites/backgrounds/hills.png".to_string(),
+                scroll_x: 40,
+                scroll_y: 20,
+            },
+        ],
+    });
+    let text = write(&level);
+    assert!(text.contains("background: Some("), "{text}");
+    let parsed = read(&text).expect("背景字段必须可读回");
+    assert_eq!(parsed, level);
+    assert!(validate(&parsed).is_empty(), "{:?}", validate(&parsed));
+}
+
+#[test]
+fn v20_rejects_bad_background_layers() {
+    let mut level = valid_level();
+    level.background = Some(Background {
+        layers: (0..=MAX_BACKGROUND_LAYERS)
+            .map(|index| BackgroundLayer {
+                image: if index == 0 {
+                    "  ".to_string()
+                } else {
+                    format!("sprites/backgrounds/{index}.png")
+                },
+                scroll_x: if index == 1 { 101 } else { 30 },
+                scroll_y: if index == 2 { 101 } else { 0 },
+            })
+            .collect(),
+    });
+    let v20: Vec<_> = issues_of(&level, "V20");
+    assert_eq!(v20.len(), 4, "{v20:?}");
+    assert!(v20.iter().any(|issue| issue.message.contains("超过上限")));
+    assert!(v20.iter().any(|issue| issue.message.contains("image 不能为空")));
+    assert_eq!(
+        v20.iter()
+            .filter(|issue| issue.message.contains("超出 0..=100"))
+            .count(),
+        2
+    );
 }

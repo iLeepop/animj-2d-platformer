@@ -356,6 +356,7 @@ mod tests {
             tileset: None,
             tileset_columns: 8,
             palette: Vec::new(),
+            background: None,
             rooms: vec![level_format::Room {
                 name: None,
                 reward: None,

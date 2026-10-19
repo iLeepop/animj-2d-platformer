@@ -55,6 +55,7 @@ flowchart LR
 | `render/pixel_camera.rs` | 双层相机 + 整数缩放（`07`） |
 | `render/snap.rs` | 像素吸附 + `Aabb → Transform` 投影（`06` §6.8.2） |
 | `render/tiles.rs` | 瓦片 sprite 批量生成 + 房间可见性裁剪 |
+| `render/parallax.rs` | 2D 视差背景（`03` §3.10 / `07` §7.13）：贴图平铺、相位与滚动、编辑器预览覆盖、mtime 重载 |
 | `render/sprite_anim.rs` | 自写帧动画（`04` §5） |
 | `render/hud.rs` | 屏幕空间 HUD |
 | `render/debug.rs` | gizmos 网格、`F3` 调试开关、诊断行（dev feature，见 `07` §7.9） |
@@ -107,6 +108,7 @@ flowchart LR
 | `DemoPlugin` | 验证用脚本输入 + 物理度量（仅 `--demo` 时由 bin 添加） | 无 |
 | `RoomPlugin` | 当前房间、条件求值、奖励 | `WorldPlugin` |
 | `CameraRigPlugin` | 当前房间判定（AABB 中心 + 8 px 滞回，`GameSet::Room`）+ 相机落点过渡（0.25 s ease-out quad，`GameSet::Camera`） | `WorldPlugin` |
+| `ParallaxPlugin` | `Level.background` → 平铺 sprite；`ParallaxCamera` 视图换算；`BackgroundOverride` 预览；`PostUpdate` 早于 `Propagate` | `TileRenderPlugin`（`load_image`）、`WorldPlugin` |
 | `PixelRenderPlugin` | 双层相机、窗口缩放、像素吸附 | 无 |
 | `TileRenderPlugin` | 瓦片 sprite 生成与可见性 | `WorldPlugin` |
 | `SpriteAnimPlugin` | 帧动画 + 按朝向水平翻转 sprite（装饰品同步镜像，`04` §4.5） | 无 |

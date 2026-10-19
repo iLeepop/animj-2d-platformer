@@ -181,6 +181,7 @@ mod tests {
             tileset: None,
             tileset_columns: 8,
             palette: Vec::new(),
+            background: None,
             rooms: vec![Room {
                 name: None,
                 tiles: vec![".".repeat(ROOM_TILES); ROOM_TILES],

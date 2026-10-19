@@ -69,6 +69,7 @@ fn spawn_editor_camera(mut commands: Commands) {
         Msaa::Off,
         PrimaryEguiContext,
         EditorCamera,
+        game::render::parallax::ParallaxCamera,
         Projection::Orthographic(OrthographicProjection {
             scaling_mode: ScalingMode::WindowSize,
             scale: 1.0,

@@ -83,7 +83,7 @@ fn rebuild_player_sheets(
         let Some(relative) = level_format::normalize_asset_path(&state.sheet) else {
             continue;
         };
-        let Some(image) = crate::render::tiles::load_tileset_image(&relative, &mut images) else {
+        let Some(image) = crate::render::tiles::load_image(&relative, &mut images) else {
             error!("动画状态 `{}` 的贴图 `{}` 加载失败", state.name, relative);
             continue;
         };
