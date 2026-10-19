@@ -112,6 +112,11 @@ fn drive_demo_settings(
             *stage = 4;
             println!("[demo settings] 请求窗口");
         }
+        (48, 4) => {
+            settings.toggle_language();
+            *stage = 5;
+            println!("[demo settings] 语言 -> {:?}", settings.language);
+        }
         _ => {}
     }
 }
@@ -248,7 +253,9 @@ fn drive_demo_click(
     };
     match (tick.0, *stage) {
         (28, 0) if *state.get() == game::state::GameState::MainMenu => {
-            let Some((_, transform, _)) = texts.iter().find(|(text, ..)| text.0 == "START GAME")
+            let Some((text, transform, _)) = texts
+                .iter()
+                .find(|(text, ..)| matches!(text.0.as_str(), "开始游戏" | "START GAME"))
             else {
                 return;
             };
@@ -271,8 +278,8 @@ fn drive_demo_click(
             ));
             *stage = 1;
             println!(
-                "[demo click] 指针移动到 START GAME @ ({:.0}, {:.0})",
-                position.x, position.y
+                "[demo click] 指针移动到 {} @ ({:.0}, {:.0})",
+                text.0, position.x, position.y
             );
         }
         (30, 1) => {

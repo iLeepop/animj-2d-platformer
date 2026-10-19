@@ -40,9 +40,32 @@ pub struct StartRequest {
     pub mode: LoadMode,
 }
 
+/// 菜单状态行的提示种类。菜单按当前语言渲染，不在资源里存具体文案。
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum Notice {
+    #[default]
+    None,
+    NoSave,
+    VersionMismatch,
+    LevelNotFound,
+    LoadFailed,
+}
+
+impl Notice {
+    pub fn text(self, strings: &crate::i18n::Strings) -> &'static str {
+        match self {
+            Notice::None => "",
+            Notice::NoSave => strings.no_save,
+            Notice::VersionMismatch => strings.save_version_mismatch,
+            Notice::LevelNotFound => strings.save_level_not_found,
+            Notice::LoadFailed => strings.save_load_failed,
+        }
+    }
+}
+
 /// 加载失败/菜单操作的可见提示。菜单读它并显示在状态行。
-#[derive(Resource, Debug, Default, Clone)]
-pub struct LoadNotice(pub String);
+#[derive(Resource, Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct LoadNotice(pub Notice);
 
 /// 关卡资产的相对路径（`assets/` 之下）。
 pub fn level_asset_path(id: &str) -> String {
@@ -205,7 +228,7 @@ pub(crate) fn poll_level(
                     "读档失败：存档缺失或与关卡 {} 不匹配，返回主菜单",
                     level.name
                 );
-                commands.insert_resource(LoadNotice("SAVE LOAD FAILED".to_string()));
+                commands.insert_resource(LoadNotice(Notice::LoadFailed));
                 commands.remove_resource::<PendingLevel>();
                 next.set(GameState::MainMenu);
                 return;

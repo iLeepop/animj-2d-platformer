@@ -4,19 +4,19 @@
 //! `VIEWPORT_W × VIEWPORT_H`（`07` §7.10.1）。因此所有尺寸与字号都用 `px()` 的整数值，
 //! 禁止 `vw()` / `vh()` / `percent()`。
 
-use bevy::prelude::*;
-use bevy::text::FontSize;
-
 use crate::assets::AssetRoot;
 use crate::config::render::HUD_TOAST_SECS;
+use crate::fonts::UiFont;
 use crate::player::decor::Decorations;
 use crate::render::pixel_camera::CanvasScale;
 use crate::room::{DecorationGranted, RoomCleared, fruit_count};
+use crate::settings::GameSettings;
 use crate::state::GameState;
 use crate::tiles::LevelTiles;
 use crate::world::CurrentRoom;
 use crate::world::load::LoadedLevel;
 use crate::world::progress::LevelProgress;
+use bevy::prelude::*;
 
 /// HUD 字号（逻辑像素，坐标系是 `VIEWPORT_W` 宽的视口）。
 const HUD_FONT_PX: f32 = 12.0;
@@ -28,8 +28,8 @@ const PANEL_H: f32 = 96.0;
 const PANEL_LEFT: f32 = 12.0;
 const PANEL_TOP: f32 = 112.0;
 
-// ★ HUD 文本**只能是 ASCII**：Bevy 的 `default_font` 只含 ASCII 字形，遇到缺字形会把后续文本一起丢掉
-//   （实测：`"animj · M0 骨架…"` 只渲染出 `animj`）。仓库自带 TTF 入库前（`04` §9），UI/世界文本一律用 ASCII。
+// HUD 文案由 `i18n` 提供（默认中文）。字体来自 `fonts::UiFont`；缺 CJK 字形时 Bevy 会把整行
+// 后续文本一起丢掉（`10` §10.3.1 E7），所以字体加载失败只保证英文可见。
 const HUD_LABEL: &str = "animj";
 
 /// HUD 文本节点标记。
@@ -68,7 +68,7 @@ impl Plugin for HudPlugin {
     }
 }
 
-fn spawn_hud(mut commands: Commands) {
+fn spawn_hud(mut commands: Commands, font: Res<UiFont>) {
     commands.spawn((
         Node {
             position_type: PositionType::Absolute,
@@ -77,10 +77,7 @@ fn spawn_hud(mut commands: Commands) {
             ..default()
         },
         Text::new(HUD_LABEL),
-        TextFont {
-            font_size: FontSize::Px(HUD_FONT_PX),
-            ..default()
-        },
+        font.text_font(HUD_FONT_PX),
         TextColor(Color::WHITE),
         HudText,
     ));
@@ -90,13 +87,15 @@ fn spawn_hud(mut commands: Commands) {
 fn collect_toasts(
     mut cleared: MessageReader<RoomCleared>,
     mut granted: MessageReader<DecorationGranted>,
+    settings: Res<GameSettings>,
     mut toast: ResMut<HudToast>,
 ) {
+    let s = settings.language.strings();
     for _ in cleared.read() {
-        toast.show("ROOM CLEARED");
+        toast.show(s.room_cleared);
     }
     for event in granted.read() {
-        toast.show(format!("DECORATION +{}", event.decoration_id));
+        toast.show(format!("{}+{}", s.decoration_gained, event.decoration_id));
     }
 }
 
@@ -110,14 +109,21 @@ fn tick_toast(time: Res<Time>, mut toast: ResMut<HudToast>) {
     }
 }
 
-/// 当前房间的目标进度描述（ASCII，例如 `EXIT  FRUIT 2/3`）。
-fn goals_summary(goals: &[level_format::Goal], collected: u32, total: u32) -> String {
+/// 当前房间的目标进度描述（例如中文 `出口  果实 2/3`）。
+fn goals_summary(
+    goals: &[level_format::Goal],
+    collected: u32,
+    total: u32,
+    s: &crate::i18n::Strings,
+) -> String {
     goals
         .iter()
         .map(|goal| match goal {
-            level_format::Goal::ReachExit => "EXIT".to_string(),
-            level_format::Goal::Collect { count } => format!("FRUIT {collected}/{count}"),
-            level_format::Goal::CollectAll => format!("ALL FRUITS {collected}/{total}"),
+            level_format::Goal::ReachExit => s.exit_goal.to_string(),
+            level_format::Goal::Collect { count } => format!("{} {collected}/{count}", s.fruit),
+            level_format::Goal::CollectAll => {
+                format!("{} {collected}/{total}", s.all_fruits)
+            }
         })
         .collect::<Vec<_>>()
         .join("  ")
@@ -134,8 +140,11 @@ fn update_hud(
     progress: Option<Res<LevelProgress>>,
     decorations: Option<Res<Decorations>>,
     toast: Option<Res<HudToast>>,
+    settings: Res<GameSettings>,
     mut text: Single<&mut Text, With<HudText>>,
 ) {
+    let language = settings.language;
+    let s = language.strings();
     let mut room = String::from("-");
     if let Some(current) = current.as_ref() {
         room = format!("({}, {})", current.col, current.row);
@@ -172,6 +181,7 @@ fn update_hud(
                 &room_data.goals,
                 room_progress.collected_fruit,
                 fruit_count(room_data),
+                s,
             );
         }
     }
@@ -182,20 +192,25 @@ fn update_hud(
         .zip(current.as_ref())
         .and_then(|(p, c)| p.room(c.col, c.row))
     {
-        if room_progress.cleared { "CLEARED" } else { "" }
+        if room_progress.cleared { s.cleared } else { "" }
     } else {
         ""
     };
 
     text.0 = format!(
-        "{HUD_LABEL}  {state:?} x{scale}  {level} {size}\n\
-         room {room} {flags}  clear {cleared}/{total_rooms}  decor {decor}\n\
-         goals {goals}\n\
+        "{HUD_LABEL}  {state} x{scale}  {level} {size}\n\
+         {room_label} {room} {flags}  {clear_label} {cleared}/{total_rooms}  {decor_label} {decor}\n\
+         {goals_label} {goals}\n\
          {toast_line}\n\
-         assets {root}",
-        state = state.get(),
+         {assets_label} {root}",
+        state = language.state_name(*state.get()),
         scale = canvas_scale.0,
         root = asset_root.0,
+        room_label = s.room,
+        clear_label = s.cleared_count,
+        decor_label = s.decorations,
+        goals_label = s.goals,
+        assets_label = s.assets,
     );
 }
 
@@ -204,7 +219,10 @@ fn spawn_completion(
     mut commands: Commands,
     loaded: Option<Res<LoadedLevel>>,
     decorations: Option<Res<Decorations>>,
+    settings: Res<GameSettings>,
+    font: Res<UiFont>,
 ) {
+    let s = settings.language.strings();
     let total_rewards = loaded
         .as_ref()
         .map(|loaded| {
@@ -236,12 +254,10 @@ fn spawn_completion(
         .id();
     commands.spawn((
         Text::new(format!(
-            "ALL ROOMS CLEARED\nDECORATIONS {owned}/{total_rewards}"
+            "{}\n{} {owned}/{total_rewards}",
+            s.all_rooms_cleared, s.decorations
         )),
-        TextFont {
-            font_size: FontSize::Px(HUD_FONT_PX),
-            ..default()
-        },
+        font.text_font(HUD_FONT_PX),
         TextColor(Color::WHITE),
         TextLayout {
             justify: Justify::Center,

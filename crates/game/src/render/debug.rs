@@ -8,6 +8,8 @@
 
 use bevy::prelude::*;
 
+use crate::fonts::UiFont;
+
 /// 调试绘制开关（`dev` 构建默认开，`F3` 切换）。
 #[derive(Resource)]
 pub struct DebugDrawEnabled(pub bool);
@@ -59,7 +61,6 @@ fn toggle_debug_draw(keys: Res<ButtonInput<KeyCode>>, mut enabled: ResMut<DebugD
 mod dev {
     use super::*;
     use bevy::diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin};
-    use bevy::text::FontSize;
     use level_format::{ROOM_PX, TILE_PX};
 
     use crate::coords::room_local_to_world;
@@ -76,7 +77,7 @@ mod dev {
         enabled.0
     }
 
-    fn spawn_debug_text(mut commands: Commands) {
+    fn spawn_debug_text(mut commands: Commands, font: Res<UiFont>) {
         commands.spawn((
             Node {
                 position_type: PositionType::Absolute,
@@ -85,10 +86,7 @@ mod dev {
                 ..default()
             },
             Text::new(""),
-            TextFont {
-                font_size: FontSize::Px(10.0),
-                ..default()
-            },
+            font.text_font(10.0),
             TextColor(Color::srgb_u8(0xef, 0x7d, 0x57)),
             DebugText,
         ));

@@ -436,6 +436,10 @@ commands.spawn((
 - 对齐枚举是 **`Justify`**（`TextLayout { justify, linebreak }`；`TextLayout::justify(Justify::Center)`）。【已验证】<https://docs.rs/bevy/0.20.0/bevy/prelude/struct.TextLayout.html>
 - 长度单位：`px()` / `percent()` / `vw()` / `vh()`，0.20 新增 `em()` / `rem()`；`UiRect::all(px(10))`。【已验证】<https://bevy.org/learn/migration-guides/0-19-to-0-20/>
 - UI 里不用 Z，用 `bevy_ui` 的 `ZIndex` / `GlobalZIndex`（见 `00` §0.4）。【已验证】<https://docs.rs/bevy/0.20.0/bevy/ui/struct.ZIndex.html>
+- **`Font::from_bytes(Vec<u8>) -> Font`** 可直接把磁盘字体塞进 `Assets<Font>`：`fonts.add(Font::from_bytes(bytes))`，
+  再用 `TextFont { font: handle.into(), .. }`。本项目在 `PreStartup` 同步读盘加载（`title` 等 UI 在 `Startup` 就要用）。【已验证】
+  <https://docs.rs/bevy/0.20.0/bevy/text/struct.Font.html#method.from_bytes> ；`Assets::add` <https://docs.rs/bevy/0.20.0/bevy/asset/struct.Assets.html>
+- **CJK 字形**：Bevy 默认字体只有 ASCII；中文 `Text` 必须指定含 CJK 的 `Handle<Font>`，否则整行后续文本被丢弃（§10.3.1 E7）。字体加载失败时要能降级到默认字体而不是 panic。
 
 ### 10.2.11 Asset / `AssetLoader`（本项目要解析 `.level.ron`）
 

@@ -918,15 +918,11 @@ pub fn add_debug_visualization(app: &mut App) {
 use bevy::prelude::*;
 
 /// 屏幕空间 HUD（由 UI 窗口相机渲染；逻辑坐标仍按 VIEWPORT_W × VIEWPORT_H）
-fn spawn_hud(commands: &mut Commands, ui_font: &Handle<Font>) {
+fn spawn_hud(commands: &mut Commands, ui_font: &UiFont) {
     commands.spawn((
-        Text::new("目标: 到达出口"),
-        TextFont {
-            font: ui_font.clone().into(),          // Handle<Font> → FontSource
-            font_size: FontSize::Px(HUD_FONT_PX),  // ★ 必须显式 Px
-            font_smoothing: FontSmoothing::None,   // ★ 像素风：关抗锯齿
-            ..default()
-        },
+        Text::new("目标：到达出口"),
+        ui_font.text_font(HUD_FONT_PX), // 字体 + FontSize::Px（默认抗锯齿）
+        // 不要在 UI 上关抗锯齿：原生分辨率下 `FontSmoothing::None` 会让中文边缘发毛。
         TextColor(Color::WHITE),
         TextLayout::justify(Justify::Center),      // 枚举名是 Justify（不是 JustifyText）
         Node {
@@ -971,18 +967,18 @@ fn spawn_world_label(commands: &mut Commands, font: &Handle<Font>, at: Vec2, tex
 | 抗锯齿 | `FontSmoothing::None` 文档原文：“No antialiasing. Useful for when you want to render text with a pixel art aesthetic.” ⇒ 本项目**一律** `None`；用 `AntiAliased` 会在放大 k 倍后出现灰色过渡像素 | 【已验证】<https://docs.rs/bevy/0.20.0/bevy/prelude/enum.FontSmoothing.html> |
 | `Text2d` 的定位 | `Text2d(pub String)`；`justify` **只影响块内对齐**，位置由 **`Anchor`**（默认 `CENTER`，`bevy::sprite::Anchor`，不在 prelude）决定 | 【已验证】<https://docs.rs/bevy/0.20.0/bevy/prelude/struct.Text2d.html>（原文：“With `Text2d` the `justify` field of `TextLayout` only affects the internal alignment … and not its relative position, which is controlled by the `Anchor` component.”） |
 | 长度单位 | `px(f32)`（0.20 的长度构造函数）；`UiRect` 用 `px(8.0).all()`；`Val::Px` 亦可 | 【已验证】<https://docs.rs/bevy/0.20.0/bevy/prelude/struct.Node.html>（`Node` 字段用 `px(..)`/`percent(..)`） |
-| 字体资源 | `assets/fonts/*.ttf`（目录见 `00` §0.6，规格见 `04` §8），`asset_server.load("fonts/xxx.ttf")` | — |
+| 字体资源 | `assets/fonts/*.ttf`（目录见 `00` §0.6，规格见 `04` §9）；由 `UiFontPlugin` 同步加载并暴露句柄 | — |
 
 ### 7.10.4 HUD 常量（本文所有）
 
 | 常量 | 值 | 说明 |
 |---|---|---|
-| `HUD_FONT_PX` | `16.0` | HUD 字号（`FontSize::Px`）。像素字体应在 16px 设计尺寸下清晰；换字体后必须复核 |
+| `HUD_FONT_PX` | `12.0` | HUD 字号（`FontSize::Px`，逻辑视口 320 宽）。本仓实际取 `12.0` |
 | `HUD_MARGIN_PX` | `8.0` | HUD 距视口边缘的像素 |
 | `WORLD_TEXT_FONT_PX` | `12.0` | 世界空间文字字号 |
 | `HUD_LINE_HEIGHT_PX` | `20.0` | 多行 HUD 的行高 |
 
-> 像素完美约束：`HUD_FONT_PX`、`WORLD_TEXT_FONT_PX` 必须是像素字体设计尺寸的**整数倍**，且不得使用 `Rem`（见 §7.10.3）。
+> 字号约束：一律显式 `FontSize::Px`，不得使用 `Rem`（见 §7.10.3）。UI 走原生分辨率后不再要求与画布像素格对齐；世界文字（`Text2d`）仍随画布放大。
 > 具体 UI 布局（哪个面板放哪、有几行）属于对应玩法文档，本文只拥有尺寸常量与写法。
 
 ### 7.10.5 菜单界面（主菜单 / 关卡选择 / 设置）
@@ -994,7 +990,7 @@ fn spawn_world_label(commands: &mut Commands, font: &Handle<Font>, at: Vec2, tex
 | 相机 | 与 HUD 相同：UI 由 **UI 窗口相机**（`IsDefaultUiCamera`）渲染，逻辑坐标系 = `VIEWPORT_W × VIEWPORT_H`（`UiScale = k`） |
 | 背景 | 每个界面一个全屏不透明 `Node`（`left/top = 0`，`width/height = px(VIEWPORT_W/H)`），`GlobalZIndex(100)` 盖住 HUD 与暂停面板 |
 | 生命周期 | 根节点带 `DespawnOnExit(对应 GameState)`；设置界面在 `GameSettings` 变化时整块重建 |
-| 文本 | 只能 ASCII（默认字体缺 CJK 字形，`10` §10.3.1 E7） |
+| 文本 | 中/英文案来自 `i18n`（默认中文）；字体来自 `UiFont`（`04` §9）。缺字体时 Bevy 只显示 ASCII |
 | 尺寸 | 一律 `px(..)` 整数；**禁止** `vw()`/`vh()`/`percent()` |
 
 | 常量 | 值 | 说明 |

@@ -7,9 +7,11 @@ use bevy::prelude::*;
 use bevy::ui::Pressed;
 use bevy::ui_widgets::{Button, ScrollArea};
 
-use crate::config::render::{DECORATION_LAYERS, VIEWPORT_H, VIEWPORT_W, z};
+use crate::config::render::{DECORATION_LAYERS, MENU_FONT_PX, VIEWPORT_H, VIEWPORT_W, z};
+use crate::fonts::UiFont;
 use crate::player::decor::{Decorations, spec_of};
 use crate::save;
+use crate::settings::GameSettings;
 use crate::state::GameState;
 use crate::world::progress::LevelProgress;
 
@@ -81,9 +83,14 @@ fn rebuild_pause_ui(
     mut commands: Commands,
     menu: Res<PauseMenu>,
     decorations: Res<Decorations>,
+    settings: Option<Res<GameSettings>>,
+    font: Res<UiFont>,
     roots: Query<Entity, With<PauseRoot>>,
 ) {
-    if !menu.is_changed() && !decorations.is_changed() {
+    let settings_changed = settings
+        .as_ref()
+        .is_some_and(|settings| settings.is_changed());
+    if !menu.is_changed() && !decorations.is_changed() && !settings_changed {
         return;
     }
     for entity in &roots {
@@ -113,11 +120,40 @@ fn rebuild_pause_ui(
         ))
         .id();
 
-    button(&mut commands, root, "RESUME (Esc)", PauseAction::Resume);
-    button(&mut commands, root, "SETTINGS", PauseAction::Settings);
-    button(&mut commands, root, "SAVE (Ctrl+S)", PauseAction::Save);
-    button(&mut commands, root, "MAIN MENU", PauseAction::MainMenu);
-    button(&mut commands, root, "QUIT & SAVE", PauseAction::Quit);
+    let language = settings
+        .as_ref()
+        .map(|settings| settings.language)
+        .unwrap_or_default();
+    let s = language.strings();
+    button(
+        &mut commands,
+        &font,
+        root,
+        format!("{} (Esc)", s.resume),
+        PauseAction::Resume,
+    );
+    button(
+        &mut commands,
+        &font,
+        root,
+        s.settings,
+        PauseAction::Settings,
+    );
+    button(
+        &mut commands,
+        &font,
+        root,
+        format!("{} (Ctrl+S)", s.save),
+        PauseAction::Save,
+    );
+    button(
+        &mut commands,
+        &font,
+        root,
+        s.main_menu,
+        PauseAction::MainMenu,
+    );
+    button(&mut commands, &font, root, s.quit_save, PauseAction::Quit);
 
     // 装饰品行放进滚动区：行数多时不再把面板顶出视口。
     let scroll = commands
@@ -157,6 +193,7 @@ fn rebuild_pause_ui(
             .id();
         commands.spawn((
             Text::new(format!("L{layer} {current}")),
+            font.text_font(MENU_FONT_PX),
             TextColor(Color::WHITE),
             ChildOf(row),
         ));
@@ -167,14 +204,26 @@ fn rebuild_pause_ui(
             if spec.layer != layer {
                 continue;
             }
-            button(&mut commands, row, id, PauseAction::Equip(id.clone()));
+            button(
+                &mut commands,
+                &font,
+                row,
+                id,
+                PauseAction::Equip(id.clone()),
+            );
         }
-        button(&mut commands, row, "x", PauseAction::Unequip(layer));
+        button(&mut commands, &font, row, "x", PauseAction::Unequip(layer));
     }
     let _ = z::DECORATION_BASE;
 }
 
-fn button(commands: &mut Commands, parent: Entity, label: &str, action: PauseAction) {
+fn button(
+    commands: &mut Commands,
+    font: &UiFont,
+    parent: Entity,
+    label: impl Into<String>,
+    action: PauseAction,
+) {
     commands
         .spawn((
             Button,
@@ -187,7 +236,11 @@ fn button(commands: &mut Commands, parent: Entity, label: &str, action: PauseAct
             PauseButton(action),
             ChildOf(parent),
         ))
-        .with_child((Text::new(label), TextColor(Color::WHITE)));
+        .with_child((
+            Text::new(label),
+            font.text_font(MENU_FONT_PX),
+            TextColor(Color::WHITE),
+        ));
 }
 
 #[allow(clippy::too_many_arguments)]

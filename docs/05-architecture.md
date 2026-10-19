@@ -43,6 +43,8 @@ flowchart LR
 | `demo.rs` | 验证用脚本输入与物理度量（`--demo walk` / `--demo jump`），见 `AGENTS.md` §4 |
 | `tiles.rs` | `RoomTiles` / `LevelTiles` 存储、`tile_at_world`、以及 `TileWorld` 的房间映射实现（`06` §6.6） |
 | `state.rs` | `GameState`、`GameSet`、`StartupFlow`、`SettingsReturn` |
+| `i18n.rs` | 语言枚举 `Language` + 中/英文案表 + 状态名（`05` §5.14） |
+| `fonts.rs` | UI 字体加载（`assets/fonts` → `ANIMJ_UI_FONT` → 系统 CJK；`04` §9） |
 | `settings.rs` | 全局设置（音量/全屏）：`GameSettings`、路径、读写、投射到 `GlobalVolume` / `WindowMode`（`05` §5.13） |
 | `level_asset.rs` | `Level` 的 Bevy `Asset` 包装 + `AssetLoader` 注册 + `Asset` 事件热重载 |
 | `world/load.rs` | `StartRequest`/`LoadMode` → 校验 → 生成瓦片 sprite → 生成实体与角色 → 放置玩家 |
@@ -121,6 +123,7 @@ flowchart LR
 | `PausePlugin` | 暂停菜单 + 装饰品装备界面（`GameState::Paused`，`Esc` 开关）；「设置」进 `Settings`、「主菜单」先存档再回 `MainMenu` | `CorePlugin` |
 | `MenuPlugin` | 主菜单 / 关卡选择 / 设置 UI。**只由 `add_render_plugins` 注册（发布 bin）**；写入 `StartRequest` 驱动加载 | `WorldPlugin`、`SavePlugin`、`SettingsPlugin`、`CorePlugin` |
 | `SettingsPlugin` | 读设置 → `GlobalVolume` + 主窗口 `WindowMode`；变化后原子写 `settings.ron`。**只由发布 bin 注册** | 无 |
+| `UiFontPlugin` | 加载唯一 UI 字体并暴露 `UiFont::text_font(px)`；编辑器与发布 bin 共用（`04` §9） | 无 |
 | `AudioFxPlugin` | 事件 → 音效（`04` §6.9；物理结果与 `05` §5.6 的消息） | `RoomPlugin`、`PlayerPlugin` |
 | `DebugPlugin` | gizmos / 诊断（仅 `dev` feature） | 全部 |
 
@@ -197,7 +200,7 @@ flowchart TB
 |---|---|---|---|
 | `PlayerInput` | 资源 | `move_x: i8`, `jump_pressed: bool`, `jump_held: bool`, `interact_pressed: bool` | `player/input` → 物理/存档点 |
 | `StartRequest` | 资源 | `level_id: String`, `mode: LoadMode` | 菜单/冒烟 → `OnEnter(Loading)` 消费 |
-| `LoadNotice` | 资源 | `text: String` | 加载失败 → 主菜单状态行 |
+| `LoadNotice` | 资源 | `Notice`（`NoSave` / `VersionMismatch` / `LevelNotFound` / `LoadFailed`） | 加载失败 → 主菜单状态行（按当前语言渲染） |
 | `GameSettings` | 资源 | `version`, `volume: f32`, `fullscreen: bool` | 设置界面 → `SettingsPlugin` |
 | `SettingsReturn` | 资源 | 目标 `GameState`（`MainMenu` / `Paused`） | 设置界面返回 |
 | `PlayerDied` | `Message` | `room_index: u32` | `player/death` → 音效/特效/HUD |
@@ -315,6 +318,8 @@ pub struct GameSettings {
     pub version: u32,       // 当前 1；不符 ⇒ 忽略整份设置
     pub volume: f32,        // 0.0..=1.0，10 档（每档 0.1）
     pub fullscreen: bool,   // true = BorderlessFullscreen(Current)
+    #[serde(default)]       // 旧 settings.ron 没有该字段 ⇒ 默认中文
+    pub language: Language, // zh（默认）/ en
 }
 ```
 
@@ -326,3 +331,15 @@ pub struct GameSettings {
 | 全屏 | `WindowMode::BorderlessFullscreen(MonitorSelection::Current)` / `WindowMode::Windowed`；窗口缩放仍由像素管线按整数倍重新计算（`07` §7.2） |
 | 作用范围 | `SettingsPlugin` 只注册在发布 bin；编辑器窗口不被玩家设置改写 |
 | 界面 | 主菜单「SETTINGS」与暂停菜单「SETTINGS」共用同一块 UI；返回目标存在 `SettingsReturn` |
+
+## 5.14 语言与文案
+
+| 项 | 约定 |
+|---|---|
+| 默认语言 | **中文（`Language::Zh`）**；设置界面可切换 `En`（产品要求） |
+| 唯一文案源 | `crates/game/src/i18n.rs` 的 `ZH` / `EN` 两张 `Strings` 表；UI 系统禁止硬编码某一种语言的玩家可见文本 |
+| 数据例外 | 关卡 id、装饰品 id、资源路径、FPS/调试行等数据或开发信息不翻译 |
+| 状态名 | `Language::state_name(GameState)`（HUD 顶部用；日志继续用 `Debug`） |
+| 字体 | `UiFontPlugin` 在 `PreStartup` 加载唯一字体（优先级见 `04` §9）；所有 UI `Text` 用 `UiFont::text_font(px)` |
+| 切换时机 | 设置界面按钮 `ToggleLanguage` 改 `GameSettings.language` ⇒ 设置页重建；返回主菜单/关卡选择时 `OnEnter` 重建；暂停菜单在 settings 变化时重建；HUD 每帧读取 |
+| 持久化 | 与音量/全屏同一个 `settings.ron`，旧文件缺字段按中文加载 |

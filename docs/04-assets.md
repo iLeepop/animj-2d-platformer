@@ -453,7 +453,7 @@ pub const DECORATIONS: &[DecorationSpec] = &[
 | `ui_atlas.png` | `128 × 64` | `4 × 2` |
 | `decorations/<id>.png` | `32 × 32` | 单帧；`<id>` = 关卡 `reward` 并集（当前 `item_01`…`item_30`） |
 | `audio/<cue>.wav` | ≤ 0.3 s | PCM 16-bit / 单声道 / 44.1 kHz；cue 见 §6.9.1 |
-| `fonts/<name>.ttf` | — | 可选，入库即启用（当前未入库，文本只能 ASCII，见 §9） |
+| `fonts/<name>.ttf` | — | 可选；入库即优先启用（未入库时回退系统 CJK 字体，见 §9） |
 
 4. **命名逐字节一致**（大小写也算）：Windows 不敏感、CI/Linux 敏感。
 5. 交付前用编辑器复核：`cargo editor -- --frames 90` 打开，确认 30 件装饰品与全部瓦片显示正常。
@@ -545,18 +545,24 @@ animj-dev gen-placeholder-assets [--out assets] [--force]
 
 | 资源 | 路径 | 命名规则 | 说明 |
 |---|---|---|---|
-| UI/世界文字字体 | `assets/fonts/<font_name>.ttf` | `snake_case`，如 `pixel_sans.ttf` | 随仓库提交的静态资产；占位生成器**不**生成字体 |
+| UI/世界文字字体 | `assets/fonts/<font_name>.ttf` | `snake_case`，如 `pixel_sans.ttf` | 首选来源；发布前应随仓库提交（占位生成器**不**生成字体） |
 | UI 图标图集 | `assets/sprites/ui/ui_atlas.png` | 固定文件名；网格固定 **`4 × 2`**（=128×64 像素），单元 `TILE_PX`，padding/offset = 0 | 8 个格位按行主序；占位生成器（§7.2）即按此输出 |
 | UI 单图 | `assets/sprites/ui/<name>.png` | `snake_case` | 未打包成图集的独立图标/底图 |
 
-> ⚠️ **在自带 TTF 入库之前，所有 UI / `Text2d` 文本只能是 ASCII。**
-> Bevy 的 `default_font` 特性只内嵌 **ASCII** 字形（feature 表原文："Include a default font, containing only ASCII characters"），
+> ⚠️ **Bevy 的 `default_font` 只内嵌 ASCII 字形**（feature 表原文："Include a default font, containing only ASCII characters"），
 > 且**遇到第一个缺字形后会把该行后续文本一起丢掉**。实测（M0，bevy 0.20.0）：
-> `"animj · M0 骨架\n状态 …"` 在内层画布上只渲染出 `animj` 五个字母，`·` 之后的全部丢失 ——
+> `"animj · M0 骨架\n状态 …"` 只渲染出 `animj` 五个字母，`·` 之后的全部丢失 ——
 > 这不是布局问题，是字体缺字形，看截图会误判成「文字节点没接线」。
-> 因此：新增非 ASCII 文本前，必须先把字体文件入库并在 `TextFont.font` 里指定它。
+>
+> 自 M7 起界面默认中文，`crate::fonts::UiFontPlugin` 按以下优先级加载**唯一**的 UI 字体：
+> 1. `ANIMJ_UI_FONT` 环境变量（自动化/自定义）；
+> 2. `assets/fonts/` 下按文件名字典序的第一个 `.ttf` / `.otf` / `.ttc`；
+> 3. 系统 CJK 字体（Windows `simhei.ttf`/`msyh.ttc`…，macOS PingFang…，Linux wqy/Noto…）。
+>
+> 发布构建**必须**走第 2 条（把字体入库），否则在没装中文字体的机器上中文会消失。
+> 加载失败时 `UiFont.text_font()` 回退到默认字体（仅英文可见），并打 `warn`。
 
-- 字体**唯一来源单一字体文件**（避免 UI 文字在不同机器渲染不一致）；`TextFont.font` 用 `FontSource`（`Handle<Font>` 可 `into()`），字号须显式用 `FontSize::Px(..)`（0.20 默认字号变为 `FontSize::Rem(1.)`）。【已验证】<https://docs.rs/bevy/0.20.0/bevy/prelude/struct.TextFont.html>、<https://docs.rs/bevy/0.20.0/bevy/prelude/enum.FontSource.html>
+- 字体**唯一来源单一字体文件**（避免 UI 文字在不同机器渲染不一致）；`TextFont.font` 用 `FontSource`（`Handle<Font>` 可 `into()`），字号须显式用 `FontSize::Px(..)`（0.20 默认字号变为 `FontSize::Rem(1.)`）。所有 UI `Text` 通过 `UiFont::text_font(px)` 构造，禁止各自写 `TextFont::default()`。【已验证】<https://docs.rs/bevy/0.20.0/bevy/prelude/struct.TextFont.html>、<https://docs.rs/bevy/0.20.0/bevy/prelude/enum.FontSource.html>
 - UI 图片用 `ImageNode`（或 `ImageNode::from_atlas_image` 走图集），**不是** `Sprite`。【已验证】<https://docs.rs/bevy/0.20.0/bevy/prelude/struct.ImageNode.html>
 - UI 尺寸、布局、样式常量归 UI 相关文档（`05`/`07`）；本文只规定路径与文件规格。
 - 字体/UI 资源同样受 §7.1 零代码改动约束：替换文件 = 同名同路径覆盖。

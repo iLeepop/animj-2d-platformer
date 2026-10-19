@@ -12,6 +12,8 @@ pub mod checkpoint;
 pub mod config;
 pub mod coords;
 pub mod demo;
+pub mod fonts;
+pub mod i18n;
 pub mod level_asset;
 pub mod physics;
 pub mod player;
@@ -63,6 +65,7 @@ pub fn default_plugins() -> PluginGroupBuilder {
 /// **不含** `DefaultPlugins` / 窗口 / 资产源 / 编辑器类型，也**不含** [`add_render_plugins`] 的像素管线
 /// —— 编辑器用单个 `EditorCamera` 直接渲染世界（`08` §8.1.4）。
 pub fn add_game_plugins(app: &mut App) {
+    app.add_plugins(fonts::UiFontPlugin);
     app.add_plugins((
         state::CorePlugin,
         assets::AssetPathPlugin,

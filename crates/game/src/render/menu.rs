@@ -1,13 +1,11 @@
-//! 主菜单 / 关卡选择 / 设置界面。所有者文档：`docs/05-architecture.md` §5.5、`docs/07-rendering.md` §7.10.5。
+//! 主菜单 / 关卡选择 / 设置界面。所有者文档：`docs/05-architecture.md` §5.5、
+//! `docs/07-rendering.md` §7.10.5；文案与语言见 `docs/05-architecture.md` §5.14。
 //!
 //! 只有发布 bin 注册本插件：编辑器不经过菜单流程（`StartupFlow::Direct`，`05` §5.5）。
 //! UI 由窗口相机渲染，`UiScale = k` 让逻辑坐标仍是 `VIEWPORT_W × VIEWPORT_H`（`07` §7.10.1），
 //! 因此尺寸一律用 `px()`；同时窗口目标保证 `bevy_picking` 能命中按钮。
-//!
-//! 文本只能是 ASCII（Bevy 默认字体缺 CJK 字形，会把该行后续文本一起丢掉，`10` §10.3.1 E7）。
 
 use bevy::prelude::*;
-use bevy::text::FontSize;
 use bevy::ui::Pressed;
 use bevy::ui_widgets::Button;
 
@@ -15,10 +13,11 @@ use crate::assets;
 use crate::config::render::{
     MENU_FONT_PX, MENU_GAP_PX, MENU_PADDING_PX, MENU_TITLE_FONT_PX, VIEWPORT_H, VIEWPORT_W,
 };
+use crate::fonts::UiFont;
 use crate::save;
 use crate::settings::GameSettings;
 use crate::state::{GameState, SettingsReturn};
-use crate::world::load::{LoadMode, LoadNotice, StartRequest};
+use crate::world::load::{LoadMode, LoadNotice, Notice, StartRequest};
 
 /// 扫描到的关卡 id（`assets/levels/*.level.ron` 的文件名去后缀）。
 ///
@@ -51,6 +50,7 @@ enum MenuAction {
     VolumeDown,
     VolumeUp,
     ToggleFullscreen,
+    ToggleLanguage,
     Back,
 }
 
@@ -76,7 +76,13 @@ impl Plugin for MenuPlugin {
     }
 }
 
-fn spawn_main_menu(mut commands: Commands, notice: Res<LoadNotice>) {
+fn spawn_main_menu(
+    mut commands: Commands,
+    notice: Res<LoadNotice>,
+    settings: Res<GameSettings>,
+    font: Res<UiFont>,
+) {
+    let s = settings.language.strings();
     let root = commands
         .spawn((
             Node {
@@ -99,31 +105,43 @@ fn spawn_main_menu(mut commands: Commands, notice: Res<LoadNotice>) {
 
     commands.spawn((
         Text::new("ANIMJ"),
-        TextFont {
-            font_size: FontSize::Px(MENU_TITLE_FONT_PX),
-            ..default()
-        },
+        font.text_font(MENU_TITLE_FONT_PX),
         TextColor(Color::WHITE),
         ChildOf(root),
     ));
     commands.spawn((
-        Text::new(notice.0.clone()),
-        TextFont {
-            font_size: FontSize::Px(MENU_FONT_PX),
-            ..default()
-        },
+        Text::new(notice.0.text(s)),
+        font.text_font(MENU_FONT_PX),
         TextColor(Color::srgb(0.9, 0.55, 0.35)),
         MenuStatusText,
         ChildOf(root),
     ));
 
-    menu_button(&mut commands, root, "START GAME", MenuAction::StartGame);
-    menu_button(&mut commands, root, "LOAD SAVE", MenuAction::LoadSave);
-    menu_button(&mut commands, root, "SETTINGS", MenuAction::Settings);
-    menu_button(&mut commands, root, "EXIT", MenuAction::Exit);
+    menu_button(
+        &mut commands,
+        &font,
+        root,
+        s.start_game,
+        MenuAction::StartGame,
+    );
+    menu_button(
+        &mut commands,
+        &font,
+        root,
+        s.load_save,
+        MenuAction::LoadSave,
+    );
+    menu_button(&mut commands, &font, root, s.settings, MenuAction::Settings);
+    menu_button(&mut commands, &font, root, s.exit, MenuAction::Exit);
 }
 
-fn spawn_level_select(mut commands: Commands, catalog: Res<LevelCatalog>) {
+fn spawn_level_select(
+    mut commands: Commands,
+    catalog: Res<LevelCatalog>,
+    settings: Res<GameSettings>,
+    font: Res<UiFont>,
+) {
+    let s = settings.language.strings();
     let root = commands
         .spawn((
             Node {
@@ -145,11 +163,8 @@ fn spawn_level_select(mut commands: Commands, catalog: Res<LevelCatalog>) {
         .id();
 
     commands.spawn((
-        Text::new("SELECT LEVEL"),
-        TextFont {
-            font_size: FontSize::Px(MENU_TITLE_FONT_PX),
-            ..default()
-        },
+        Text::new(s.select_level),
+        font.text_font(MENU_TITLE_FONT_PX),
         TextColor(Color::WHITE),
         ChildOf(root),
     ));
@@ -159,33 +174,32 @@ fn spawn_level_select(mut commands: Commands, catalog: Res<LevelCatalog>) {
         .map(|data| data.level_name);
     if catalog.0.is_empty() {
         commands.spawn((
-            Text::new("NO LEVELS FOUND"),
-            TextFont {
-                font_size: FontSize::Px(MENU_FONT_PX),
-                ..default()
-            },
+            Text::new(s.no_levels),
+            font.text_font(MENU_FONT_PX),
             TextColor(Color::srgb(0.9, 0.55, 0.35)),
             ChildOf(root),
         ));
     }
     for level_id in &catalog.0 {
         let label = if saved.as_deref() == Some(level_id.as_str()) {
-            format!("{level_id}  (SAVED)")
+            format!("{level_id}  {}", s.saved)
         } else {
             level_id.clone()
         };
         menu_button(
             &mut commands,
+            &font,
             root,
             label,
             MenuAction::SelectLevel(level_id.clone()),
         );
     }
-    menu_button(&mut commands, root, "BACK", MenuAction::Back);
+    menu_button(&mut commands, &font, root, s.back, MenuAction::Back);
 }
 
 fn menu_button(
     commands: &mut Commands,
+    font: &UiFont,
     parent: Entity,
     label: impl Into<String>,
     action: MenuAction,
@@ -203,10 +217,7 @@ fn menu_button(
         ))
         .with_child((
             Text::new(label),
-            TextFont {
-                font_size: FontSize::Px(MENU_FONT_PX),
-                ..default()
-            },
+            font.text_font(MENU_FONT_PX),
             TextColor(Color::WHITE),
         ));
 }
@@ -224,25 +235,25 @@ fn handle_menu_buttons(
     for button in &buttons {
         match &button.0 {
             MenuAction::StartGame => {
-                notice.0.clear();
+                notice.0 = Notice::None;
                 next.set(GameState::LevelSelect);
             }
             MenuAction::LoadSave => match save::load_raw() {
                 None => {
                     warn!("读取存档：没有存档文件");
-                    notice.0 = "NO SAVE DATA".to_string();
+                    notice.0 = Notice::NoSave;
                 }
                 Some(data) if data.version != save::SAVE_VERSION => {
                     warn!("读取存档：版本 {} 不符", data.version);
-                    notice.0 = "SAVE VERSION MISMATCH".to_string();
+                    notice.0 = Notice::VersionMismatch;
                 }
                 Some(data) if !catalog.0.contains(&data.level_name) => {
                     warn!("读取存档：关卡 {} 不在 assets/levels", data.level_name);
-                    notice.0 = "SAVE LEVEL NOT FOUND".to_string();
+                    notice.0 = Notice::LevelNotFound;
                 }
                 Some(data) => {
                     info!("读取存档：关卡 {}", data.level_name);
-                    notice.0.clear();
+                    notice.0 = Notice::None;
                     commands.insert_resource(StartRequest {
                         level_id: data.level_name,
                         mode: LoadMode::Continue,
@@ -273,7 +284,7 @@ fn handle_level_buttons(
         match &button.0 {
             MenuAction::SelectLevel(level_id) => {
                 info!("开始游戏：关卡 {level_id}");
-                notice.0.clear();
+                notice.0 = Notice::None;
                 commands.insert_resource(StartRequest {
                     level_id: level_id.clone(),
                     mode: LoadMode::NewGame,
@@ -297,6 +308,7 @@ fn handle_settings_buttons(
             MenuAction::VolumeDown => settings.adjust_volume(-1),
             MenuAction::VolumeUp => settings.adjust_volume(1),
             MenuAction::ToggleFullscreen => settings.fullscreen = !settings.fullscreen,
+            MenuAction::ToggleLanguage => settings.toggle_language(),
             MenuAction::Back => next.set(return_state.0),
             _ => {}
         }
@@ -320,10 +332,15 @@ fn escape_back(
     }
 }
 
-fn update_menu_status(notice: Res<LoadNotice>, mut texts: Query<&mut Text, With<MenuStatusText>>) {
-    for mut text in &mut texts {
-        if text.0 != notice.0 {
-            text.0 = notice.0.clone();
+fn update_menu_status(
+    notice: Res<LoadNotice>,
+    settings: Res<GameSettings>,
+    mut texts: Query<&mut Text, With<MenuStatusText>>,
+) {
+    let text = notice.0.text(settings.language.strings()).to_string();
+    for mut node in &mut texts {
+        if node.0 != text {
+            node.0 = text.clone();
         }
     }
 }
@@ -332,6 +349,7 @@ fn update_menu_status(notice: Res<LoadNotice>, mut texts: Query<&mut Text, With<
 fn ensure_settings_ui(
     mut commands: Commands,
     settings: Res<GameSettings>,
+    font: Res<UiFont>,
     roots: Query<Entity, With<SettingsRoot>>,
 ) {
     if !roots.is_empty() && !settings.is_changed() {
@@ -341,6 +359,7 @@ fn ensure_settings_ui(
         commands.entity(entity).despawn();
     }
 
+    let s = settings.language.strings();
     let root = commands
         .spawn((
             Node {
@@ -362,11 +381,8 @@ fn ensure_settings_ui(
         .id();
 
     commands.spawn((
-        Text::new("SETTINGS"),
-        TextFont {
-            font_size: FontSize::Px(MENU_TITLE_FONT_PX),
-            ..default()
-        },
+        Text::new(s.settings),
+        font.text_font(MENU_TITLE_FONT_PX),
         TextColor(Color::WHITE),
         ChildOf(root),
     ));
@@ -383,34 +399,43 @@ fn ensure_settings_ui(
         ))
         .id();
     commands.spawn((
-        Text::new("VOLUME"),
-        TextFont {
-            font_size: FontSize::Px(MENU_FONT_PX),
-            ..default()
-        },
+        Text::new(s.volume),
+        font.text_font(MENU_FONT_PX),
         TextColor(Color::WHITE),
         ChildOf(volume_row),
     ));
-    menu_button(&mut commands, volume_row, "-", MenuAction::VolumeDown);
+    menu_button(
+        &mut commands,
+        &font,
+        volume_row,
+        "-",
+        MenuAction::VolumeDown,
+    );
     commands.spawn((
         Text::new(format!("{}%", settings.volume_percent())),
-        TextFont {
-            font_size: FontSize::Px(MENU_FONT_PX),
-            ..default()
-        },
+        font.text_font(MENU_FONT_PX),
         TextColor(Color::WHITE),
         ChildOf(volume_row),
     ));
-    menu_button(&mut commands, volume_row, "+", MenuAction::VolumeUp);
+    menu_button(&mut commands, &font, volume_row, "+", MenuAction::VolumeUp);
 
     menu_button(
         &mut commands,
+        &font,
         root,
         format!(
-            "FULLSCREEN  {}",
-            if settings.fullscreen { "ON" } else { "OFF" }
+            "{}  {}",
+            s.fullscreen,
+            if settings.fullscreen { s.on } else { s.off }
         ),
         MenuAction::ToggleFullscreen,
     );
-    menu_button(&mut commands, root, "BACK", MenuAction::Back);
+    menu_button(
+        &mut commands,
+        &font,
+        root,
+        format!("{}  {}", s.language, settings.language.self_name()),
+        MenuAction::ToggleLanguage,
+    );
+    menu_button(&mut commands, &font, root, s.back, MenuAction::Back);
 }

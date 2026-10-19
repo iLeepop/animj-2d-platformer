@@ -14,6 +14,7 @@ use bevy::prelude::*;
 use bevy::window::{MonitorSelection, PrimaryWindow, WindowMode};
 use serde::{Deserialize, Serialize};
 
+use crate::i18n::Language;
 use crate::save;
 
 /// 设置文件版本（`05` §5.13）。版本不符 ⇒ 忽略整份设置。
@@ -28,6 +29,9 @@ pub struct GameSettings {
     pub version: u32,
     pub volume: f32,
     pub fullscreen: bool,
+    /// 界面语言。旧 `settings.ron` 没有该字段时按默认中文加载（`05` §5.13）。
+    #[serde(default)]
+    pub language: Language,
 }
 
 impl Default for GameSettings {
@@ -36,6 +40,7 @@ impl Default for GameSettings {
             version: SETTINGS_VERSION,
             volume: 1.0,
             fullscreen: false,
+            language: Language::default(),
         }
     }
 }
@@ -57,6 +62,11 @@ impl GameSettings {
     /// 音量百分比（UI 显示用，整数）。
     pub fn volume_percent(&self) -> i32 {
         (self.volume * 100.0).round() as i32
+    }
+
+    /// 在中/英之间切换（设置界面的语言按钮）。
+    pub fn toggle_language(&mut self) {
+        self.language = self.language.toggle();
     }
 }
 
@@ -142,13 +152,15 @@ fn apply_settings(
     if window.mode != mode {
         window.mode = mode;
         info!(
-            "全屏：{}（音量 {}%）",
+            "全屏：{}（语言 {:?}，音量 {}%）",
             if settings.fullscreen { "开" } else { "关" },
+            settings.language,
             settings.volume_percent()
         );
     } else {
         info!(
-            "设置：音量 {}%，全屏 {}",
+            "设置：语言 {:?}，音量 {}%，全屏 {}",
+            settings.language,
             settings.volume_percent(),
             if settings.fullscreen { "开" } else { "关" }
         );
@@ -186,6 +198,27 @@ mod tests {
     }
 
     #[test]
+    fn default_language_is_chinese() {
+        assert_eq!(GameSettings::default().language, Language::Zh);
+    }
+
+    #[test]
+    fn language_toggle_is_reversible() {
+        let mut settings = GameSettings::default();
+        settings.toggle_language();
+        assert_eq!(settings.language, Language::En);
+        settings.toggle_language();
+        assert_eq!(settings.language, Language::Zh);
+    }
+
+    #[test]
+    fn old_settings_without_language_default_to_chinese() {
+        let restored: GameSettings =
+            ron::from_str("(version:1,volume:0.5,fullscreen:false)").expect("deserialize");
+        assert_eq!(restored.language, Language::Zh);
+    }
+
+    #[test]
     fn loaded_values_are_normalized() {
         let mut settings = GameSettings {
             volume: 0.876,
@@ -201,6 +234,7 @@ mod tests {
             version: SETTINGS_VERSION,
             volume: 0.4,
             fullscreen: true,
+            language: Language::En,
         };
         let text = ron::ser::to_string(&settings).expect("serialize");
         let restored: GameSettings = ron::from_str(&text).expect("deserialize");
