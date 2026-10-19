@@ -1,216 +1,170 @@
-//! 房间判定与相机落点。所有者文档：`docs/02-world-and-rooms.md` §2.2。
+//! 相机跟随。所有者文档：`docs/02-world-and-rooms.md` §2.2。
 //!
-//! 两个职责：
-//! 1. **当前房间**：由玩家 AABB 中心决定，带 `ROOM_SWITCH_HYSTERESIS` 滞回（防止边界来回抖动）。
-//! 2. **相机落点**：房间变化时从**当前实际位置**过渡到新房间中心（`CAMERA_PAN_SECS` + ease-out quad），
-//!    过渡期间玩家照常操作，不排队、不叠加。
+//! 内层视口小于一个房间。相机中心 = 玩家 AABB 中心，并钳制在关卡 AABB 内，
+//! 因此视野永远不会越过地图边界。房间判定与相机解耦（见 `room::track_current_room`）。
 
 use bevy::prelude::*;
+use level_format::ROOM_PX;
 
-use crate::config::room::{CAMERA_PAN_SECS, ease_out_quad};
-use crate::coords::room_center;
+use crate::config::render::{VIEWPORT_H, VIEWPORT_W};
+use crate::player::PlayerMotion;
 use crate::render::pixel_camera::InGameCamera;
-use crate::room::RoomCoord;
 use crate::state::GameSet;
-use crate::world::CurrentRoom;
 use crate::world::load::LoadedLevel;
-
-/// 相机落点状态机（纯数据 + 纯方法，可脱离 Bevy 单测）。
-#[derive(Resource, Debug, Clone, PartialEq)]
-pub struct CameraRigState {
-    pub from: Vec2,
-    pub to: Vec2,
-    pub elapsed: f32,
-    pub panning: bool,
-    pub target_room: Option<RoomCoord>,
-}
-
-impl CameraRigState {
-    /// 初始状态：尚未锁定任何房间（首次落点**不做过渡**，直接吸附）。
-    pub fn uninitialized() -> Self {
-        Self {
-            from: Vec2::ZERO,
-            to: Vec2::ZERO,
-            elapsed: 0.0,
-            panning: false,
-            target_room: None,
-        }
-    }
-
-    /// 直接吸附到落点（关卡加载后的第一次定位，或需要硬切的场合）。
-    pub fn snap_to(&mut self, pos: Vec2, room: RoomCoord) {
-        self.from = pos;
-        self.to = pos;
-        self.elapsed = 0.0;
-        self.panning = false;
-        self.target_room = Some(room);
-    }
-
-    /// 开一次过渡：**从当前实际位置**出发（`02` §2.2：不排队、不叠加）。
-    pub fn retarget(&mut self, current_pos: Vec2, to: Vec2, room: RoomCoord) {
-        self.from = current_pos;
-        self.to = to;
-        self.elapsed = 0.0;
-        self.panning = current_pos.distance_squared(to) > 0.0;
-        self.target_room = Some(room);
-    }
-
-    pub fn is_idle(&self) -> bool {
-        !self.panning
-    }
-
-    /// 推进过渡并返回本帧的相机位置。
-    ///
-    /// 空闲时必须返回**落点**而不是调用前的位置：`snap_to`/`retarget` 之后紧接的第一帧
-    /// 必须立刻生效（否则首次吸附会被"记住旧位置"吞掉，见回归测试）。
-    pub fn advance(&mut self, dt: f32) -> Vec2 {
-        if !self.panning {
-            return self.to;
-        }
-        self.elapsed = (self.elapsed + dt).min(CAMERA_PAN_SECS);
-        let t = self.elapsed / CAMERA_PAN_SECS;
-        let pos = self.from.lerp(self.to, ease_out_quad(t));
-        if self.elapsed >= CAMERA_PAN_SECS {
-            self.panning = false;
-            return self.to;
-        }
-        pos
-    }
-}
-
-impl Default for CameraRigState {
-    fn default() -> Self {
-        Self::uninitialized()
-    }
-}
 
 pub struct CameraRigPlugin;
 
 impl Plugin for CameraRigPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<CameraRigState>()
-            .add_systems(
-                Update,
-                drive_camera
-                    .in_set(GameSet::Camera)
-                    .run_if(resource_exists::<LoadedLevel>),
-            );
+        app.add_systems(
+            Update,
+            drive_camera
+                .in_set(GameSet::Camera)
+                .run_if(resource_exists::<LoadedLevel>),
+        );
     }
 }
 
-/// 房间变化时把相机过渡到新房间中心；过渡期间玩家照常操作（`02` §2.2）。
+/// 相机目标：玩家 AABB 中心，钳制到「视野完全落在地图内」的合法区间。
+///
+/// 关卡尺寸 = `grid × ROOM_PX`；内层视野 = `VIEWPORT_W × VIEWPORT_H`（小于一个房间，`07` §7.1.1）。
+/// 单轴合法区间是 `[view/2, extent - view/2]`；当地图比视野还小时，相机钉在地图中心。
+pub fn follow_target(player_center: Vec2, grid_cols: u32, grid_rows: u32) -> Vec2 {
+    Vec2::new(
+        clamp_axis(
+            player_center.x,
+            grid_cols as f32 * ROOM_PX as f32,
+            VIEWPORT_W as f32,
+        ),
+        clamp_axis(
+            player_center.y,
+            grid_rows as f32 * ROOM_PX as f32,
+            VIEWPORT_H as f32,
+        ),
+    )
+}
+
+fn clamp_axis(value: f32, extent: f32, view: f32) -> f32 {
+    let half = view / 2.0;
+    if extent <= view {
+        extent / 2.0
+    } else {
+        value.clamp(half, extent - half)
+    }
+}
+
+/// 每帧把相机放到跟随目标上；取整由 `render::snap` 统一完成（`07` §7.6）。
 fn drive_camera(
-    time: Res<Time>,
     loaded: Res<LoadedLevel>,
-    current: Res<CurrentRoom>,
-    mut rig: ResMut<CameraRigState>,
+    players: Query<&PlayerMotion>,
     camera: Option<Single<&mut Transform, With<InGameCamera>>>,
 ) {
     let Some(mut camera) = camera else {
         return;
     };
-    let target_room = (current.col, current.row);
-    let pos = Vec2::new(camera.translation.x, camera.translation.y);
-
-    if rig.target_room != Some(target_room) {
-        let to = room_center(target_room.0, target_room.1, loaded.level.grid.rows);
-        if rig.target_room.is_none() {
-            // 关卡加载后的第一次定位：直接吸附，避免"从地图角落飞进来"
-            rig.snap_to(to, target_room);
-            info!("相机锁定房间 ({}, {}) 的中心", target_room.0, target_room.1);
-        } else {
-            rig.retarget(pos, to, target_room);
-            info!(
-                "相机过渡：房间 ({}, {}) → ({:.0}, {:.0})，用时 {:.2}s",
-                target_room.0, target_room.1, to.x, to.y, CAMERA_PAN_SECS
-            );
-        }
-    }
-
-    let next = rig.advance(time.delta_secs());
-    camera.translation.x = next.x;
-    camera.translation.y = next.y;
+    let Some(motion) = players.iter().next() else {
+        return;
+    };
+    let target = follow_target(
+        motion.0.aabb.center(),
+        loaded.level.grid.cols,
+        loaded.level.grid.rows,
+    );
+    camera.translation.x = target.x;
+    camera.translation.y = target.y;
 }
 
 #[cfg(test)]
 mod tests {
     use bevy::math::Vec2;
+    use level_format::ROOM_PX;
 
     use super::*;
-    use crate::config::room::{CAMERA_PAN_SECS, ease_out_quad};
 
     const GRID: (u32, u32) = (10, 3);
 
-    /// ease-out quad 的端点与单调性。
+    /// 地图内部：相机中心精确等于玩家中心。
     #[test]
-    fn easing_shape() {
-        assert_eq!(ease_out_quad(0.0), 0.0);
-        assert_eq!(ease_out_quad(1.0), 1.0);
-        assert!(ease_out_quad(0.5) > 0.5, "ease-out 应该先快后慢");
-        let mut previous = -1.0;
-        for i in 0..=20 {
-            let v = ease_out_quad(i as f32 / 20.0);
-            assert!(v >= previous - 1e-6);
-            previous = v;
+    fn follows_player_inside_map() {
+        let player = Vec2::new(1500.0, 700.0);
+        assert_eq!(follow_target(player, GRID.0, GRID.1), player);
+    }
+
+    /// 四条边：相机中心被钳制在半视野处，视野恰好贴住地图边界。
+    #[test]
+    fn clamps_at_all_four_edges() {
+        let half = VIEWPORT_W as f32 / 2.0;
+        let clamp_x_lo = Vec2::new(0.0, 700.0);
+        let clamp_x_hi = Vec2::new(GRID.0 as f32 * ROOM_PX as f32, 700.0);
+        let clamp_y_lo = Vec2::new(1500.0, 0.0);
+        let clamp_y_hi = Vec2::new(1500.0, GRID.1 as f32 * ROOM_PX as f32);
+
+        assert_eq!(
+            follow_target(clamp_x_lo, GRID.0, GRID.1),
+            Vec2::new(half, 700.0)
+        );
+        assert_eq!(
+            follow_target(clamp_x_hi, GRID.0, GRID.1),
+            Vec2::new(GRID.0 as f32 * ROOM_PX as f32 - half, 700.0)
+        );
+        assert_eq!(
+            follow_target(clamp_y_lo, GRID.0, GRID.1),
+            Vec2::new(1500.0, half)
+        );
+        assert_eq!(
+            follow_target(clamp_y_hi, GRID.0, GRID.1),
+            Vec2::new(1500.0, GRID.1 as f32 * ROOM_PX as f32 - half)
+        );
+    }
+
+    /// 视野（边长 `VIEWPORT_W`）在任何玩家位置下都完整落在地图内。
+    #[test]
+    fn view_never_leaves_map() {
+        let half = VIEWPORT_W as f32 / 2.0;
+        let width = GRID.0 as f32 * ROOM_PX as f32;
+        let height = GRID.1 as f32 * ROOM_PX as f32;
+        for x in [
+            -100.0,
+            0.0,
+            1.0,
+            159.0,
+            160.0,
+            1000.0,
+            width - 1.0,
+            width,
+            width + 100.0,
+        ] {
+            for y in [
+                -100.0,
+                0.0,
+                1.0,
+                159.0,
+                160.0,
+                700.0,
+                height - 1.0,
+                height,
+                height + 100.0,
+            ] {
+                let camera = follow_target(Vec2::new(x, y), GRID.0, GRID.1);
+                assert!(camera.x - half >= 0.0 && camera.x + half <= width, "x={x}");
+                assert!(camera.y - half >= 0.0 && camera.y + half <= height, "y={y}");
+            }
         }
     }
 
-    /// 过渡：从当前实际位置出发、单调接近目标、按时结束在目标上。
+    /// 单房间地图（房间大于视野）：相机可在房间内跟随，但不会让视野越界。
     #[test]
-    fn pan_reaches_target_and_is_retargetable() {
-        let mut rig = CameraRigState::uninitialized();
-        let start = Vec2::new(100.0, 50.0);
-        let target = Vec2::new(356.0, 50.0);
-        rig.retarget(start, target, (1, 0));
-        assert!(rig.panning);
-
-        let mut pos = start;
-        let steps = (CAMERA_PAN_SECS / (1.0 / 60.0)).ceil() as u32;
-        let mut previous_distance = f32::MAX;
-        for _ in 0..steps {
-            let next = rig.advance(1.0 / 60.0);
-            let distance = next.distance(target);
-            assert!(distance <= previous_distance + 1e-3, "必须单调接近目标");
-            previous_distance = distance;
-            pos = next;
-        }
-        assert!(!rig.panning, "到时应结束过渡");
-        assert_eq!(pos, target, "结束位置必须是目标（精确）");
-
-        // 中途重定向：从当前实际位置出发，用时重新计满
-        rig.retarget(start, target, (1, 0));
-        for _ in 0..5 {
-            pos = rig.advance(1.0 / 60.0);
-        }
-        let redirected = Vec2::new(0.0, 400.0);
-        rig.retarget(pos, redirected, (0, 1));
-        assert_eq!(rig.from, pos, "重定向必须从当前实际位置出发");
-        assert_eq!(rig.elapsed, 0.0);
-        let end = rig.advance(CAMERA_PAN_SECS);
-        assert_eq!(end, redirected);
-        assert!(!rig.panning);
-    }
-
-    /// 首次定位直接吸附，不产生"从原点飞过来"的过渡。
-    #[test]
-    fn first_lock_snaps_without_panning() {
-        let mut rig = CameraRigState::uninitialized();
-        let center = room_center(3, 1, GRID.1);
-        rig.snap_to(center, (3, 1));
-        assert!(rig.is_idle());
-        assert_eq!(rig.target_room, Some((3, 1)));
-        assert_eq!(rig.advance(1.0 / 60.0), center);
-    }
-
-    /// 回归：吸附后的**同一帧**就必须拿到落点，不能被调用前的旧位置吞掉。
-    /// （M2 实机验证暴露：相机停在初始 (0,0)，首帧吸附没写进相机。）
-    #[test]
-    fn snap_takes_effect_immediately() {
-        let mut rig = CameraRigState::uninitialized();
-        let center = room_center(0, 0, GRID.1);
-        rig.snap_to(center, (0, 0));
-        assert_eq!(rig.advance(1.0 / 60.0), center);
-        // 后续每帧也稳定停在落点
-        assert_eq!(rig.advance(1.0 / 60.0), center);
+    fn single_room_map_clamps_at_view_half() {
+        let half = VIEWPORT_W as f32 / 2.0;
+        let extent = ROOM_PX as f32;
+        assert_eq!(follow_target(Vec2::ZERO, 1, 1), Vec2::splat(half));
+        assert_eq!(
+            follow_target(Vec2::splat(extent / 2.0), 1, 1),
+            Vec2::splat(extent / 2.0)
+        );
+        assert_eq!(
+            follow_target(Vec2::splat(extent), 1, 1),
+            Vec2::splat(extent - half)
+        );
     }
 }

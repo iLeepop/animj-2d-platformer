@@ -552,7 +552,7 @@ animj-dev gen-placeholder-assets [--out assets] [--force]
 > ⚠️ **在自带 TTF 入库之前，所有 UI / `Text2d` 文本只能是 ASCII。**
 > Bevy 的 `default_font` 特性只内嵌 **ASCII** 字形（feature 表原文："Include a default font, containing only ASCII characters"），
 > 且**遇到第一个缺字形后会把该行后续文本一起丢掉**。实测（M0，bevy 0.20.0）：
-> `"animj · M0 骨架\n状态 …"` 在 512×512 画布上只渲染出 `animj` 五个字母，`·` 之后的全部丢失 ——
+> `"animj · M0 骨架\n状态 …"` 在内层画布上只渲染出 `animj` 五个字母，`·` 之后的全部丢失 ——
 > 这不是布局问题，是字体缺字形，看截图会误判成「文字节点没接线」。
 > 因此：新增非 ASCII 文本前，必须先把字体文件入库并在 `TextFont.font` 里指定它。
 

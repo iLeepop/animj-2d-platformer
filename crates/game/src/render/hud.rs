@@ -17,14 +17,15 @@ use crate::world::CurrentRoom;
 use crate::world::load::LoadedLevel;
 use crate::world::progress::LevelProgress;
 
-/// HUD 字号（逻辑像素，坐标系是 512 宽的视口）。
+/// HUD 字号（逻辑像素，坐标系是 `VIEWPORT_W` 宽的视口）。
 const HUD_FONT_PX: f32 = 12.0;
 /// HUD 距视口左/上边距（逻辑像素）。
 const HUD_MARGIN_PX: f32 = 8.0;
 /// 结算面板的固定几何（`07` §7.10 禁止用百分比定位）。
-const PANEL_W: f32 = 416.0;
+const PANEL_W: f32 = 296.0;
 const PANEL_H: f32 = 96.0;
-const PANEL_TOP: f32 = 200.0;
+const PANEL_LEFT: f32 = 12.0;
+const PANEL_TOP: f32 = 112.0;
 
 // ★ HUD 文本**只能是 ASCII**：Bevy 的 `default_font` 只含 ASCII 字形，遇到缺字形会把后续文本一起丢掉
 //   （实测：`"animj · M0 骨架…"` 只渲染出 `animj`）。仓库自带 TTF 入库前（`04` §9），UI/世界文本一律用 ASCII。
@@ -61,10 +62,7 @@ impl Plugin for HudPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<HudToast>()
             .add_systems(Startup, spawn_hud)
-            .add_systems(
-                Update,
-                (collect_toasts, tick_toast, update_hud).chain(),
-            )
+            .add_systems(Update, (collect_toasts, tick_toast, update_hud).chain())
             .add_systems(OnEnter(GameState::GameComplete), spawn_completion);
     }
 }
@@ -112,11 +110,7 @@ fn tick_toast(time: Res<Time>, mut toast: ResMut<HudToast>) {
 }
 
 /// 当前房间的目标进度描述（ASCII，例如 `EXIT  FRUIT 2/3`）。
-fn goals_summary(
-    goals: &[level_format::Goal],
-    collected: u32,
-    total: u32,
-) -> String {
+fn goals_summary(goals: &[level_format::Goal], collected: u32, total: u32) -> String {
     goals
         .iter()
         .map(|goal| match goal {
@@ -169,9 +163,10 @@ fn update_hud(
     {
         let index =
             level_format::room_index(current.col, current.row, loaded.level.grid.cols) as usize;
-        if let (Some(room_data), Some(room_progress)) =
-            (loaded.level.rooms.get(index), progress.room(current.col, current.row))
-        {
+        if let (Some(room_data), Some(room_progress)) = (
+            loaded.level.rooms.get(index),
+            progress.room(current.col, current.row),
+        ) {
             goals = goals_summary(
                 &room_data.goals,
                 room_progress.collected_fruit,
@@ -186,11 +181,7 @@ fn update_hud(
         .zip(current.as_ref())
         .and_then(|(p, c)| p.room(c.col, c.row))
     {
-        if room_progress.cleared {
-            "CLEARED"
-        } else {
-            ""
-        }
+        if room_progress.cleared { "CLEARED" } else { "" }
     } else {
         ""
     };
@@ -230,7 +221,7 @@ fn spawn_completion(
         .spawn((
             Node {
                 position_type: PositionType::Absolute,
-                left: px(48.0),
+                left: px(PANEL_LEFT),
                 top: px(PANEL_TOP),
                 width: px(PANEL_W),
                 height: px(PANEL_H),

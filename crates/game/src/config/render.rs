@@ -2,12 +2,17 @@
 
 use bevy::prelude::*;
 use bevy::render::render_resource::TextureFormat;
-use level_format::ROOM_PX;
+use level_format::TILE_PX;
 
-/// 内层离屏渲染目标宽（像素）= 一个房间。见 `07` §7.1.1（数值权威来源是 `00` §0.3）。
-pub const VIEWPORT_W: u32 = ROOM_PX as u32;
+/// 内层视野覆盖的瓦片数（10×10 = 320×320 像素）。见 `07` §7.1.1。
+///
+/// 必须小于 `ROOM_TILES`（一个房间 16×16 瓦片）：玩家的视野小于房间，看不到太多地图。
+pub const VIEWPORT_TILES: u32 = 10;
+
+/// 内层离屏渲染目标宽（像素）= 10 瓦片。见 `07` §7.1.1。
+pub const VIEWPORT_W: u32 = VIEWPORT_TILES * TILE_PX as u32;
 /// 内层离屏渲染目标高。同上。
-pub const VIEWPORT_H: u32 = ROOM_PX as u32;
+pub const VIEWPORT_H: u32 = VIEWPORT_TILES * TILE_PX as u32;
 
 /// 窗口初始宽（物理像素）= 2 倍视口 ⇒ 启动即 `k = 2`、四周无黑边。见 `07` §7.1.1。
 pub const WINDOW_W: u32 = 2 * VIEWPORT_W;

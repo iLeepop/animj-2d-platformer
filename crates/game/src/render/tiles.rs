@@ -7,7 +7,9 @@ use bevy::prelude::*;
 use bevy::sprite::Anchor;
 use level_format::{RENDERABLE_TILE_KINDS, ROOM_PX, ROOM_TILES, TILE_PX, TileKind, room_index};
 
-use crate::config::render::{TILESET_COLUMNS, TILESET_IMAGE, room_bg_color, z};
+use crate::config::render::{
+    TILESET_COLUMNS, TILESET_IMAGE, VIEWPORT_H, VIEWPORT_W, room_bg_color, z,
+};
 use crate::coords::room_center;
 use crate::render::pixel_camera::{InGameCamera, PIXEL_PERFECT_LAYERS};
 use crate::world::CurrentRoom;
@@ -29,7 +31,7 @@ pub struct Tileset {
 
 /// 房间粒度可见性裁剪开关。
 ///
-/// 默认开启（发布 bin `animj`：一屏 = 一个房间，非当前房间必然在视口外）。
+/// 默认开启（发布 bin `animj`：视野只覆盖一屏，远处房间必然在视口外）。
 /// **编辑器把它设为 `false`**：编辑时需要看到整张地图（`08` §8.1.4 的单相机自由平移视图）。
 #[derive(Resource, Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RoomCulling(pub bool);
@@ -157,14 +159,8 @@ fn watch_level_tileset(
 }
 
 /// `LoadedLevel` 首次出现 / 热重载 / 贴图外部改动时重建瓦片。
-fn tiles_need_rebuild(
-    loaded: Option<Res<LoadedLevel>>,
-    reload: Res<TilesetReloadRequest>,
-) -> bool {
-    reload.0
-        || loaded
-            .as_ref()
-            .is_some_and(|loaded| loaded.is_changed())
+fn tiles_need_rebuild(loaded: Option<Res<LoadedLevel>>, reload: Res<TilesetReloadRequest>) -> bool {
+    reload.0 || loaded.as_ref().is_some_and(|loaded| loaded.is_changed())
 }
 
 /// `LoadedLevel` 出现的同一帧生成瓦片实体。
@@ -319,11 +315,11 @@ fn spawn_level_tiles(
     );
 }
 
-/// 房间可见性：**与相机视野矩形相交**的房间可见（`02` §2.2 的过渡中会同时看到两个房间）。
+/// 房间可见性：**与相机视野矩形相交**的房间可见（玩家靠近边界时可同时看到相邻房间）。
 ///
-/// 视野 = 以相机为中心、边长 `ROOM_PX` 的正方形（内层 `ScalingMode::Fixed` 的契约，见 `07` §7.5）。
-/// 用「房间中心 ± 半边长」与视野做**严格重叠**判断：静止时视野恰好等于当前房间，
-/// 只会命中它自己（共边不算重叠），过渡时自然命中相邻房间。
+/// 视野 = 以相机为中心、`VIEWPORT_W × VIEWPORT_H` 的矩形（内层 `ScalingMode::Fixed` 的契约，见 `07` §7.5）。
+/// 用「房间中心 ± 半边长」与视野做**严格重叠**判断：相机在房间内部时只命中当前房间，
+/// 靠近边界时自然命中相邻房间。
 fn sync_room_visibility(
     culling: Res<RoomCulling>,
     loaded: Option<Res<LoadedLevel>>,
@@ -343,17 +339,24 @@ fn sync_room_visibility(
     let (Some(loaded), Some(camera)) = (loaded, camera) else {
         return;
     };
-    let half = ROOM_PX as f32 / 2.0;
-    let view_min = Vec2::new(camera.translation.x - half, camera.translation.y - half);
-    let view_max = Vec2::new(camera.translation.x + half, camera.translation.y + half);
+    let half_view = Vec2::new(VIEWPORT_W as f32 / 2.0, VIEWPORT_H as f32 / 2.0);
+    let half_room = ROOM_PX as f32 / 2.0;
+    let view_min = Vec2::new(
+        camera.translation.x - half_view.x,
+        camera.translation.y - half_view.y,
+    );
+    let view_max = Vec2::new(
+        camera.translation.x + half_view.x,
+        camera.translation.y + half_view.y,
+    );
     let rows = loaded.level.grid.rows;
 
     for (root, mut visibility) in &mut roots {
         let center = room_center(root.col, root.row, rows);
-        let visible = view_min.x < center.x + half
-            && center.x - half < view_max.x
-            && view_min.y < center.y + half
-            && center.y - half < view_max.y;
+        let visible = view_min.x < center.x + half_room
+            && center.x - half_room < view_max.x
+            && view_min.y < center.y + half_room
+            && center.y - half_room < view_max.y;
         let want = if visible {
             Visibility::Visible
         } else {

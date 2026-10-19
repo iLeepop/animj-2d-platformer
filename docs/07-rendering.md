@@ -3,7 +3,7 @@
 > **本文拥有**：所有渲染常量 —— 内层视口尺寸、窗口默认尺寸、相机 `order`、渲染层编号、采样/MSAA/色调映射的固定取值、
 > 像素吸附规则与调度、瓦片渲染策略、调试可视化、HUD/文字的选型与写法常量、`Z_CANVAS`。
 > **本文不拥有**：Z 层数值（见 `00` §0.4，本文只声明常量名，**不复制数值**）、`TILE_PX`/`ROOM_PX`/坐标转换（`00` §0.3）、
-> 物理与手感（`06`）、模块与调度装配（`05`）、房间拓扑与相机落点逻辑（`02`）、图集物理布局与资产规格（`04`）、
+> 物理与手感（`06`）、模块与调度装配（`05`）、房间拓扑与相机跟随逻辑（`02`）、图集物理布局与资产规格（`04`）、
 > 依赖版本与 cargo feature 开关（`09`）、Bevy API 速查与过期名称黑名单（`10`）。
 >
 > 标记约定见 `00` §0.9：**【已验证】** = 有 0.20 文档/官方 example 直接支撑并附 URL；**【UNVERIFIED】** = 无 0.20 证据；
@@ -19,18 +19,21 @@
 
 | 常量 | 值 | 说明 |
 |---|---|---|
-| `VIEWPORT_W` | `ROOM_PX` | 内层离屏渲染目标宽（像素）。**数值见 `00` §0.3**，本文不复制 |
-| `VIEWPORT_H` | `ROOM_PX` | 内层离屏渲染目标高。同上 |
+| `VIEWPORT_TILES` | `12` | 内层视野覆盖的瓦片数。必须小于 `ROOM_TILES`（一个房间 16×16 瓦片），玩家看不到整间房 |
+| `VIEWPORT_W` | `VIEWPORT_TILES × TILE_PX` | 内层离屏渲染目标宽（像素）。**数值见 `00` §0.3 的 `TILE_PX`**，本文不复制 |
+| `VIEWPORT_H` | `VIEWPORT_TILES × TILE_PX` | 内层离屏渲染目标高。同上 |
 | `WINDOW_W` | `2 × VIEWPORT_W` | 窗口初始宽（物理像素）⇒ 启动即 2 倍整数缩放、无黑边 |
 | `WINDOW_H` | `2 × VIEWPORT_H` | 窗口初始高。同上 |
 | `MIN_CANVAS_SCALE` | `1` | 整数放大倍数 `k` 的下限。`k = max(1, floor(min(w/VIEWPORT_W, h/VIEWPORT_H)))` |
 | `WINDOW_TITLE` | `"animj"` | 窗口标题 |
 
-> **关于 `512` 这个数字**：它只会在本文里作为 `VIEWPORT_W`/`VIEWPORT_H` 的**展示值**出现（用于读者对照与图形示意图）。
-> 它的唯一权威来源是 `00` §0.3 的 `ROOM_PX`；本文不定义它，`06`/`04` 等文档要引用时请引用 `00` §0.3。
+> **关于 `320` 这个数字**：它只会在本文里作为 `VIEWPORT_W`/`VIEWPORT_H` 的**展示值**出现（10 × 32 = 320，用于读者对照与图形示意图）。
+> 它的唯一权威来源是 `VIEWPORT_TILES` 与 `00` §0.3 的 `TILE_PX`；本文不另立数字。
 
-**窗口尺寸选定理由**：`2 ×` 是 1080p 显示器上仍能完整放下的最大整数倍（`3 ×` 会超过 1080p 的可用高度）。
+**窗口尺寸选定理由**：窗口仍取 `2 ×` 视口（640²），与上一版保持相同的屏幕像素倍率：角色在屏幕上的大小不变，只是世界视野收窄。
+若改为 `3 ×`（960²）会把角色与 HUD 一起放大，那是另一种缩放需求，不属于本次「相机视角」调整。
 像素风窗口的边长应为 `VIEWPORT` 的整数倍，这样启动时 `k` 恰好是整数、四周无黑边。
+视野选 `10×10` 瓦片（而不是整间房 `16×16`）是产品需求：相机贴近角色，玩家看不到太多地图；它同时满足「与整间房同源、仍是瓦片整数倍」。
 证据（API 面）：`WindowResolution::new(physical_width: u32, physical_height: u32)`、`Window::width() -> f32`、`Window::height() -> f32`、`Window::size() -> Vec2`
 【已验证】<https://docs.rs/bevy/0.20.0/bevy/window/struct.WindowResolution.html> ；<https://docs.rs/bevy/0.20.0/bevy/window/struct.Window.html>
 
@@ -93,15 +96,15 @@
 ### 7.2.1 结构
 
 ```
-                          世界（512×512 世界单位 = 一个房间）
+                          世界（关卡 = cols×rows 个房间；内层视野 320×320）
                                    │
    ┌───────────────────────────────┴───────────────────────────────┐
    │  内层相机  InGameCamera                                        │
    │  Camera { order: -1 }                                          │
-   │  Projection = Orthographic { ScalingMode::Fixed{512,512}, 1.0} │
-   │  RenderTarget::Image(canvas)      ← 离屏纹理 512×512, Bgra8Srgb │
+   │  Projection = Orthographic { ScalingMode::Fixed{320,320}, 1.0} │
+   │  RenderTarget::Image(canvas)      ← 离屏纹理 320×320, Bgra8Srgb │
    │  Msaa::Off · RenderLayers::layer(0)                            │
-   │  Transform.x/y = 房间中心（由 02 写入，整像素；z 默认）        │
+   │  Transform.x/y = 玩家中心（钳制在地图内；由 02 写入，整像素；z 默认）│
    └───────────────────────────────┬───────────────────────────────┘
                                    │  画进离屏纹理（1 世界单位 = 1 texel）
    ┌───────────────────────────────┴───────────────────────────────┐
@@ -120,10 +123,10 @@
                                 窗口
 ```
 
-- 同一时刻内层视图里只有**当前房间**的内容（视口尺寸 = 房间尺寸，见 `00` §0.1 **D5/D13** 与 `02`）。
+- 内层视野固定为 `VIEWPORT_W × VIEWPORT_H`（`VIEWPORT_TILES` × `VIEWPORT_TILES` 瓦片，**小于一个房间**，见 `00` §0.1 **D5/D13** 与 `02`）。相机跟随玩家，因此视野通常落在一个房间内，靠近边界时可同时覆盖 2–4 个相邻房间。
 - 外层视图里只有 canvas sprite ⇒ 黑边 = 外层相机的清屏色 = `ClearColor` 资源。因此把 `ClearColor` 设为纯黑，
   这样「视口外区域」与「房间外区域」都是同一种黑，不存在两种黑的接缝。
-- **参考分辨率固定**：本项目不做「多分辨率适配」。改 `VIEWPORT_W/H` 等于改契约，必须同步 `00` §0.3 与 `04`/`05`。
+- **参考分辨率固定**：本项目不做「多分辨率适配」。改 `VIEWPORT_TILES` / `VIEWPORT_W/H` 等于改契约，必须同步 `00` §0.1 与 `02`/`04`/`05`。
 
 ### 7.2.2 完整代码（可直接抄写）
 
@@ -172,7 +175,7 @@ impl Plugin for PixelCameraPlugin {
 }
 
 fn setup_pixel_camera(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
-    // ① 离屏渲染目标：恰好一个房间（VIEWPORT_W × VIEWPORT_H）
+    // ① 离屏渲染目标：一屏视野（VIEWPORT_W × VIEWPORT_H，小于一个房间）
     let canvas_image = images.add(Image::new_target_texture(
         VIEWPORT_W,
         VIEWPORT_H,
@@ -180,7 +183,7 @@ fn setup_pixel_camera(mut commands: Commands, mut images: ResMut<Assets<Image>>)
         None,
     ));
 
-    // ② 内层相机：世界（512×512 世界单位）→ 离屏纹理，1 世界单位 = 1 texel
+    // ② 内层相机：世界（VIEWPORT_W × VIEWPORT_H 世界单位）→ 离屏纹理，1 世界单位 = 1 texel
     commands.spawn((
         Camera2d,
         Camera {
@@ -201,7 +204,7 @@ fn setup_pixel_camera(mut commands: Commands, mut images: ResMut<Assets<Image>>)
         PIXEL_PERFECT_LAYERS,
         PixelSnap,
         // ★ 不写 Transform：相机用默认单位变换（Z 无意义，00 §0.4 要求保持 Camera2d 默认）。
-        //   相机落点（房间中心，整像素）由 02 的相机系统**只写 translation.x/y**，z 保持默认。
+        //   相机位置（跟随玩家、钳制在地图内，整像素）由 02 的相机系统**只写 translation.x/y**，z 保持默认。
     ));
 
     // ③ 把离屏纹理铺到「高分辨率世界」里（外层视图 = 只有这一个 sprite）
@@ -267,16 +270,16 @@ fn fit_canvas(
 
 **数学推导（为什么 `scale = 1 / k`）**
 `ScalingMode::WindowSize` + `scale = s` 时，视图覆盖的世界范围 = 窗口逻辑尺寸 × `s`（【已验证】`ScalingMode` 文档：“The effect of these scaling modes are combined with the `OrthographicProjection::scale` property… if the scaling mode is `Fixed { width: 100, height: 300 }` and the scale is `2.0`, the projection will be 200 world units wide and 600 world units tall.”）。
-要让 512 世界单位宽的画面占满 `k × 512` 物理像素，需要视图宽度 = `窗口宽 / k`，故 `s = 1 / k`。
+要让 `VIEWPORT_W` 世界单位宽的画面占满 `k × VIEWPORT_W` 物理像素，需要视图宽度 = `窗口宽 / k`，故 `s = 1 / k`。
 证据：<https://docs.rs/bevy/0.20.0/bevy/camera/enum.ScalingMode.html> ；官方 `fit_canvas` 同式（`projection.scale = 1. / h_scale.min(v_scale).floor()`）<https://docs.rs/bevy/0.20.0/src/pixel_grid_snap/pixel_grid_snap.rs.html>
 
 **行为边界（必须明确）**
 
 | 情况 | 行为 |
 |---|---|
-| 窗口 = 512×512 或更小 | `k = 1`，画面 1:1，**不做**缩小、不裁切（房间尺寸 = 视口，窗口内容即完整房间） |
-| 窗口 < 512 的某一轴 | `k = 1`，窗口裁掉超出的部分（保像素完美，不引入分数缩放） |
-| 非整数倍窗口（如 1000×800） | `k = floor(min(1000/512, 800/512)) = 1`（800/512 = 1.5625）⇒ 1 倍 + 左右大黑边。这是**故意**的取舍：任何分数缩放都会破坏像素格 |
+| 窗口 = `VIEWPORT` 或更小 | `k = 1`，画面 1:1，**不做**缩小、不裁切（窗口内容即完整视野） |
+| 窗口 < `VIEWPORT` 的某一轴 | `k = 1`，窗口裁掉超出的部分（保像素完美，不引入分数缩放） |
+| 非整数倍窗口（如 500×500） | `k = floor(min(500/320, 500/320)) = 1`（500/320 = 1.56）⇒ 1 倍 + 大黑边。这是**故意**的取舍：任何分数缩放都会破坏像素格 |
 | 窗口内容按 `k` 居中 | 由「canvas sprite 在原点 + 外层相机在原点 + 默认 `viewport_origin = (0.5, 0.5)`」保证，无需额外计算 |
 
 ### 7.2.3 四处易于踩错的 0.20 写法
@@ -380,7 +383,7 @@ App::new().add_plugins(
 
 | 设置 | 取值 | 理由 / 不这么设的后果 |
 |---|---|---|
-| `with_scale_factor_override(1.0)` | **必选** | OS 的 DPI 缩放（Windows 125%/150%）会引入 `logical ≠ physical`。`Window::width()` 文档明确返回**逻辑像素**，`k` 的计算会失配；更糟的是 512×512 的画面会被 OS 再做一次非整数缩放（模糊）。锁成 1.0 后「1 逻辑像素 = 1 物理像素」，`k` 才严格是整数倍【INFERENCE，基于 `width()` 的文档语义】 |
+| `with_scale_factor_override(1.0)` | **必选** | OS 的 DPI 缩放（Windows 125%/150%）会引入 `logical ≠ physical`。`Window::width()` 文档明确返回**逻辑像素**，`k` 的计算会失配；更糟的是 320×320 的画面会被 OS 再做一次非整数缩放（模糊）。锁成 1.0 后「1 逻辑像素 = 1 物理像素」，`k` 才严格是整数倍【INFERENCE，基于 `width()` 的文档语义】 |
 | `PresentMode::AutoVsync` | 默认值，保持 | 与 60 Hz 固定步长（`00` §0.1 **D11**）对齐，无撕裂。`AutoNoVsync`（`Immediate`→`Mailbox`→`Fifo`）会跑满 GPU、产生撕裂，只在测「真实帧时间上限」时临时一用 |
 | `Immediate` / `Mailbox` | **禁止** | 文档原文：两者在不支持的平台上会 **panic**（“will panic if not supported by the platform”） |
 | `mode` | `Windowed` | 开发期首选，便于看日志/切窗口。发布版若要 `BorderlessFullscreen(MonitorSelection::Current)`，必须复核 `k` 在目标分辨率的整数性 |
@@ -397,20 +400,20 @@ App::new().add_plugins(
 | 变体 | 语义 | 本项目用法 |
 |---|---|---|
 | `WindowSize` | 匹配视口（窗口 / 渲染目标）尺寸；`scale = 1` 时 1 世界单位 = 1 像素 | **外层相机**：`scale = 1/k` |
-| `Fixed { width: f32, height: f32 }` | 手动指定投影覆盖的世界范围，忽略视口尺寸（会按需拉伸） | **内层相机**：`Fixed { 512, 512 }` + `scale = 1.0` |
+| `Fixed { width: f32, height: f32 }` | 手动指定投影覆盖的世界范围，忽略视口尺寸（会按需拉伸） | **内层相机**：`Fixed { VIEWPORT_W, VIEWPORT_H }` + `scale = 1.0` |
 | `AutoMin { min_width, min_height }` | 保纵横比，不小于给定值 | 不用 |
 | `AutoMax { max_width, max_height }` | 保纵横比，不大于给定值 | 不用 |
 | `FixedVertical { viewport_height }` | 固定高度，宽度随纵横比调整 | 不用（见下） |
 | `FixedHorizontal { viewport_width }` | 固定宽度，高度随纵横比调整 | 不用（见下） |
 
-### 7.5.1 内层相机为什么用 `Fixed { 512, 512 }` 而不是 `FixedVertical`
+### 7.5.1 内层相机为什么用 `Fixed { VIEWPORT_W, VIEWPORT_H }` 而不是 `FixedVertical`
 
-- 内层的契约是「**恰好一个房间**进渲染目标」（`00` §0.1 **D5/D13**）。`Fixed { VIEWPORT_W, VIEWPORT_H }` 把这个契约**显式写在代码里**：
-  即使有人改了渲染目标的尺寸，投影覆盖的世界范围仍然是 512×512，不会突然多/少半个瓦片。
-- `FixedVertical { viewport_height: 512.0 }` 只在「渲染目标恰好是正方形」时才等价；目标一旦不是正方形，宽度会按纵横比变化 ⇒ 契约被破坏。
-  本项目渲染目标恒为方形（一个房间），所以两者当前等价，**但前者把前提写死了**，是可维护性更好的选择。
+- 内层的契约是「**视野恰好一屏**进渲染目标」（`00` §0.1 **D5/D13**）。`Fixed { VIEWPORT_W, VIEWPORT_H }` 把这个契约**显式写在代码里**：
+  即使有人改了渲染目标的尺寸，投影覆盖的世界范围仍然是 `VIEWPORT_W × VIEWPORT_H`，不会突然多/少半个瓦片。
+- `FixedVertical { viewport_height }` 只在「渲染目标恰好是正方形」时才等价；目标一旦不是正方形，宽度会按纵横比变化 ⇒ 契约被破坏。
+  本项目渲染目标恒为方形（一屏），所以两者当前等价，**但前者把前提写死了**，是可维护性更好的选择。
 - `scale = 1.0` ⇒ 1 世界单位 = 1 texel，与 `00` §0.3 的「1 世界单位 = 1 像素」契约一致。
-- 若要显式断言这条契约，可在 `Startup` 加一句：`assert_eq!(VIEWPORT_W, VIEWPORT_H)`（房间是方形）。
+- 若要显式断言这条契约，可在 `Startup` 加一句：`assert_eq!(VIEWPORT_W, VIEWPORT_H)`（视口是方形）。
 
 ### 7.5.2 内层与外层的关系（唯一耦合点）
 
@@ -418,13 +421,13 @@ App::new().add_plugins(
 |---|---|---|
 | `ScalingMode` | `Fixed { VIEWPORT_W, VIEWPORT_H }` | `WindowSize` |
 | `scale` | 恒 `1.0`（不动） | `1 / k`，由 `fit_canvas` 写 |
-| 决定的事 | **哪些世界坐标**进入那 512×512 个 texel | 那 512×512 个 texel **被放大到多少物理像素** |
+| 决定的事 | **哪些世界坐标**进入那 `VIEWPORT_W × VIEWPORT_H` 个 texel | 那 `VIEWPORT_W × VIEWPORT_H` 个 texel **被放大到多少物理像素** |
 | 不决定的事 | 窗口尺寸、黑边（完全不关心窗口） | 世界内容（它只看见一个 sprite） |
 
 - 两者**互不影响**：改窗口只改 `k`，不改内层；改内层投影只改「房间在纹理里的位置」，不改缩放。
 - **唯一耦合点**：内层渲染目标的像素尺寸必须等于外层那个 canvas sprite 的源纹理尺寸（同一个 `Image` 句柄，天然满足）。
   因此「`RenderTarget::Image` 的 `Image`」与「`Sprite` 的 `Image`」**必须**来自同一次 `images.add(...)`。
-- `Camera { viewport: Option<Viewport> }` **不使用**。变体做法（把外层相机限制成居中的 `k·512 × k·512` 物理矩形）在本项目没有收益：
+- `Camera { viewport: Option<Viewport> }` **不使用**。变体做法（把外层相机限制成居中的 `k·VIEWPORT × k·VIEWPORT` 物理矩形）在本项目没有收益：
   黑边已经是清屏色，再加 `Viewport` 只会多一处能与 `k` 失配的手算（`Viewport` 字段：`physical_position: UVec2`、`physical_size: UVec2`、`depth: Range<f32>`。【已验证】<https://docs.rs/bevy/0.20.0/bevy/camera/struct.Viewport.html>）
 
 ---
@@ -494,18 +497,18 @@ app.add_systems(
 - `PixelSnap` 由 `render` 模块的构造器（`pixel_sprite(..)`、`pixel_text2d(..)`、相机 spawn 助手）自动加上，避免漏标。
 - **`PixelSnap` 只挂在 root 实体上**。带父实体的瓦片（§7.8 的 `RoomRoot` 子实体）不挂：父级世界位置是整像素 + 子级局部偏移是整像素（相对**房间中心**：`tx*TILE_PX + TILE_PX/2 − ROOM_PX/2`, `ty*TILE_PX − ROOM_PX/2`）⇒ 子级世界位置天然是整数。
   这条与 `04` §6.1 的「装饰品 `offset` 必须是整数像素」是同一约束的两种表述。
-- 相机（内层）同样带标记：`02` 的相机落点（房间中心）本身就是整像素，吸附是幂等的兜底。
+- 相机（内层）同样带标记：`02` 的跟随目标由玩家 AABB 中心与整数关卡尺寸算出，吸附是幂等的兜底。
 
 ### 7.6.5 为什么固定 60 Hz 下**不做**渲染插值
 
 | # | 理由 |
 |---|---|
 | 1 | **收益被取整吃掉**：插值产生亚像素位置，吸附又把它取整回整数 ⇒ 绝大多数插值结果被丢弃（`06` §6.8.2 同一结论）。 |
-| 2 | **一屏 = 一个房间**（`00` §0.1 **D5**）：画面的绝大部分是静止瓦片，插值只对角色/敌人可见，收益面极小。 |
+| 2 | **视野小于一个房间**（`00` §0.1 **D5**）：画面的绝大部分是静止瓦片，插值只对角色/敌人可见，收益面极小。 |
 | 3 | **渲染帧率 ≠ 逻辑帧率时，重复帧才是正确表现**：显示器 144 Hz + 逻辑 60 Hz 时，未插值 = 相邻渲染帧重复同一整像素位置，像素格稳定；插值反而制造「同一逻辑位置在不同渲染帧落在不同 texel」的抖动。 |
 | 4 | **契约成本**：插值需要跨模块携带 `overstep_fraction` 之类的状态，与 `00` §0.3「逻辑真相永远是 `Aabb`，`Transform` 只是渲染投影」相冲突。`Time<Fixed>` 的 `overstep_fraction()`（`06` §6.8.2）只用于诊断。 |
 
-> 结论：`snap_px(aabb.center())` → 写 `Transform`，**不做**插值、不做缓动、不做相机平滑（相机在房间之间直接落点，见 `02`）。
+> 结论：`snap_px(aabb.center())` → 写 `Transform`，**不做**插值、不做缓动、不做相机平滑（相机每帧直接跟随玩家中心，见 `02` §2.2）。
 
 ---
 
@@ -667,10 +670,10 @@ RoomRoot { col, row }          // 父实体：Transform = 房间中心（世界�
 
 | 粒度 | 现役 | 理由 |
 |---|---|---|
-| 房间粒度（视野相交） | ✅ **做** | 把不可见的 `RoomRoot` 设为 `Visibility::Hidden` ⇒ 其全部 `Inherited` 子实体一并隐藏。判定：房间 AABB 与「相机中心 ± `ROOM_PX/2`」的视野做**严格重叠**（共边不算）。静止时视野恰好等于当前房间 ⇒ 只命中它自己；**过渡中**（`02` §2.2 的 0.25 s）自然命中两个相邻房间，不会露出黑块。 |
+| 房间粒度（视野相交） | ✅ **做** | 把不可见的 `RoomRoot` 设为 `Visibility::Hidden` ⇒ 其全部 `Inherited` 子实体一并隐藏。判定：房间 AABB 与「相机中心 ± `ROOM_PX/2`」的视野做**严格重叠**（共边不算）。玩家靠近房间边界时视野会同时覆盖相邻房间（最多四个），此时相关房间全部可见，不会露出黑块。 |
 | 逐瓦片 / 分块 | ❌ **不做** | 同房间内所有瓦片都在视口内（或部分在视口外时由 Bevy 的视锥剔除处理），逐瓦片裁剪**收益恒为 0**。 |
 
-- 早期结论（"只显示当前房间"）在 M1 时成立，因为相机尚未平滑过渡；M2 加入过渡后必须改为视野判定，否则平移过程会有一半画面是黑的。
+- 早期结论（"只显示当前房间"）在 M1 时成立，因为相机尚未移动；相机跟随玩家后必须改为视野判定，否则边界处会有一半画面是黑的。
 - 逻辑层**不做**房间激活/卸载（`02` §2.4 的决定），视觉层的裁剪与之完全解耦。
 - 写入必须**幂等**（只在值变化时改 `Visibility`），避免每帧触发 change detection。
 
@@ -836,7 +839,7 @@ pub fn add_debug_visualization(app: &mut App) {
 - `FpsOverlayPlugin { config: FpsOverlayConfig }`，实现 `Default`；运行期改配置走 `ResMut<FpsOverlayConfig>`。【已验证】<https://docs.rs/bevy/0.20.0/bevy/dev_tools/fps_overlay/struct.FpsOverlayPlugin.html>（`config` 字段；“this can be later be changed through `FpsOverlayConfig` resource”）
 - 覆盖层内部用 `GlobalZIndex(FPS_OVERLAY_ZINDEX)` 定位（`bevy_ui` 的 Z，不参与 sprite 排序）。【已验证】模块页常量 `FPS_OVERLAY_ZINDEX` <https://docs.rs/bevy/0.20.0/bevy/dev_tools/fps_overlay/index.html>
 - 官方提示：能用平台原生 overlay 时优先用（开销更低、数值更准），例如 Metal 下 `MTL_HUD_ENABLED=1`。【已验证】`FpsOverlayPlugin` 页面原文。
-- 因为 UI 由**内层相机**渲染（§7.10），FPS 覆盖层会落在 512×512 视口内、被放大 `k` 倍。这是**有意**的：调试覆盖层与画面共用同一像素格。
+- 因为 UI 由**内层相机**渲染（§7.10），FPS 覆盖层会落在 `VIEWPORT_W × VIEWPORT_H` 视口内、被放大 `k` 倍。这是**有意**的：调试覆盖层与画面共用同一像素格。
 
 ### 7.9.3 feature 依赖汇总
 
@@ -858,7 +861,7 @@ pub fn add_debug_visualization(app: &mut App) {
 
 | 用途 | 用什么 | 坐标空间 | 由哪个相机渲染 |
 |---|---|---|---|
-| **游戏 HUD**：房间目标进度、收集计数、暂停菜单、提示 | `Node` + `Text`（`bevy_ui`） | 屏幕空间，逻辑像素 = **`VIEWPORT` 坐标系**（512 宽） | **内层相机**（`IsDefaultUiCamera`） |
+| **游戏 HUD**：房间目标进度、收集计数、暂停菜单、提示 | `Node` + `Text`（`bevy_ui`） | 屏幕空间，逻辑像素 = **`VIEWPORT` 坐标系**（320 宽） | **内层相机**（`IsDefaultUiCamera`） |
 | **提示条**（通关 / 获得装饰品） | 同上，单行文本 + `HUD_TOAST_SECS` 计时 | 同上 | 同上 |
 | **结算面板**（`GameComplete`） | 固定 px 几何的 `Node` + 居中 `Text` | 同上 | 同上 |
 | **世界内文字**：告示牌、道具名、飘字 | `Text2d` | 世界像素（Z = `z::TEXT2D`，数值见 `00` §0.4） | 内层相机（走 `PIXEL_PERFECT_LAYERS`，与 sprite 一起被放大 `k` 倍） |
@@ -866,22 +869,22 @@ pub fn add_debug_visualization(app: &mut App) {
 
 **为什么 HUD 走内层相机（而不是外层）**
 
-- 内层渲染目标就是 512×512，HUD 随之被整数倍放大 `k` 倍 ⇒ HUD 与游戏画面**共用一个像素格**，字体边缘、边框粗细、间距全部落在整数 texel 上，这才是像素风。
-- 若走外层相机（原生窗口分辨率）：字体在非 512 网格上以亚像素边缘渲染，与画面格不对齐；且窗口尺寸一变，HUD 的相对大小还会抖。
+- 内层渲染目标就是 `VIEWPORT_W × VIEWPORT_H`，HUD 随之被整数倍放大 `k` 倍 ⇒ HUD 与游戏画面**共用一个像素格**，字体边缘、边框粗细、间距全部落在整数 texel 上，这才是像素风。
+- 若走外层相机（原生窗口分辨率）：字体在非 `VIEWPORT` 网格上以亚像素边缘渲染，与画面格不对齐；且窗口尺寸一变，HUD 的相对大小还会抖。
 - UI 节点不受 `RenderLayers` 影响（§7.1.2 的原文），所以内层相机（layer 0）依然会渲染 UI —— 不需要为 UI 单独开层。
 - 实现：内层相机实体上插 `IsDefaultUiCamera`；或给 UI 根节点插 `UiTargetCamera(in_game_camera_entity)`。
   【已验证】<https://docs.rs/bevy/0.20.0/bevy/camera/visibility/struct.RenderLayers.html>（example 注释：“The default camera. `IsDefaultUiCamera` makes this the default camera to render UI elements to. Alternatively, you can add the `UiTargetCamera` component to root UI nodes to define which camera they should render to.”）
-- UI 的逻辑尺寸 = `VIEWPORT`（512×512）。依据：内层相机的 `RenderTarget::Image(ImageRenderTarget { scale_factor })` 文档明确 `scale_factor` “should almost always be 1.0”，`Camera::logical_viewport_size()` 对 image target 返回目标尺寸/缩放因子。【已验证】`ImageRenderTarget` <https://docs.rs/bevy/0.20.0/bevy/camera/struct.ImageRenderTarget.html> ；`Camera::logical_viewport_size` <https://docs.rs/bevy/0.20.0/bevy/camera/struct.Camera.html> ；结论为【INFERENCE】
-- **所有 UI 尺寸/字号都按 512 宽的坐标系写**（例如 16 px 字号 = 视口高度的 1/32），且**一律用 `px(..)` 的整数值**。
+- UI 的逻辑尺寸 = `VIEWPORT`（`VIEWPORT_W × VIEWPORT_H`）。依据：内层相机的 `RenderTarget::Image(ImageRenderTarget { scale_factor })` 文档明确 `scale_factor` “should almost always be 1.0”，`Camera::logical_viewport_size()` 对 image target 返回目标尺寸/缩放因子。【已验证】`ImageRenderTarget` <https://docs.rs/bevy/0.20.0/bevy/camera/struct.ImageRenderTarget.html> ；`Camera::logical_viewport_size` <https://docs.rs/bevy/0.20.0/bevy/camera/struct.Camera.html> ；结论为【INFERENCE】
+- **所有 UI 尺寸/字号都按 `VIEWPORT_W` 宽的坐标系写**（例如 12 px 字号 ≈ 视口高度的 1/32），且**一律用 `px(..)` 的整数值**。
   **禁止**用「窗口/视口比例」单位（`vw()` / `vh()` / `percent()`）做 HUD 的定位与尺寸：它们会解析出小数像素（`percent()` 还相对父节点），
-  在 512 网格上产生非整数偏移，破坏像素格。唯一例外是「铺满视口」这类不关心像素对齐的容器（`width: percent(100)` 仍建议改用 `px(VIEWPORT_W)`）。
+  在 `VIEWPORT` 网格上产生非整数偏移，破坏像素格。唯一例外是「铺满视口」这类不关心像素对齐的容器（`width: percent(100)` 仍建议改用 `px(VIEWPORT_W)`）。
 
 ### 7.10.2 0.20 正确写法（可直接抄写）
 
 ```rust
 use bevy::prelude::*;
 
-/// 屏幕空间 HUD（由内层相机渲染 → 落在 512×512 视口里）
+/// 屏幕空间 HUD（由内层相机渲染 → 落在 `VIEWPORT_W × VIEWPORT_H` 视口里）
 fn spawn_hud(commands: &mut Commands, ui_font: &Handle<Font>) {
     commands.spawn((
         Text::new("目标: 到达出口"),
@@ -1004,7 +1007,7 @@ size   = v + 2 * p
 
 | # | 检查项 | 通过标准 |
 |---|---|---|
-| R1 | 像素完美缩放 | 把窗口从 1024×1024 拖到任意尺寸：画面始终是 `k × 512` 的整数倍、居中、四周黑边；拖动过程中不出现半像素模糊 |
+| R1 | 像素完美缩放 | 把窗口从 640×640 拖到任意尺寸：画面始终是 `k × VIEWPORT` 的整数倍、居中、四周黑边；拖动过程中不出现半像素模糊 |
 | R2 | 采样 | 放大到 `k ≥ 3`，瓦片/角色插画无过渡色、图集相邻单元无渗色 |
 | R3 | MSAA | 两个相机都插了 `Msaa::Off`；sprite 半透明边缘不出现多级灰阶（用 `alpha = 255` 的对比色边缘目测） |
 | R4 | 色调映射 | 两个相机都没有 `Hdr`；`Tonemapping` 未被显式改成 `None`；`09` 的 feature 里没有 `tonemapping_luts`；画面无粉色 |
@@ -1024,8 +1027,8 @@ size   = v + 2 * p
 | 本文依赖 | 内容 |
 |---|---|
 | `00` §0.3 / §0.4 | `TILE_PX` / `ROOM_TILES` / `ROOM_PX`、坐标转换函数、房间中心公式、**Z 层数值表** |
-| `00` §0.1 | **D5**（房间 = 512×512 = 一屏）、**D11**（60 Hz 固定步长）、**D13**（双层相机） |
-| `02` | 相机落点（房间中心）、当前房间判定、房间无缝衔接的语义 |
+| `00` §0.1 | **D5**（房间 = 16×16 瓦片；视野小于房间）、**D11**（60 Hz 固定步长）、**D13**（双层相机） |
+| `02` | 相机跟随与地图边界、当前房间判定、房间无缝衔接的语义 |
 | `03` §3.3 | legend → 瓦片语义、`Air` 不生成实体、`tileset.png` 索引语义 |
 | `03` §3.10 | `Level.background` 的字段形状、层数上限与 V20 校验 |
 | `04` §3.1 / §7.1 / §8 / §10 | 图集零 padding/零 margin、PNG 规格与 sRGB、字体资源、`tileset.png` 物理布局 |

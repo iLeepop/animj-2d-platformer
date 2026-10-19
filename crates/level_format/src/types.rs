@@ -172,7 +172,7 @@ pub struct RoomCoord {
     pub row: u32,
 }
 
-/// 一个房间 = 16×16 瓦片 = 一屏。见 `docs/03-level-format.md` §3.2
+/// 一个房间 = 16×16 瓦片。见 `docs/03-level-format.md` §3.2
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct Room {

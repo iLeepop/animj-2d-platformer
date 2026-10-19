@@ -107,7 +107,7 @@ flowchart LR
 | `PlayerSpawnPlugin` | 角色图集句柄（`04` §3.2） | 无 |
 | `DemoPlugin` | 验证用脚本输入 + 物理度量（仅 `--demo` 时由 bin 添加） | 无 |
 | `RoomPlugin` | 当前房间、条件求值、奖励 | `WorldPlugin` |
-| `CameraRigPlugin` | 当前房间判定（AABB 中心 + 8 px 滞回，`GameSet::Room`）+ 相机落点过渡（0.25 s ease-out quad，`GameSet::Camera`） | `WorldPlugin` |
+| `CameraRigPlugin` | 相机跟随玩家 AABB 中心并钳制在关卡 AABB 内（`GameSet::Camera`） | `WorldPlugin` |
 | `ParallaxPlugin` | `Level.background` → 平铺 sprite；`ParallaxCamera` 视图换算；`BackgroundOverride` 预览；`PostUpdate` 早于 `Propagate` | `TileRenderPlugin`（`load_image`）、`WorldPlugin` |
 | `PixelRenderPlugin` | 双层相机、窗口缩放、像素吸附 | 无 |
 | `TileRenderPlugin` | 瓦片 sprite 生成与可见性 | `WorldPlugin` |
@@ -132,7 +132,7 @@ pub enum GameSet { Input, Physics, PostPhysics, Room, Camera, Fx, Snap }
 | `FixedUpdate` | `GameSet::Physics`：`apply_player_physics → activate_checkpoint → check_hazards → respawn_on_death`（依次排序） | 固定 60 Hz。**所有位移与碰撞只在这里发生**；存档点先于死亡判定，因此同一固定步里按 E 设置的点会立即生效 |
 | `Update` | `GameSet::PostPhysics` | 把 `FixedUpdate` 结果同步到 `Transform`，触发一次性消息 |
 | `Update` | `GameSet::Room` | 当前房间判定、条件求值、通关与奖励 |
-| `Update` | `GameSet::Camera` | 相机落点插值 |
+| `Update` | `GameSet::Camera` | 相机跟随玩家（钳制在地图内） |
 | `Update` | `GameSet::Fx` | 动画、粒子、音效触发 |
 | `PostUpdate` | `GameSet::Snap`：`.before(TransformSystems::Propagate)`（`.after` 会延迟一帧，见 `07` §7.6.3） | 像素吸附（`07`） |
 
@@ -168,7 +168,7 @@ flowchart TB
   RT[RoomTiles] --> PH
   PH --> AB[PlayerAabb]
   AB --> ROOM[当前房间判定]
-  ROOM --> CAM[相机落点]
+  ROOM --> CAM[相机跟随]
   AB --> GOAL[条件求值]
   GOAL -->|满足| CLEARED[RoomCleared 消息]
   CLEARED --> REWARD[授予装饰品]

@@ -1,7 +1,8 @@
 //! 双层相机像素完美管线。所有者文档：`docs/07-rendering.md` §7.2。
 //!
-//! 结构：内层相机把「恰好一个房间」画进 512×512 离屏纹理（1 世界单位 = 1 texel），
-//! 外层相机把该纹理铺在原点并按**整数倍** `k` 放大到窗口，四周是清屏色（黑边）。
+//! 结构：内层相机把**一屏视野**（`VIEWPORT_W × VIEWPORT_H`，小于一个房间）画进同尺寸离屏纹理
+//! （1 世界单位 = 1 texel），视口随玩家在地图上移动；外层相机把该纹理铺在原点并按**整数倍** `k`
+//! 放大到窗口，四周是清屏色（黑边）。
 
 use bevy::camera::visibility::RenderLayers;
 use bevy::camera::{RenderTarget, ScalingMode};
@@ -20,7 +21,7 @@ pub const PIXEL_PERFECT_LAYERS: RenderLayers = RenderLayers::layer(0);
 /// 外层相机只渲染这一层（承载离屏纹理的那张 canvas sprite）。
 pub const HIGH_RES_LAYERS: RenderLayers = RenderLayers::layer(1);
 
-/// 渲染一个房间内容的内层相机。
+/// 渲染一屏内容的游戏内层相机（跟随玩家，见 `02` §2.2）。
 #[derive(Component)]
 pub struct InGameCamera;
 
@@ -44,10 +45,10 @@ pub struct PixelCameraPlugin;
 
 impl Plugin for PixelCameraPlugin {
     fn build(&self, app: &mut App) {
-        // 房间是方形的：这是「一屏 = 一个房间」契约（00 D5/D13）的显式断言。
+        // 视口必须是正方形：像素完美管线的整数缩放按单一边长推导（07 §7.1.1）。
         assert_eq!(
             VIEWPORT_W, VIEWPORT_H,
-            "视口必须是正方形（一个房间），见 docs/00-conventions.md §0.3"
+            "视口必须是正方形，见 docs/07-rendering.md §7.1.1"
         );
 
         app.init_resource::<CanvasScale>()
@@ -59,7 +60,7 @@ impl Plugin for PixelCameraPlugin {
 }
 
 fn setup_pixel_camera(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
-    // ① 离屏渲染目标：恰好一个房间
+    // ① 离屏渲染目标：一屏视野（小于一个房间）
     let mut canvas_image = Image::new_target_texture(VIEWPORT_W, VIEWPORT_H, CANVAS_FORMAT, None);
     // 允许 `Screenshot::image(canvas)` 把它拷回 CPU（M0 的像素完美验证依赖这条读回路径；
     // 用法与官方 example 为 `ImageCopier` 设置 `COPY_SRC` 的做法一致）。不改变显存布局，无运行期代价。
@@ -126,7 +127,7 @@ fn setup_pixel_camera(mut commands: Commands, mut images: ResMut<Assets<Image>>)
 /// 并写到外层相机的 `scale = 1 / k`。
 ///
 /// `ScalingMode::WindowSize` + `scale = s` 时视图覆盖的世界范围 = 窗口逻辑尺寸 × `s`；
-/// 要让 512 世界单位占满 `k × 512` 物理像素，就需要 `s = 1 / k`（`07` §7.2.2 推导）。
+/// 要让视口的世界范围（= `VIEWPORT_W` 世界单位）占满 `k × VIEWPORT_W` 物理像素，就需要 `s = 1 / k`（`07` §7.2.2 推导）。
 fn fit_canvas(
     mut resized: MessageReader<WindowResized>,
     window: Single<&Window, With<PrimaryWindow>>,

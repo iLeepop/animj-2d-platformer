@@ -32,7 +32,7 @@ pub enum GameSet {
     PostPhysics,
     /// `Update`：当前房间判定、条件求值、通关与奖励。
     Room,
-    /// `Update`：相机落点。
+    /// `Update`：相机跟随玩家。见 `02` §2.2。
     Camera,
     /// `Update`：动画、粒子、音效触发。
     Fx,

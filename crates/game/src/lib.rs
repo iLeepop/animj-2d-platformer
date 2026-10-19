@@ -58,7 +58,7 @@ pub fn default_plugins() -> PluginGroupBuilder {
 
 /// 注册全部玩法插件（**两个 bin 共用**）。
 ///
-/// 只包含「世界与玩法」：状态、关卡资产、关卡加载与生成、瓦片实体、相机落点、调试。
+/// 只包含「世界与玩法」：状态、关卡资产、关卡加载与生成、瓦片实体、相机跟随、调试。
 /// **不含** `DefaultPlugins` / 窗口 / 资产源 / 编辑器类型，也**不含** [`add_render_plugins`] 的像素管线
 /// —— 编辑器用单个 `EditorCamera` 直接渲染世界（`08` §8.1.4）。
 pub fn add_game_plugins(app: &mut App) {
@@ -85,7 +85,7 @@ pub fn add_game_plugins(app: &mut App) {
 
 /// 注册像素完美渲染管线（**仅发布 bin `animj`**）。
 ///
-/// 编辑器不注册它：离屏 512×512 + 整数倍放大 + 黑边的验收在 `animj` 上做（`08` §8.1.4）。
+/// 编辑器不注册它：离屏像素完美管线（整数倍放大 + 黑边）的验收在 `animj` 上做（`08` §8.1.4）。
 pub fn add_render_plugins(app: &mut App) {
     app.add_plugins((render::PixelRenderPlugin, render::hud::HudPlugin));
 }

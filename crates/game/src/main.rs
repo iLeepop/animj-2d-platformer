@@ -7,7 +7,7 @@
 //! ```
 //!
 //! - `--frames N`：跑满 N 帧后退出（否则窗口一直开着，CI 无法收尾）。
-//! - `--screenshot <prefix>`：请求两张截图 `<prefix>-canvas.png`（内层 512×512 画布）与 `<prefix>-window.png`。
+//! - `--screenshot <prefix>`：请求两张截图 `<prefix>-canvas.png`（内层画布）与 `<prefix>-window.png`。
 //! - `--self-check`：打印像素完美管线的不变量自检结果（`VERIFY:` 行）。
 
 use bevy::image::{ImageFilterMode, ImageSampler};
@@ -195,7 +195,6 @@ fn self_check(
     loaded: Option<Res<LoadedLevel>>,
     current: Option<Res<CurrentRoom>>,
     player_q: Query<(&game::player::PlayerMotion, Option<&Transform>)>,
-    rig: Option<Res<game::camera::rig::CameraRigState>>,
 ) {
     if *done || tick.0 < cli.check_frame() {
         return;
@@ -325,31 +324,28 @@ fn self_check(
         });
     check("player transform == aabb", projection_ok);
 
-    // ⑩ 相机空闲时精确落在当前房间中心（M2 的核心不变量）
-    let rig_idle = rig.as_ref().is_some_and(|rig| rig.is_idle());
-    let expected_center = match (loaded.as_ref(), current.as_ref()) {
-        (Some(loaded), Some(current)) => Some(game::coords::room_center(
-            current.col,
-            current.row,
-            loaded.level.grid.rows,
-        )),
-        _ => None,
-    };
-    let camera_at_center = rig_idle
-        && expected_center.is_some()
-        && cameras.iter().any(|(_, transform, _, is_inner, _)| {
+    // ⑩ 内层相机跟随玩家 AABB 中心，并被钳制在地图内（`02` §2.2）
+    let expected_camera = players.first().and_then(|(motion, _)| {
+        loaded.as_ref().map(|loaded| {
+            game::camera::rig::follow_target(
+                motion.0.aabb.center(),
+                loaded.level.grid.cols,
+                loaded.level.grid.rows,
+            )
+        })
+    });
+    let camera_follows = expected_camera.is_some_and(|expected| {
+        cameras.iter().any(|(_, transform, _, is_inner, _)| {
             is_inner
-                && transform
-                    .translation
-                    .truncate()
-                    .distance(expected_center.unwrap())
-                    <= 0.5
-        });
-    check("camera at room center", camera_at_center);
+                && transform.translation.x == game::render::snap::snap_px(expected.x)
+                && transform.translation.y == game::render::snap::snap_px(expected.y)
+        })
+    });
+    check("camera follows player", camera_follows);
 
     // ⑪ 角色碰撞盒尺寸不变形（R1–R5：反向/压扁的 AABB 会静默关闭全部碰撞）
     let box_ok = players.len() == 1
-        && (players[0].0 .0.aabb.size() - game::config::physics::PLAYER_SIZE).length() <= 1e-3;
+        && (players[0].0.0.aabb.size() - game::config::physics::PLAYER_SIZE).length() <= 1e-3;
     check("player collider size", box_ok);
 
     if failures.is_empty() {

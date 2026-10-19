@@ -9,7 +9,7 @@ Bevy **0.20** 像素风 2D 平台跳跃游戏的规范文档集。**本目录是
 | 位置 | 内容 |
 |---|---|
 | `crates/level_format/` | 关卡数据结构、legend、`read`/`write`、V1–V18 校验（**零 bevy 依赖**，36 个测试） |
-| `crates/game/` | 玩法 crate：**存档读档**、暂停菜单与装饰品装备、**角色帧动画**、双层像素相机、像素吸附、瓦片渲染 + 房间裁剪、关卡加载 + 校验 + 热重载、房间判定（8 px 滞回）、相机落点过渡（0.25 s）、**条件求值/拾取/通关/授奖/结算**、HUD（进度 + 提示条 + 结算面板）、调试叠层；bin `animj` |
+| `crates/game/` | 玩法 crate：**存档读档**、暂停菜单与装饰品装备、**角色帧动画**、双层像素相机、像素吸附、瓦片渲染 + 房间裁剪、关卡加载 + 校验 + 热重载、房间判定（8 px 滞回）、**相机跟随玩家（钳制在地图内）**、**条件求值/拾取/通关/授奖/结算**、HUD（进度 + 提示条 + 结算面板）、调试叠层；bin `animj` |
 | `crates/editor/` | lib `editor`（会话/撤销/相机/投影/Gizmos/工具/面板/试玩）+ bin `animj-editor`、bin `animj-dev`（`validate-levels` / `gen-placeholder-assets`） |
 | `assets/` | 占位资产（图集 + 30 件装饰品 + 7 个音效 WAV + `anim/player.anim.ron`，规格符合 `04`）+ `world_01.level.ron`（10×3 = 30 房间；两处竖井带单向台阶可上行，保存即热重载） |
 
@@ -60,7 +60,7 @@ flowchart LR
 | — | [`README.md`](README.md) | 本文件：索引与状态 |
 | `00` | [`00-conventions.md`](00-conventions.md) | **契约**：已锁定决策、坐标系统、命名、Z 层、常量归属、目录布局 |
 | `01` | [`01-game-design.md`](01-game-design.md) | 核心循环、房间目标条件、装饰品、通关、里程碑与非目标 |
-| `02` | [`02-world-and-rooms.md`](02-world-and-rooms.md) | 房间网格、无缝衔接、相机落点、房间状态、重生 |
+| `02` | [`02-world-and-rooms.md`](02-world-and-rooms.md) | 房间网格、无缝衔接、相机跟随与地图边界、房间状态、重生 |
 | `03` | [`03-level-format.md`](03-level-format.md) | `.level.ron` schema、legend、实体注册表、校验规则 V1–V18 |
 | `04` | [`04-assets.md`](04-assets.md) | 美术资源规格、图集、锚点、帧动画、装饰品图层、占位资产 |
 | `05` | [`05-architecture.md`](05-architecture.md) | crate 划分、模块树、插件、调度顺序、消息、测试策略 |

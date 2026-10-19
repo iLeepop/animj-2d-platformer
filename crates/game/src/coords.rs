@@ -42,7 +42,7 @@ pub fn world_to_room(world: Vec2, grid_cols: u32, grid_rows: u32) -> Option<Room
     Some(RoomPos { col, row, local })
 }
 
-/// 房间 `(col, row)` 的**中心**（世界像素，整像素）＝ 相机落点。见 `02` §2.2。
+/// 房间 `(col, row)` 的**几何中心**（世界像素，整像素）。见 `00` §0.3。
 pub fn room_center(col: u32, row: u32, grid_rows: u32) -> Vec2 {
     room_local_to_world(col, row, grid_rows, Vec2::splat(ROOM_PX as f32 / 2.0))
 }
