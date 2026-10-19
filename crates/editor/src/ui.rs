@@ -6,37 +6,37 @@
 use bevy::prelude::*;
 use bevy_egui::{EguiContexts, EguiPrimaryContextPass, egui};
 
-use crate::camera::{EditorCamera, room_size};
-use crate::anim_tool::{AnimEdit, SheetTexture, ensure_sheet_texture};
-use crate::tile_tool::{TileTexture, TileTool, ensure_tile_texture};
-use crate::session::{EditorSession, Tool};
-use crate::view::{EditorViewFlags, ERROR_COLOR, GRID_COLOR, HOVER_COLOR, ROOM_BORDER_COLOR};
-use crate::tools::PlaytestRequest;
 use crate::EditorMode;
+use crate::anim_tool::{AnimEdit, SheetTexture, ensure_sheet_texture};
+use crate::camera::{EditorCamera, room_size};
+use crate::session::{EditorSession, Tool};
+use crate::tile_tool::{TileTexture, TileTool, ensure_tile_texture};
+use crate::tools::PlaytestRequest;
+use crate::view::{ERROR_COLOR, EditorViewFlags, GRID_COLOR, HOVER_COLOR, ROOM_BORDER_COLOR};
 
 pub struct EditorUiPlugin;
 
 impl Plugin for EditorUiPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<BottomHeight>()
-        .add_systems(
-            EguiPrimaryContextPass,
-            install_cjk_font.in_set(crate::EditorUiSet::Panels),
-        )
-        .add_systems(
-            EguiPrimaryContextPass,
-            (
-                // 先上传纹理、画世界叠加层（背景层），再构造成面板
-                prepare_textures,
-                paint_overlay,
-                panels,
+            .add_systems(
+                EguiPrimaryContextPass,
+                install_cjk_font.in_set(crate::EditorUiSet::Panels),
             )
-                .chain()
-                .after(install_cjk_font)
-                .in_set(crate::EditorUiSet::Panels)
-                .run_if(in_state(EditorMode::Editing))
-                .run_if(resource_exists::<EditorSession>),
-        );
+            .add_systems(
+                EguiPrimaryContextPass,
+                (
+                    // 先上传纹理、画世界叠加层（背景层），再构造成面板
+                    prepare_textures,
+                    paint_overlay,
+                    panels,
+                )
+                    .chain()
+                    .after(install_cjk_font)
+                    .in_set(crate::EditorUiSet::Panels)
+                    .run_if(in_state(EditorMode::Editing))
+                    .run_if(resource_exists::<EditorSession>),
+            );
     }
 }
 
@@ -370,7 +370,13 @@ fn prepare_textures(
         None => tileset.as_ref().map(|tileset| tileset.image.clone()),
     };
     if let Some(image) = tile_image {
-        ensure_tile_texture(ctx, &images, &image, &mut tile_texture, &mut tile_texture_handle);
+        ensure_tile_texture(
+            ctx,
+            &images,
+            &image,
+            &mut tile_texture,
+            &mut tile_texture_handle,
+        );
         // 列数按贴图实际宽度校正（`tileset1.png` = 192 px ⇒ 6 列；默认 8 会让左栏/渲染全部错位）
         if let Some(loaded) = images.get(&image) {
             let columns = level_format::columns_from_sheet_width(loaded.width());
@@ -446,6 +452,9 @@ fn top_bar(
     });
 }
 
+/// 左栏瓦片选择器单项的最小宽度（用于按栏宽计算列数）。见 `08` §8.5.6。
+const TILE_PICKER_ITEM_W: f32 = 72.0;
+
 /// 左栏：工具选择 + 带缩略图的瓦片选择（`08` §8.5.6）。
 fn left_panel(ui: &mut egui::Ui, session: &mut EditorSession, tile_texture: &TileTexture) {
     egui::Panel::left("animj_editor_left").show(ui, |ui| {
@@ -467,69 +476,102 @@ fn left_panel(ui: &mut egui::Ui, session: &mut EditorSession, tile_texture: &Til
         let columns = session.doc.tileset_columns.max(1);
         let texture = tile_texture.0.as_ref();
         let sheet = texture.map(|texture| texture.size_vec2());
-        for chunk in palette.chunks(2) {
+        // 按左栏当前宽度**显式计算列数**（左栏可拖动展开）：列宽固定下限，剩余宽度平均分配。
+        let spacing = ui.spacing().item_spacing.x;
+        let available = ui.available_width();
+        let (picker_columns, item_w) =
+            crate::tile_tool::responsive_columns(available, spacing, TILE_PICKER_ITEM_W);
+        let total = palette.len() + 1; // 末尾的「擦除」也参与同一套列布局
+        for row_start in (0..total).step_by(picker_columns) {
             ui.horizontal(|ui| {
-                for entry in chunk {
-                    ui.vertical(|ui| {
-                        let response = match (texture, sheet) {
-                            (Some(texture), Some(sheet)) => {
-                                let cell = 32.0;
-                                let col = entry.cell % columns;
-                                let row = entry.cell / columns;
-                                let uv = egui::Rect::from_min_size(
-                                    egui::pos2(
-                                        (col as f32 * cell) / sheet.x,
-                                        (row as f32 * cell) / sheet.y,
-                                    ),
-                                    egui::vec2(cell / sheet.x, cell / sheet.y),
+                for index in row_start..(row_start + picker_columns).min(total) {
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(item_w, 0.0),
+                        egui::Layout::top_down(egui::Align::Min),
+                        |ui| {
+                            if index == palette.len() {
+                                // 擦除
+                                let response = ui.allocate_response(
+                                    egui::vec2(32.0, 32.0),
+                                    egui::Sense::click(),
                                 );
-                                ui.add(
-                                    egui::Image::new(egui::load::SizedTexture::new(
-                                        texture.id(),
-                                        sheet,
-                                    ))
-                                    .uv(uv)
-                                    .fit_to_exact_size(egui::vec2(32.0, 32.0))
-                                    .sense(egui::Sense::click()),
-                                )
+                                if session.brush_char == '.' {
+                                    ui.painter().rect_stroke(
+                                        response.rect,
+                                        0.0,
+                                        egui::Stroke::new(2.0, egui::Color32::YELLOW),
+                                        egui::StrokeKind::Inside,
+                                    );
+                                }
+                                if ui
+                                    .add_sized(
+                                        egui::vec2(item_w, 18.0),
+                                        egui::Button::new(".  擦除").truncate(),
+                                    )
+                                    .clicked()
+                                    || response.clicked()
+                                {
+                                    session.brush_char = '.';
+                                }
+                                return;
                             }
-                            _ => ui.allocate_response(
-                                egui::vec2(32.0, 32.0),
-                                egui::Sense::click(),
-                            ),
-                        };
-                        if session.brush_char == entry.char {
-                            ui.painter().rect_stroke(
-                                response.rect,
-                                0.0,
-                                egui::Stroke::new(2.0, egui::Color32::YELLOW),
-                                egui::StrokeKind::Inside,
-                            );
-                        }
-                        if ui.label(format!("{}  {}", entry.char, entry.name)).clicked()
-                            || response.clicked()
-                        {
-                            session.brush_char = entry.char;
-                        }
-                    });
+
+                            let entry = &palette[index];
+                            let response = match (texture, sheet) {
+                                (Some(texture), Some(sheet)) => {
+                                    let cell = 32.0;
+                                    let col = entry.cell % columns;
+                                    let row = entry.cell / columns;
+                                    let uv = egui::Rect::from_min_size(
+                                        egui::pos2(
+                                            (col as f32 * cell) / sheet.x,
+                                            (row as f32 * cell) / sheet.y,
+                                        ),
+                                        egui::vec2(cell / sheet.x, cell / sheet.y),
+                                    );
+                                    ui.add(
+                                        egui::Image::new(egui::load::SizedTexture::new(
+                                            texture.id(),
+                                            sheet,
+                                        ))
+                                        .uv(uv)
+                                        .fit_to_exact_size(egui::vec2(32.0, 32.0))
+                                        // 单格裁切必须占满 32×32，不能按整张图集宽高比压扁
+                                        .maintain_aspect_ratio(false)
+                                        .sense(egui::Sense::click()),
+                                    )
+                                }
+                                _ => ui.allocate_response(
+                                    egui::vec2(32.0, 32.0),
+                                    egui::Sense::click(),
+                                ),
+                            };
+                            let selected = session.brush_char == entry.char;
+                            if selected {
+                                ui.painter().rect_stroke(
+                                    response.rect,
+                                    0.0,
+                                    egui::Stroke::new(2.0, egui::Color32::YELLOW),
+                                    egui::StrokeKind::Inside,
+                                );
+                            }
+                            let label = format!("{}  {}", entry.char, entry.name);
+                            if ui
+                                .add_sized(
+                                    egui::vec2(item_w, 18.0),
+                                    egui::Button::new(label).selected(selected).truncate(),
+                                )
+                                .on_hover_text(format!("{}  {}", entry.char, entry.name))
+                                .clicked()
+                                || response.clicked()
+                            {
+                                session.brush_char = entry.char;
+                            }
+                        },
+                    );
                 }
             });
         }
-        // 擦除
-        ui.horizontal(|ui| {
-            let response = ui.allocate_response(egui::vec2(32.0, 32.0), egui::Sense::click());
-            if session.brush_char == '.' {
-                ui.painter().rect_stroke(
-                    response.rect,
-                    0.0,
-                    egui::Stroke::new(2.0, egui::Color32::YELLOW),
-                    egui::StrokeKind::Inside,
-                );
-            }
-            if ui.label(".  擦除").clicked() || response.clicked() {
-                session.brush_char = '.';
-            }
-        });
     });
 }
 
@@ -648,37 +690,40 @@ fn right_panel(ui: &mut egui::Ui, session: &mut EditorSession) {
             session.current_room.0,
             session.current_room.1
         ));
-        egui::ScrollArea::vertical().max_height(180.0).show(ui, |ui| {
-            if entities.is_empty() {
-                ui.label("（空；用工具 5 放置）");
-            }
-            let mut pending_delete: Option<usize> = None;
-            for (entity_index, spec) in entities.iter().enumerate() {
-                ui.horizontal(|ui| {
-                    let selected = session.selected_entity == Some(entity_index);
-                    let label = format!(
-                        "{entity_index} {} @({}, {})",
-                        spec.kind, spec.at.0, spec.at.1
-                    );
-                    if ui.selectable_label(selected, label).clicked() {
-                        session.selected_entity = Some(entity_index);
-                    }
-                    if ui.small_button("删除").clicked() {
-                        pending_delete = Some(entity_index);
-                    }
-                });
-            }
-            if let Some(entity_index) = pending_delete {
-                session.delete_entity(room_index, entity_index);
-            }
-        });
+        egui::ScrollArea::vertical()
+            .max_height(180.0)
+            .show(ui, |ui| {
+                if entities.is_empty() {
+                    ui.label("（空；用工具 5 放置）");
+                }
+                let mut pending_delete: Option<usize> = None;
+                for (entity_index, spec) in entities.iter().enumerate() {
+                    ui.horizontal(|ui| {
+                        let selected = session.selected_entity == Some(entity_index);
+                        let label = format!(
+                            "{entity_index} {} @({}, {})",
+                            spec.kind, spec.at.0, spec.at.1
+                        );
+                        if ui.selectable_label(selected, label).clicked() {
+                            session.selected_entity = Some(entity_index);
+                        }
+                        if ui.small_button("删除").clicked() {
+                            pending_delete = Some(entity_index);
+                        }
+                    });
+                }
+                if let Some(entity_index) = pending_delete {
+                    session.delete_entity(room_index, entity_index);
+                }
+            });
         if ui.button("去重：出生点 / 出口").clicked() {
             session.dedupe_singletons();
         }
     });
 }
 
-/// 底部栏：保存/试玩/撤销/重做 + 路径 + 地块/动画两个标签页 + 外部改动 + 错误列表。
+/// 底部栏：保存/试玩/撤销/重做 + 路径；标签页与外部改动提示同行；
+/// 下方横向分两区：左侧 = 当前工具（内部再横向分栏），右侧 = 校验问题列表。
 fn bottom_panel(
     ui: &mut egui::Ui,
     session: &mut EditorSession,
@@ -696,129 +741,159 @@ fn bottom_panel(
         .resizable(false)
         .exact_size(bottom_height.0)
         .show(ui, |ui| {
-        // 拖拽分隔条（向上拖 = 展开）
-        let (handle_rect, handle) =
-            ui.allocate_exact_size(egui::vec2(ui.available_width(), 6.0), egui::Sense::drag());
-        if handle.dragged() {
-            bottom_height.drag(handle.drag_delta().y, ui.ctx().viewport_rect().height());
-        }
-        let active = handle.hovered() || handle.dragged();
-        let color = if active {
-            egui::Color32::LIGHT_GRAY
-        } else {
-            egui::Color32::DARK_GRAY
-        };
-        ui.painter().line_segment(
-            [handle_rect.center_top(), handle_rect.center_bottom()],
-            egui::Stroke::new(1.0, color),
-        );
-        handle.on_hover_cursor(egui::CursorIcon::ResizeVertical);
-        ui.horizontal(|ui| {
-            if ui.button("保存 (Ctrl+S)").clicked() {
-                session.status = match session.save() {
-                    Ok(()) => "已保存".to_string(),
-                    Err(error) => format!("保存失败：{error}"),
-                };
+            // 拖拽分隔条（向上拖 = 展开）
+            let (handle_rect, handle) =
+                ui.allocate_exact_size(egui::vec2(ui.available_width(), 6.0), egui::Sense::drag());
+            if handle.dragged() {
+                bottom_height.drag(handle.drag_delta().y, ui.ctx().viewport_rect().height());
             }
-            if ui.button("试玩 (F5)").clicked() {
-                playtest.0 = true;
-            }
-            if ui.button("撤销").clicked() {
-                session.undo();
-            }
-            if ui.button("重做").clicked() {
-                session.redo();
-            }
-            ui.label("路径");
-            ui.add(
-                egui::TextEdit::singleline(&mut session.save_path_input)
-                    .desired_width(320.0),
+            let active = handle.hovered() || handle.dragged();
+            let color = if active {
+                egui::Color32::LIGHT_GRAY
+            } else {
+                egui::Color32::DARK_GRAY
+            };
+            ui.painter().line_segment(
+                [handle_rect.center_top(), handle_rect.center_bottom()],
+                egui::Stroke::new(1.0, color),
             );
-        });
+            handle.on_hover_cursor(egui::CursorIcon::ResizeVertical);
+            // 路径输入吃掉按钮之后剩余宽度，窗口较窄时也不会把整行挤出去
+            let path_width = (ui.available_width() - 360.0).max(120.0);
+            ui.horizontal(|ui| {
+                if ui.button("保存 (Ctrl+S)").clicked() {
+                    session.status = match session.save() {
+                        Ok(()) => "已保存".to_string(),
+                        Err(error) => format!("保存失败：{error}"),
+                    };
+                }
+                if ui.button("试玩 (F5)").clicked() {
+                    playtest.0 = true;
+                }
+                if ui.button("撤销").clicked() {
+                    session.undo();
+                }
+                if ui.button("重做").clicked() {
+                    session.redo();
+                }
+                ui.label("路径");
+                ui.add(
+                    egui::TextEdit::singleline(&mut session.save_path_input)
+                        .desired_width(path_width),
+                );
+            });
 
-        // 标签页（`08` §8.5.7）：地块调色板 / 角色动画
-        ui.horizontal(|ui| {
-            if ui
-                .selectable_label(*bottom_tab == BottomTab::Tiles, "地块")
-                .clicked()
-            {
-                *bottom_tab = BottomTab::Tiles;
-            }
-            if ui
-                .selectable_label(*bottom_tab == BottomTab::Animation, "动画")
-                .clicked()
-            {
-                *bottom_tab = BottomTab::Animation;
-            }
-            if ui
-                .selectable_label(*bottom_tab == BottomTab::Background, "背景")
-                .clicked()
-            {
-                *bottom_tab = BottomTab::Background;
-            }
-        });
-        let tab_height = (ui.available_height() - 130.0).max(100.0);
-        egui::ScrollArea::vertical().max_height(tab_height).show(ui, |ui| {
-            match *bottom_tab {
-                BottomTab::Tiles => {
-                    crate::tile_tool::tile_panel(
+            // 标签页（`08` §8.5.7）：地块调色板 / 角色动画 / 背景；外部改动提示与标签页同一行
+            ui.horizontal_wrapped(|ui| {
+                if ui
+                    .selectable_label(*bottom_tab == BottomTab::Tiles, "地块")
+                    .clicked()
+                {
+                    *bottom_tab = BottomTab::Tiles;
+                }
+                if ui
+                    .selectable_label(*bottom_tab == BottomTab::Animation, "动画")
+                    .clicked()
+                {
+                    *bottom_tab = BottomTab::Animation;
+                }
+                if ui
+                    .selectable_label(*bottom_tab == BottomTab::Background, "背景")
+                    .clicked()
+                {
+                    *bottom_tab = BottomTab::Background;
+                }
+                // 外部改动（`08` §8.7.4）：显式确认，绝不自动覆盖编辑缓冲
+                if session.pending_external.is_some() {
+                    ui.separator();
+                    ui.colored_label(egui::Color32::from_rgb(255, 200, 80), "检测到外部改动");
+                    if ui.button("应用").clicked() {
+                        session.accept_external();
+                    }
+                    if ui.button("忽略").clicked() {
+                        session.ignore_external();
+                    }
+                }
+            });
+
+            // 横向分区：左侧 = 当前工具（自适应），右侧 = 校验问题（固定宽）。
+            // 这样错误列表不再堆在工具内容下方，不再把底栏越撑越高。
+            let issues_width = (ui.available_width() * 0.30).clamp(200.0, 360.0);
+            egui::Panel::right("animj_editor_bottom_issues")
+                .resizable(false)
+                .exact_size(issues_width)
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.heading("校验问题");
+                        let errors = session.error_count();
+                        let warnings = session.warning_count();
+                        let color = if errors > 0 {
+                            egui::Color32::RED
+                        } else if warnings > 0 {
+                            egui::Color32::YELLOW
+                        } else {
+                            egui::Color32::GREEN
+                        };
+                        ui.colored_label(color, format!("{errors} / {warnings}"));
+                    });
+                    ui.separator();
+                    egui::ScrollArea::vertical()
+                        .auto_shrink([false, false])
+                        .id_salt("animj_editor_issue_list")
+                        .show(ui, |ui| {
+                            if session.file_issues.is_empty() {
+                                ui.label("无问题");
+                            }
+                            for issue in session.file_issues.clone() {
+                                let label = format!(
+                                    "{:?} {} — {}",
+                                    issue.severity, issue.path, issue.message
+                                );
+                                if ui.small_button(&label).on_hover_text(&label).clicked()
+                                    && let Some(room) =
+                                        room_of_path(&issue.path, session.doc.grid.cols)
+                                {
+                                    session.current_room = room;
+                                    if let Some(world) =
+                                        cell_of_issue(&issue.message, &issue.path, room, session)
+                                    {
+                                        session.focus_world(world);
+                                    } else {
+                                        session.focus_camera = true;
+                                    }
+                                }
+                            }
+                        });
+                });
+
+            // 左侧：当前标签页的工具内容（横向各栏由各面板自己拆分）。
+            egui::ScrollArea::vertical()
+                .auto_shrink([false, false])
+                .id_salt("animj_editor_bottom_tool")
+                .show(ui, |ui| match *bottom_tab {
+                    BottomTab::Tiles => crate::tile_tool::tile_panel(
                         ui,
                         session,
                         tile_tool,
                         tile_texture.0.as_ref(),
                         picker,
-                    )
-                }
-                BottomTab::Background => {
-                    background_panel(ui, session, picker);
-                }
-                BottomTab::Animation => match anim_edit {
-                    Some(anim_edit) => {
-                        crate::anim_tool::anim_panel(
+                    ),
+                    BottomTab::Background => {
+                        background_panel(ui, session, picker);
+                    }
+                    BottomTab::Animation => match anim_edit {
+                        Some(anim_edit) => crate::anim_tool::anim_panel(
                             ui,
                             anim_edit,
                             sheet_texture.0.as_ref(),
                             picker,
-                        )
-                    }
-                    None => {
-                        ui.label("动画数据尚未加载");
-                    }
-                },
-            }
-        });
-
-        // 外部改动（`08` §8.7.4）：显式确认，绝不自动覆盖编辑缓冲
-        if session.pending_external.is_some() {
-            ui.horizontal(|ui| {
-                ui.colored_label(egui::Color32::from_rgb(255, 200, 80), "检测到外部改动");
-                if ui.button("应用").clicked() {
-                    session.accept_external();
-                }
-                if ui.button("忽略").clicked() {
-                    session.ignore_external();
-                }
-            });
-        }
-
-        egui::ScrollArea::vertical().max_height(96.0).show(ui, |ui| {
-            for issue in session.file_issues.clone() {
-                let label = format!("{:?} {} — {}", issue.severity, issue.path, issue.message);
-                if ui.small_button(label).clicked() {
-                    if let Some(room) = room_of_path(&issue.path, session.doc.grid.cols) {
-                        session.current_room = room;
-                        if let Some(world) =
-                            cell_of_issue(&issue.message, &issue.path, room, session)
-                        {
-                            session.focus_world(world);
-                        } else {
-                            session.focus_camera = true;
+                        ),
+                        None => {
+                            ui.label("动画数据尚未加载");
                         }
-                    }
-                }
-            }
+                    },
+                });
         });
-    });
 }
 
 /// 背景视差编辑（`08` §8.5.7 C）：图层贴图 + 水平/垂直滚动百分比。
@@ -870,7 +945,11 @@ fn background_panel(
                 ui.label("水平");
                 let mut horizontal = layer.scroll_x as i32;
                 if ui
-                    .add(egui::DragValue::new(&mut horizontal).range(0..=100).suffix("%"))
+                    .add(
+                        egui::DragValue::new(&mut horizontal)
+                            .range(0..=100)
+                            .suffix("%"),
+                    )
                     .changed()
                 {
                     layer.scroll_x = horizontal.clamp(0, 100) as u8;
@@ -879,7 +958,11 @@ fn background_panel(
                 ui.label("垂直");
                 let mut vertical = layer.scroll_y as i32;
                 if ui
-                    .add(egui::DragValue::new(&mut vertical).range(0..=100).suffix("%"))
+                    .add(
+                        egui::DragValue::new(&mut vertical)
+                            .range(0..=100)
+                            .suffix("%"),
+                    )
                     .changed()
                 {
                     layer.scroll_y = vertical.clamp(0, 100) as u8;
@@ -986,7 +1069,9 @@ fn cell_of_issue(
         col * level_format::TILE_PX as f32 + level_format::TILE_PX as f32 / 2.0,
         file_row as f32 * level_format::TILE_PX as f32 + level_format::TILE_PX as f32 / 2.0,
     );
-    Some(game::coords::room_local_to_world(room.0, room.1, rows, local))
+    Some(game::coords::room_local_to_world(
+        room.0, room.1, rows, local,
+    ))
 }
 
 /// 从 `rooms[N]...` 解析出行主序房间（`08` §8.8.2 的点击定位）。
@@ -1000,7 +1085,6 @@ fn room_of_path(path: &str, cols: u32) -> Option<(u32, u32)> {
     Some((index % cols, index / cols))
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1009,11 +1093,23 @@ mod tests {
     fn bottom_height_drag_clamps() {
         let mut height = BottomHeight(300.0);
         height.drag(-100.0, 720.0);
-        assert!((height.0 - 400.0).abs() < 1e-3, "向上拖应变高：{}", height.0);
+        assert!(
+            (height.0 - 400.0).abs() < 1e-3,
+            "向上拖应变高：{}",
+            height.0
+        );
         height.drag(10_000.0, 720.0);
-        assert!((height.0 - BottomHeight::MIN).abs() < 1e-3, "不得低于最小值：{}", height.0);
+        assert!(
+            (height.0 - BottomHeight::MIN).abs() < 1e-3,
+            "不得低于最小值：{}",
+            height.0
+        );
         height.drag(-10_000.0, 720.0);
-        assert!((height.0 - 560.0).abs() < 1e-3, "不得超过 viewport-160：{}", height.0);
+        assert!(
+            (height.0 - 560.0).abs() < 1e-3,
+            "不得超过 viewport-160：{}",
+            height.0
+        );
     }
 
     #[test]

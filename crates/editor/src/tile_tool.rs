@@ -30,7 +30,10 @@ pub fn ensure_tile_texture(
     let Some(data) = image.data.as_ref() else {
         return;
     };
-    let pixels: Vec<[u8; 4]> = data.chunks_exact(4).map(|px| [px[0], px[1], px[2], px[3]]).collect();
+    let pixels: Vec<[u8; 4]> = data
+        .chunks_exact(4)
+        .map(|px| [px[0], px[1], px[2], px[3]])
+        .collect();
     if pixels.len() != width * height {
         return;
     }
@@ -86,6 +89,17 @@ pub struct AssetPickerState {
     pub open: Option<(&'static str, std::path::PathBuf)>,
 }
 
+/// 按可用宽度计算横向列数与等宽单元格宽度（左栏瓦片选择器 / 地块卡片共用）。
+///
+/// `columns = max(1, floor((available + spacing) / (min_item + spacing)))`；
+/// 返回的宽度把剩余空间平均分给每一列，保证行末不留半格。
+pub fn responsive_columns(available: f32, spacing: f32, min_item: f32) -> (usize, f32) {
+    let columns = (((available + spacing) / (min_item + spacing)).floor() as usize).max(1);
+    let item_w =
+        ((available - spacing * columns.saturating_sub(1) as f32) / columns as f32).max(1.0);
+    (columns, item_w)
+}
+
 /// 资源路径选择器：按钮 + 内嵌目录列表（只列目录与 `.png`）。
 ///
 /// 返回被点选的**相对 assets/** 路径。用内嵌列表而不是系统对话框：
@@ -100,7 +114,14 @@ pub fn asset_picker(
         state.open = if state.open.as_ref().is_some_and(|(open, _)| *open == id) {
             None
         } else {
-            Some((id, state.open.as_ref().map(|(_, dir)| dir.clone()).unwrap_or_default()))
+            Some((
+                id,
+                state
+                    .open
+                    .as_ref()
+                    .map(|(_, dir)| dir.clone())
+                    .unwrap_or_default(),
+            ))
         };
     }
     let Some((open_id, mut dir)) = state.open.clone() else {
@@ -121,34 +142,41 @@ pub fn asset_picker(
                 state.open = None;
             }
         });
-        egui::ScrollArea::vertical().max_height(160.0).show(ui, |ui| {
-            let mut entries: Vec<(String, bool)> = Vec::new();
-            if let Ok(read) = std::fs::read_dir(root.join(&dir)) {
-                for entry in read.flatten() {
-                    let path = entry.path();
-                    let name = entry.file_name().to_string_lossy().to_string();
-                    if path.is_dir() {
-                        entries.push((name, true));
-                    } else if path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("png")) {
-                        entries.push((name, false));
+        egui::ScrollArea::vertical()
+            .max_height(160.0)
+            .show(ui, |ui| {
+                let mut entries: Vec<(String, bool)> = Vec::new();
+                if let Ok(read) = std::fs::read_dir(root.join(&dir)) {
+                    for entry in read.flatten() {
+                        let path = entry.path();
+                        let name = entry.file_name().to_string_lossy().to_string();
+                        if path.is_dir() {
+                            entries.push((name, true));
+                        } else if path
+                            .extension()
+                            .is_some_and(|ext| ext.eq_ignore_ascii_case("png"))
+                        {
+                            entries.push((name, false));
+                        }
                     }
                 }
-            }
-            entries.sort();
-            for (name, is_dir) in entries {
-                let label = if is_dir { format!("[目录] {name}") } else { name.clone() };
-                if ui.selectable_label(false, label).clicked() {
-                    if is_dir {
-                        state.open = Some((id, dir.join(&name)));
+                entries.sort();
+                for (name, is_dir) in entries {
+                    let label = if is_dir {
+                        format!("[目录] {name}")
                     } else {
-                        picked = Some(
-                            dir.join(&name).to_string_lossy().replace('\\', "/"),
-                        );
-                        state.open = None;
+                        name.clone()
+                    };
+                    if ui.selectable_label(false, label).clicked() {
+                        if is_dir {
+                            state.open = Some((id, dir.join(&name)));
+                        } else {
+                            picked = Some(dir.join(&name).to_string_lossy().replace('\\', "/"));
+                            state.open = None;
+                        }
                     }
                 }
-            }
-        });
+            });
     });
     picked
 }
@@ -169,10 +197,7 @@ fn cell_uv(cell: u32, columns: u32, sheet: egui::Vec2) -> egui::Rect {
     let columns = columns.max(1);
     let (col, row) = (cell % columns, cell / columns);
     egui::Rect::from_min_size(
-        egui::pos2(
-            (col as f32 * px) / sheet.x,
-            (row as f32 * px) / sheet.y,
-        ),
+        egui::pos2((col as f32 * px) / sheet.x, (row as f32 * px) / sheet.y),
         egui::vec2(px / sheet.x, px / sheet.y),
     )
 }
@@ -185,231 +210,280 @@ pub fn tile_panel(
     texture: Option<&egui::TextureHandle>,
     picker: &mut AssetPickerState,
 ) {
-    ui.heading("地块调色板");
+    // 横向分区：左 = 图集设置 + 地块列表，右 = 选中地块编辑 + 新建地块。
+    ui.columns(2, |panels| {
+        // ---------------- 左栏：图集设置 + 现有地块 ----------------
+        let ui = &mut panels[0];
+        ui.heading("地块调色板");
 
-    // ---- 贴图 ----
-    let mut path = session.doc.tileset.clone().unwrap_or_default();
-    ui.horizontal(|ui| {
+        // ---- 贴图 ----
+        let mut path = session.doc.tileset.clone().unwrap_or_default();
         ui.label("贴图路径（相对 assets/，留空 = 内置图集）");
+        let width = ui.available_width();
         let response = ui.add(
             egui::TextEdit::singleline(&mut path)
-                .desired_width(280.0)
+                .desired_width(width)
                 .hint_text("sprites/tiles/tileset.png"),
         );
         if response.changed() {
             session.begin_edit();
             let trimmed = path.trim().to_string();
-            session.doc.tileset = if trimmed.is_empty() { None } else { Some(trimmed) };
+            session.doc.tileset = if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed)
+            };
         }
         // 失焦时把 `assets/xxx`、反斜杠等写法统一成相对 `assets/` 的形式
         if response.lost_focus() {
             let normalized = level_format::normalize_asset_path(&path);
             if session.doc.tileset != normalized {
                 session.begin_edit();
-                session.doc.tileset = normalized.clone();
+                session.doc.tileset = normalized;
             }
-            path = normalized.unwrap_or_default();
         }
-    });
-    if let Some(picked) = asset_picker(ui, picker, "tileset") {
-        session.begin_edit();
-        session.doc.tileset = Some(picked);
-    }
-    let mut columns = session.doc.tileset_columns.max(1);
-    ui.horizontal(|ui| {
-        ui.label("列数");
-        if ui.add(egui::DragValue::new(&mut columns).range(1..=64)).changed() {
+        if let Some(picked) = asset_picker(ui, picker, "tileset") {
             session.begin_edit();
-            session.doc.tileset_columns = columns;
+            session.doc.tileset = Some(picked);
         }
-    });
-    ui.separator();
-
-    // ---- 现有地块 ----
-    let palette = session.doc.palette();
-    let sheet = texture.map(|texture| texture.size_vec2());
-    for (index, entry) in palette.iter().enumerate() {
+        let mut columns = session.doc.tileset_columns.max(1);
         ui.horizontal(|ui| {
-            let selected = tool.selected == Some(index);
-            // 每行左侧的 32×32 单格缩略图：直接看清该地块用的是哪一格
-            if let (Some(texture), Some(sheet)) = (texture, sheet) {
-                ui.add(
-                    egui::Image::new(egui::load::SizedTexture::new(texture.id(), sheet))
-                        .uv(cell_uv(entry.cell, columns, sheet))
-                        .fit_to_exact_size(egui::vec2(32.0, 32.0)),
-                );
-            }
+            ui.label("列数");
             if ui
-                .selectable_label(
-                    selected,
-                    format!("{}  {}  [{}]", entry.char, entry.name, behavior_label(entry.behavior)),
-                )
-                .clicked()
+                .add(egui::DragValue::new(&mut columns).range(1..=64))
+                .changed()
             {
-                tool.selected = Some(index);
-            }
-            ui.label(format!("贴图格 {}", entry.cell));
-            if ui.small_button("删除").clicked() {
-                session.remove_palette_entry(index);
-                tool.selected = None;
+                session.begin_edit();
+                session.doc.tileset_columns = columns;
             }
         });
-    }
+        ui.separator();
 
-    // ---- 选中地块：改行为 / 改贴图格 ----
-    if let Some(index) = tool.selected {
-        let current = session.doc.palette().get(index).cloned();
-        if let Some(entry) = current {
+        // ---- 现有地块（按当前栏宽自适应列数）----
+        let palette = session.doc.palette();
+        let sheet = texture.map(|texture| texture.size_vec2());
+        let spacing = ui.spacing().item_spacing.x;
+        let min_card = 200.0;
+        let available = ui.available_width();
+        let (columns_n, card_w) = responsive_columns(available, spacing, min_card);
+        // 显式计算列数后按行切分：保证每行列数固定、卡片等宽（不再依赖自动换行的取整差异）。
+        for (row_index, chunk) in palette.chunks(columns_n).enumerate() {
             ui.horizontal(|ui| {
-                ui.label(format!("编辑 {}", entry.char));
-                let mut behavior = entry.behavior;
-                for candidate in BEHAVIORS {
-                    if ui
-                        .selectable_label(behavior == candidate, behavior_label(candidate))
-                        .clicked()
-                    {
-                        behavior = candidate;
-                    }
-                }
-                if behavior != entry.behavior {
-                    session.set_palette_behavior(index, behavior);
-                }
-            });
-            ui.horizontal(|ui| {
-                ui.label("贴图格");
-                let mut cell = entry.cell;
-                if ui.add(egui::DragValue::new(&mut cell).range(0..=255)).changed() {
-                    session.set_palette_cell(index, cell);
-                }
-            });
-            // 整张贴图 + 点击/拖动框选（吸附到 32×32 格，`08` §8.5.7 B）
-            ui.label("选择贴图格：点击或拖动框选（吸附到 32×32）");
-            let sheet = texture.map(|texture| texture.size_vec2());
-            if let (Some(texture), Some(sheet)) = (texture, sheet) {
-                let cell = 32.0;
-                let cols = (sheet.x / cell).round().max(1.0) as usize;
-                let rows = (sheet.y / cell).round().max(1.0) as usize;
-                if cols as u32 != columns {
-                    ui.colored_label(
-                        egui::Color32::YELLOW,
-                        format!("警告：贴图宽 {cols} 列，但文档列数为 {columns}"),
+                for (col_index, entry) in chunk.iter().enumerate() {
+                    let index = row_index * columns_n + col_index;
+                    let selected = tool.selected == Some(index);
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(card_w, 0.0),
+                        egui::Layout::top_down(egui::Align::Min),
+                        |ui| {
+                            ui.horizontal(|ui| {
+                                // 单格缩略图：直接看清该地块用的是哪一格
+                                if let (Some(texture), Some(sheet)) = (texture, sheet) {
+                                    ui.add(
+                                        egui::Image::new(egui::load::SizedTexture::new(
+                                            texture.id(),
+                                            sheet,
+                                        ))
+                                        .uv(cell_uv(entry.cell, columns, sheet))
+                                        .fit_to_exact_size(egui::vec2(32.0, 32.0))
+                                        // 单格裁切后必须占满 32×32；否则会按整张图集的宽高比压扁
+                                        .maintain_aspect_ratio(false),
+                                    );
+                                }
+                                ui.vertical(|ui| {
+                                    let label = format!("{}  {}", entry.char, entry.name);
+                                    if ui
+                                        .selectable_label(selected, label.clone())
+                                        .on_hover_text(&label)
+                                        .clicked()
+                                    {
+                                        tool.selected = Some(index);
+                                    }
+                                    ui.label(format!(
+                                        "{} · 格 {}",
+                                        behavior_label(entry.behavior),
+                                        entry.cell
+                                    ));
+                                });
+                            });
+                            if ui.small_button("删除").clicked() {
+                                session.remove_palette_entry(index);
+                                tool.selected = None;
+                            }
+                        },
                     );
                 }
-                let scale = (480.0 / sheet.x).clamp(1.0, 4.0);
-                let response = ui.add(
-                    egui::Image::new(egui::load::SizedTexture::new(texture.id(), sheet))
-                        .fit_to_exact_size(egui::vec2(sheet.x * scale, sheet.y * scale))
-                        .sense(egui::Sense::click_and_drag()),
-                );
-                // 指针 → 贴图像素 → 吸附到 32 px 格
-                let snap = |pos: egui::Pos2| -> (usize, usize, egui::Vec2) {
-                    let local = ((pos - response.rect.min) / scale).max(egui::Vec2::ZERO);
-                    let col = ((local.x / cell).floor() as isize).clamp(0, cols as isize - 1)
-                        as usize;
-                    let row = ((local.y / cell).floor() as isize).clamp(0, rows as isize - 1)
-                        as usize;
-                    (col, row, local)
-                };
-                if response.drag_started() {
-                    tool.pick_drag_start = response.interact_pointer_pos();
-                }
-                if let Some(pos) = response.interact_pointer_pos() {
-                    let (col, row, local) = snap(pos);
-                    if response.clicked() || response.dragged() {
-                        // 索引按**文档列数**（渲染/物理都用它），网格按贴图实际列数
-                        let index_cell = (row * columns as usize + col).min(255) as u32;
-                        if entry.cell != index_cell {
-                            session.set_palette_cell(index, index_cell);
-                        }
-                    }
-                    // 悬停格高亮 + 像素读数（框选时也显示当前格）
-                    if response.hovered() || response.dragged() {
-                        let rect = egui::Rect::from_min_size(
-                            response.rect.min + egui::vec2(col as f32, row as f32) * cell * scale,
-                            egui::vec2(cell, cell) * scale,
-                        );
-                        ui.painter().rect_stroke(
-                            rect,
-                            0.0,
-                            egui::Stroke::new(1.0, egui::Color32::WHITE),
-                            egui::StrokeKind::Inside,
-                        );
-                        ui.label(format!(
-                            "指针：像素 ({:.0}, {:.0}) → 格 (列 {col}, 行 {row})，已吸附 32 px",
-                            local.x, local.y
-                        ));
-                    }
-                }
-                // 框选矩形：从按下点到当前点，四边吸附到格线
-                if response.dragged()
-                    && let (Some(start), Some(pos)) =
-                        (tool.pick_drag_start, response.interact_pointer_pos())
+            });
+        }
+
+        // ---------------- 右栏：选中地块编辑 + 新建地块 ----------------
+        let ui = &mut panels[1];
+        ui.heading("选中地块");
+        let Some(index) = tool.selected else {
+            ui.label("在上方列表中选择一个地块，即可编辑行为与贴图格。");
+            ui.separator();
+            new_tile_form(ui, session, tool);
+            return;
+        };
+        let Some(entry) = session.doc.palette().get(index).cloned() else {
+            tool.selected = None;
+            ui.label("选中的地块已不存在。");
+            return;
+        };
+
+        ui.horizontal_wrapped(|ui| {
+            ui.label(format!("编辑 {}", entry.char));
+            let mut behavior = entry.behavior;
+            for candidate in BEHAVIORS {
+                if ui
+                    .selectable_label(behavior == candidate, behavior_label(candidate))
+                    .clicked()
                 {
-                    let (c0, r0, _) = snap(start);
-                    let (c1, r1, _) = snap(pos);
-                    let (cmin, cmax) = (c0.min(c1), c0.max(c1) + 1);
-                    let (rmin, rmax) = (r0.min(r1), r0.max(r1) + 1);
+                    behavior = candidate;
+                }
+            }
+            if behavior != entry.behavior {
+                session.set_palette_behavior(index, behavior);
+            }
+        });
+        ui.horizontal(|ui| {
+            ui.label("贴图格");
+            let mut cell = entry.cell;
+            if ui
+                .add(egui::DragValue::new(&mut cell).range(0..=255))
+                .changed()
+            {
+                session.set_palette_cell(index, cell);
+            }
+        });
+        // 整张贴图 + 点击/拖动框选（吸附到 32×32 格，`08` §8.5.7 B）
+        ui.label("选择贴图格：点击或拖动框选（吸附到 32×32）");
+        let sheet = texture.map(|texture| texture.size_vec2());
+        if let (Some(texture), Some(sheet)) = (texture, sheet) {
+            let cell = 32.0;
+            let cols = (sheet.x / cell).round().max(1.0) as usize;
+            let rows = (sheet.y / cell).round().max(1.0) as usize;
+            if cols as u32 != columns {
+                ui.colored_label(
+                    egui::Color32::YELLOW,
+                    format!("警告：贴图宽 {cols} 列，但文档列数为 {columns}"),
+                );
+            }
+            // 按当前列宽缩放整张图集，避免在横向分栏里溢出
+            let available = (ui.available_width() - 8.0).max(32.0);
+            let scale = (available / sheet.x).clamp(0.25, 4.0);
+            let response = ui.add(
+                egui::Image::new(egui::load::SizedTexture::new(texture.id(), sheet))
+                    .fit_to_exact_size(egui::vec2(sheet.x * scale, sheet.y * scale))
+                    .sense(egui::Sense::click_and_drag()),
+            );
+            // 指针 → 贴图像素 → 吸附到 32 px 格
+            let snap = |pos: egui::Pos2| -> (usize, usize, egui::Vec2) {
+                let local = ((pos - response.rect.min) / scale).max(egui::Vec2::ZERO);
+                let col = ((local.x / cell).floor() as isize).clamp(0, cols as isize - 1) as usize;
+                let row = ((local.y / cell).floor() as isize).clamp(0, rows as isize - 1) as usize;
+                (col, row, local)
+            };
+            if response.drag_started() {
+                tool.pick_drag_start = response.interact_pointer_pos();
+            }
+            if let Some(pos) = response.interact_pointer_pos() {
+                let (col, row, local) = snap(pos);
+                if response.clicked() || response.dragged() {
+                    // 索引按**文档列数**（渲染/物理都用它），网格按贴图实际列数
+                    let index_cell = (row * columns as usize + col).min(255) as u32;
+                    if entry.cell != index_cell {
+                        session.set_palette_cell(index, index_cell);
+                    }
+                }
+                // 悬停格高亮 + 像素读数（框选时也显示当前格）
+                if response.hovered() || response.dragged() {
                     let rect = egui::Rect::from_min_size(
-                        response.rect.min
-                            + egui::vec2(cmin as f32 * cell, rmin as f32 * cell) * scale,
-                        egui::vec2(
-                            (cmax - cmin) as f32 * cell,
-                            (rmax - rmin) as f32 * cell,
-                        ) * scale,
+                        response.rect.min + egui::vec2(col as f32, row as f32) * cell * scale,
+                        egui::vec2(cell, cell) * scale,
                     );
                     ui.painter().rect_stroke(
                         rect,
                         0.0,
-                        egui::Stroke::new(2.0, egui::Color32::from_rgb(80, 220, 255)),
+                        egui::Stroke::new(1.0, egui::Color32::WHITE),
                         egui::StrokeKind::Inside,
                     );
+                    ui.label(format!(
+                        "指针：像素 ({:.0}, {:.0}) → 格 (列 {col}, 行 {row})，已吸附 32 px",
+                        local.x, local.y
+                    ));
                 }
-                if response.drag_stopped() {
-                    tool.pick_drag_start = None;
-                }
-                let current = session
-                    .doc
-                    .palette()
-                    .get(index)
-                    .map(|entry| entry.cell)
-                    .unwrap_or(entry.cell);
-                let (cur_col, cur_row) = (current as usize % cols, current as usize / cols);
+            }
+            // 框选矩形：从按下点到当前点，四边吸附到格线
+            if response.dragged()
+                && let (Some(start), Some(pos)) =
+                    (tool.pick_drag_start, response.interact_pointer_pos())
+            {
+                let (c0, r0, _) = snap(start);
+                let (c1, r1, _) = snap(pos);
+                let (cmin, cmax) = (c0.min(c1), c0.max(c1) + 1);
+                let (rmin, rmax) = (r0.min(r1), r0.max(r1) + 1);
                 let rect = egui::Rect::from_min_size(
-                    response.rect.min
-                        + egui::vec2(cur_col as f32 * cell, cur_row as f32 * cell) * scale,
-                    egui::vec2(cell, cell) * scale,
+                    response.rect.min + egui::vec2(cmin as f32 * cell, rmin as f32 * cell) * scale,
+                    egui::vec2((cmax - cmin) as f32 * cell, (rmax - rmin) as f32 * cell) * scale,
                 );
                 ui.painter().rect_stroke(
                     rect,
                     0.0,
-                    egui::Stroke::new(2.0, egui::Color32::YELLOW),
+                    egui::Stroke::new(2.0, egui::Color32::from_rgb(80, 220, 255)),
                     egui::StrokeKind::Inside,
                 );
-                ui.horizontal(|ui| {
-                    ui.add(
-                        egui::Image::new(egui::load::SizedTexture::new(texture.id(), sheet))
-                            .uv(cell_uv(current, columns, sheet))
-                            .fit_to_exact_size(egui::vec2(32.0, 32.0)),
-                    );
-                    ui.label(format!(
-                        "当前贴图格：{current}（列 {cur_col} / 行 {cur_row}，32×32）"
-                    ));
-                });
-            } else {
-                ui.label("尚无贴图纹理：可先设置路径，或直接用数字选择贴图格");
-                let mut cell = entry.cell as u32;
-                if ui
-                    .add(egui::DragValue::new(&mut cell).range(0..=255))
-                    .changed()
-                {
-                    session.set_palette_cell(index, cell);
-                }
+            }
+            if response.drag_stopped() {
+                tool.pick_drag_start = None;
+            }
+            let current = session
+                .doc
+                .palette()
+                .get(index)
+                .map(|entry| entry.cell)
+                .unwrap_or(entry.cell);
+            let (cur_col, cur_row) = (current as usize % cols, current as usize / cols);
+            let rect = egui::Rect::from_min_size(
+                response.rect.min
+                    + egui::vec2(cur_col as f32 * cell, cur_row as f32 * cell) * scale,
+                egui::vec2(cell, cell) * scale,
+            );
+            ui.painter().rect_stroke(
+                rect,
+                0.0,
+                egui::Stroke::new(2.0, egui::Color32::YELLOW),
+                egui::StrokeKind::Inside,
+            );
+            ui.horizontal(|ui| {
+                ui.add(
+                    egui::Image::new(egui::load::SizedTexture::new(texture.id(), sheet))
+                        .uv(cell_uv(current, columns, sheet))
+                        .fit_to_exact_size(egui::vec2(32.0, 32.0))
+                        .maintain_aspect_ratio(false),
+                );
+                ui.label(format!(
+                    "当前格：{current}（列 {cur_col} / 行 {cur_row}，32×32）"
+                ));
+            });
+        } else {
+            ui.label("尚无贴图纹理：可先设置路径，或直接用数字选择贴图格");
+            let mut cell = entry.cell;
+            if ui
+                .add(egui::DragValue::new(&mut cell).range(0..=255))
+                .changed()
+            {
+                session.set_palette_cell(index, cell);
             }
         }
-    }
 
-    // ---- 新建地块 ----
-    ui.separator();
+        ui.separator();
+        new_tile_form(ui, session, tool);
+    });
+}
+
+/// 新建地块表单（底部横向面板的右栏）。
+fn new_tile_form(ui: &mut egui::Ui, session: &mut EditorSession, tool: &mut TileTool) {
     ui.heading("新建地块");
     // 编号自动生成：为空或已被占用时，每帧重算为"第一个空闲编号"
     let used = session
@@ -420,13 +494,13 @@ pub fn tile_panel(
     if tool.new_char.is_empty() || used {
         tool.new_char = next_free_char(&session.doc).to_string();
     }
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
         ui.label("编号（自动，可改）");
         ui.add(egui::TextEdit::singleline(&mut tool.new_char).desired_width(24.0));
         ui.label("名称");
         ui.text_edit_singleline(&mut tool.new_name);
     });
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
         for candidate in BEHAVIORS {
             if ui
                 .selectable_label(tool.new_behavior == candidate, behavior_label(candidate))
@@ -439,19 +513,25 @@ pub fn tile_panel(
     let mut cell = tool.new_cell;
     ui.horizontal(|ui| {
         ui.label("cell");
-        if ui.add(egui::DragValue::new(&mut cell).range(0..=255)).changed() {
+        if ui
+            .add(egui::DragValue::new(&mut cell).range(0..=255))
+            .changed()
+        {
             tool.new_cell = cell;
         }
     });
-    if ui.button("添加地块").clicked() {
-        let mut chars = tool.new_char.chars();
-        let (Some(ch), None) = (chars.next(), chars.next()) else {
-            return;
-        };
+    if ui.button("添加地块").clicked()
+        && let mut chars = tool.new_char.chars()
+        && let (Some(ch), None) = (chars.next(), chars.next())
+    {
         let name = tool.new_name.trim().to_string();
         let added = session.add_palette_entry(PaletteEntry {
             char: ch,
-            name: if name.is_empty() { format!("瓦片{ch}") } else { name },
+            name: if name.is_empty() {
+                format!("瓦片{ch}")
+            } else {
+                name
+            },
             behavior: tool.new_behavior,
             cell: tool.new_cell,
         });
@@ -570,5 +650,20 @@ mod tests {
         assert_eq!(session.tile_char(3, 2), Some('S'));
         // 写入的是字符本身，物理/渲染由调色板解释
         assert_eq!(session.doc.behavior_of('S'), Some(Behavior::Solid));
+    }
+
+    /// 列数随可用宽度单调增加；等宽单元格相加恰好填满（误差 < 0.01）。
+    #[test]
+    fn responsive_columns_fit_the_available_width() {
+        let spacing = 8.0;
+        let min = 72.0;
+        for (available, expected_columns) in
+            [(50.0, 1), (150.0, 1), (200.0, 2), (300.0, 3), (380.0, 4)]
+        {
+            let (columns, width) = responsive_columns(available, spacing, min);
+            assert_eq!(columns, expected_columns, "available={available}");
+            let used = width * columns as f32 + spacing * (columns - 1) as f32;
+            assert!((used - available).abs() < 0.01, "available={available}");
+        }
     }
 }
