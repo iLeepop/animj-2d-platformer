@@ -93,7 +93,7 @@ pub fn overlaps_tile_kind(world: &dyn TileWorld, aabb: Aabb,
 |---|---|---|
 | 数据 | `crates/game/src/physics/{aabb.rs,tile.rs,core.rs}` | `Aabb`、`TileKind`、`TileWorld`、`step` |
 | 常量 | `crates/game/src/config.rs` 的 `pub mod physics`（见 `00` §0.5） | §6.2 / §6.3 / §6.4 / §6.5 全部常量 + `PhysicsConfig` |
-| 适配 | `crates/game/src/player/mod.rs` | `PlayerMotion(Body)` 组件、输入采样、调用 `step`、写回 |
+| 适配 | `crates/game/src/player/mod.rs` | `PlayerMotion(Body)` + `PlayerId` 组件、按玩家槽位采样、调用 `step_with_players`、写回 |
 | 传感器 | `crates/game/src/player/mod.rs` | Hazard / 拾取物 / 目标区域判定（§6.5） |
 | 投影 | `crates/game/src/render/`（见 `07`） | `Aabb → Transform`（取整），单向 |
 
@@ -101,20 +101,27 @@ pub fn overlaps_tile_kind(world: &dyn TileWorld, aabb: Aabb,
 
 | schedule | 系统（按序） | 说明 |
 |---|---|---|
-| `PreUpdate` | `sample_player_input` | `ButtonInput<KeyCode>` → `PlayerInput`（`00` D16），跳跃按下**锁存**（见下）。**必须 `.after(bevy::input::InputSystems)`**：`ButtonInput` 由 Bevy 的输入系统在同一 schedule 内更新，不排序会读到上一帧（表现为"按键被吞"） |
-| `FixedUpdate` | `apply_player_physics` | 调 `physics::step`（.after 输入采样） |
+| `PreUpdate` | `sample_input` | `ButtonInput<KeyCode>` → `PlayerInputs.slots`（`00` D16），跳跃按下**锁存**（见下）。**必须 `.after(bevy::input::InputSystems)`**：`ButtonInput` 由 Bevy 的输入系统在同一 schedule 内更新，不排序会读到上一帧（表现为"按键被吞"） |
+| `FixedUpdate` | `apply_player_physics` | 按 `PlayerId` 升序对每个玩家调 `physics::step_with_players`（.after 输入采样；客户端不运行） |
 | `FixedUpdate` | `check_hazards` | 死亡传感器（.after 物理） |
 | `FixedUpdate` | `check_pickups_and_zones` | 拾取与目标区域（.after 物理） |
 | `PostUpdate` | `sync_player_transform` | `Aabb → Transform` 取整；排在该帧 transform 传播系统集 `TransformSystems::Propagate` **之前**（【已验证：官方示例要求相关系统与 `TransformSystems::Propagate` 显式排序】<https://docs.rs/bevy/0.20.0/src/pixel_grid_snap/pixel_grid_snap.rs.html>）|
 
+### 6.1.6 键位（含本地双人）
+
 **键位**（定义在 `player/input.rs`，`00` D16 说按键映射归 input 模块）：
 
-| 动作 | 按键 |
-|---|---|
-| 左移 | `ArrowLeft` / `A` |
-| 右移 | `ArrowRight` / `D` |
-| 跳跃 | `Space` / `ArrowUp` / `Z` |
-| 交互 / 设置存档点 | `E` |
+| 动作 | 单人 / 主机 / 客户端（槽位 0） | 本地双人 P1（槽位 0） | 本地双人 P2（槽位 1） |
+|---|---|---|---|
+| 左移 | `ArrowLeft` / `A` | `ArrowLeft` | `A` |
+| 右移 | `ArrowRight` / `D` | `ArrowRight` | `D` |
+| 跳跃 | `Space` / `ArrowUp` / `Z` | `ArrowUp` / `Z` | `W` / `Space` |
+| 交互 / 设置存档点 | `E` | `E` | `F` |
+
+- 本地双人时 P1 让出 `A/D/Space`，两套键位互不串台（`local_coop_splits_the_keyboard_between_two_players`）。
+- 非双人模式**不采样**槽位 1：否则主机上的 WASD 会错误控制远程玩家 1
+  （`solo_mode_does_not_write_the_second_slot`）。
+- 远程玩家的槽位由 `net/host` 的 `Input` 包写入；客户端只把槽位 0 上行（`05` §5.15.3）。
 
 `jump_pressed` 是**锁存**的"刚按下"：`sample_input` 在 `just_pressed` 时**置位**，由 `apply_player_physics`
 在消费后**清零** ⇒ 一个按下恰好被**一个**固定步看到。**不能**每帧写 `just_pressed()`：
@@ -982,3 +989,23 @@ transform.translation = (render_pos.x, render_pos.y, Z)        // Z 由 07 给�
 
 > 本文不含**【UNVERIFIED】**条目：所有 Bevy API 断言均有 0.20.0 文档/示例源码直证，
 > 其余全部是本项目自研的数值推导与几何论证（可被 §6.9 的测试逐条检验）。
+
+## 6.11 多玩家碰撞（本地双人 / 联机）
+
+- 玩家之间**互为实心 AABB**：不能互相穿过；可以撞到对方的侧面/头顶，也可以站到对方头上。
+  碰撞语义与 `#` 实心瓦片一致（`§6.4.3` / `§6.4.4`），但没有"单向"变体。
+- 入口：`physics::step_with_players(cfg, world, body, input, others: &[Aabb], out)`；
+  `step(...)` 等价于 `others = &[]`（单人路径不变）。
+- 求解顺序：`apply_player_physics` 按 `PlayerId` **升序**依次推进；每个玩家看到的是"其他玩家的当前位置"
+  （先推进者已更新）。顺序是确定的，远程/本机不会因查询迭代顺序不同而分叉。
+- 其他玩家参与两处：
+  1. X/Y 分离：取最近的面夹取（X 需竖直重叠；Y 需水平重叠且只认行进方向前方的面）。
+  2. 支撑探测：`nearest_standable_top_below` 把对方顶面当作可站立面（同一条 `CONTACT_TOLERANCE` 容差带）。
+- 不做推挤/挤压：被挡住就停，不会把对方推走；两人同时朝对方移动时会停在相邻位置。
+- 不做玩家间伤害；`Hazard` 仍只由瓦片触发（`§6.5.3`）。
+- 客户端不跑本算法：玩家位置来自主机快照（`05` §5.15.3）。ECS 适配层顺序由
+  `ecs_adapter_blocks_players_against_each_other` 锁定。
+- 测试（`physics/tests.rs`）：
+  - **T22** 另一个玩家挡在右边：120 步后 `aabb.max.x <= 对方.min.x + GEOM_EPS`，`hit_wall_x == 1`，尺寸不变。
+  - **T23** 站在另一个玩家头上：最终 `grounded == true` 且脚底贴合对方顶面，尺寸不变。
+  - **T24** 从下方起跳撞到上方玩家：每一步 `aabb.max.y <= 对方.min.y + GEOM_EPS`，尺寸不变。

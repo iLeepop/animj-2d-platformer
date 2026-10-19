@@ -72,6 +72,27 @@ impl LevelProgress {
     pub fn all_cleared(&self) -> bool {
         !self.rooms.is_empty() && self.rooms.iter().all(|room| room.cleared)
     }
+
+    /// 用主机快照覆盖进度（客户端专用）。`level_name` / `grid` 不变。
+    ///
+    /// 快照是完整状态而不是增量：客户端丢失任何一帧都能在下一帧自愈
+    /// （`05` §5.15.3）。
+    pub fn apply_net(&mut self, cleared: &[u32], fruits: &[(u32, u32)]) {
+        for room in &mut self.rooms {
+            room.cleared = false;
+            room.collected_fruit = 0;
+        }
+        for index in cleared {
+            if let Some(room) = self.rooms.get_mut(*index as usize) {
+                room.cleared = true;
+            }
+        }
+        for (index, count) in fruits {
+            if let Some(room) = self.rooms.get_mut(*index as usize) {
+                room.collected_fruit = *count;
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -133,11 +154,31 @@ mod tests {
         assert!(progress.all_cleared());
     }
 
+    /// 主机快照覆盖进度：完整状态而非增量，丢失一帧后仍能回到正确值。
+    #[test]
+    fn net_snapshot_overwrites_progress() {
+        let mut progress = LevelProgress::from_level(&level(2, 2));
+        progress.mark_cleared(0, 0);
+        progress.collect_fruit(0, 0);
+
+        progress.apply_net(&[3], &[(0, 2)]);
+        assert!(
+            !progress.room(0, 0).unwrap().cleared,
+            "快照里没有的房间必须被清掉"
+        );
+        assert!(progress.room(1, 1).unwrap().cleared, "index 3 = (1, 1)");
+        assert_eq!(progress.room(0, 0).unwrap().collected_fruit, 2);
+        assert_eq!(progress.cleared_count(), 1);
+
+        progress.apply_net(&[], &[]);
+        assert_eq!(progress.cleared_count(), 0);
+        assert_eq!(progress.room(0, 0).unwrap().collected_fruit, 0);
+    }
+
     #[test]
     fn row_major_index_matches_level_layout() {
         let progress = LevelProgress::from_level(&level(3, 2));
         // (col=1, row=1) ⇒ index = 1*3 + 1 = 4
-        progress.rooms[4].cleared;
         let mut progress = progress;
         assert!(progress.mark_cleared(1, 1));
         assert!(progress.rooms[4].cleared);

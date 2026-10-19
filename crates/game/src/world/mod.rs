@@ -75,7 +75,8 @@ impl Plugin for WorldPlugin {
                 Update,
                 load::hot_reload_level
                     .in_set(crate::state::GameSet::Room)
-                    .run_if(in_state(GameState::Playing)),
+                    .run_if(in_state(GameState::Playing))
+                    .run_if(crate::net::not_client),
             );
     }
 }
@@ -118,6 +119,7 @@ fn teardown_level(
     commands.remove_resource::<LevelTiles>();
     commands.remove_resource::<LevelProgress>();
     commands.remove_resource::<PendingLevel>();
+    commands.insert_resource(crate::room::PickedZones::default());
     commands.insert_resource(ActiveCheckpoint::default());
     commands.insert_resource(Decorations::default());
     commands.insert_resource(CurrentRoom::default());

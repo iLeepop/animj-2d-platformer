@@ -1,7 +1,8 @@
 //! 相机跟随。所有者文档：`docs/02-world-and-rooms.md` §2.2。
 //!
-//! 内层视口小于一个房间。相机中心 = 玩家 AABB 中心，并钳制在关卡 AABB 内，
-//! 因此视野永远不会越过地图边界。房间判定与相机解耦（见 `room::track_current_room`）。
+//! 内层视口小于一个房间。相机中心 = **全部本地/远程玩家 AABB 中心的中点**，并钳制在
+//! 关卡 AABB 内，因此视野永远不会越过地图边界（`02` §2.2）。
+//! 房间判定与相机解耦（见 `room::track_current_room`）。
 
 use bevy::prelude::*;
 use level_format::ROOM_PX;
@@ -25,7 +26,7 @@ impl Plugin for CameraRigPlugin {
     }
 }
 
-/// 相机目标：玩家 AABB 中心，钳制到「视野完全落在地图内」的合法区间。
+/// 相机目标：玩家 AABB 中心的中点，钳制到「视野完全落在地图内」的合法区间。
 ///
 /// 关卡尺寸 = `grid × ROOM_PX`；内层视野 = `VIEWPORT_W × VIEWPORT_H`（小于一个房间，`07` §7.1.1）。
 /// 单轴合法区间是 `[view/2, extent - view/2]`；当地图比视野还小时，相机钉在地图中心。
@@ -62,14 +63,16 @@ fn drive_camera(
     let Some(mut camera) = camera else {
         return;
     };
-    let Some(motion) = players.iter().next() else {
+    let mut count = 0.0;
+    let mut sum = Vec2::ZERO;
+    for motion in &players {
+        sum += motion.0.aabb.center();
+        count += 1.0;
+    }
+    if count == 0.0 {
         return;
-    };
-    let target = follow_target(
-        motion.0.aabb.center(),
-        loaded.level.grid.cols,
-        loaded.level.grid.rows,
-    );
+    }
+    let target = follow_target(sum / count, loaded.level.grid.cols, loaded.level.grid.rows);
     camera.translation.x = target.x;
     camera.translation.y = target.y;
 }
@@ -150,6 +153,17 @@ mod tests {
                 assert!(camera.y - half >= 0.0 && camera.y + half <= height, "y={y}");
             }
         }
+    }
+
+    /// 多玩家：相机目标取所有玩家 AABB 中心的中点（`02` §2.2）。
+    #[test]
+    fn multiplayer_camera_uses_the_midpoint() {
+        let a = Vec2::new(1000.0, 700.0);
+        let b = Vec2::new(1100.0, 760.0);
+        let midpoint = (a + b) / 2.0;
+        assert_eq!(follow_target(midpoint, GRID.0, GRID.1), midpoint);
+        // 中点不会被单个玩家拽走。
+        assert_ne!(follow_target(midpoint, GRID.0, GRID.1), a);
     }
 
     /// 单房间地图（房间大于视野）：相机可在房间内跟随，但不会让视野越界。

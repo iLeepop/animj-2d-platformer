@@ -9,6 +9,8 @@
 pub mod goals;
 pub mod reward;
 
+use std::collections::BTreeSet;
+
 use bevy::prelude::*;
 use level_format::Room;
 
@@ -16,7 +18,7 @@ use crate::config::physics::PICKUP_INFLATE;
 use crate::config::room::ROOM_SWITCH_HYSTERESIS;
 use crate::coords::world_to_room;
 use crate::physics::Aabb;
-use crate::player::PlayerMotion;
+use crate::player::{PlayerId, PlayerMotion};
 use crate::state::{GameSet, GameState};
 use crate::world::CurrentRoom;
 use crate::world::load::LoadedLevel;
@@ -77,11 +79,21 @@ pub struct RoomZone {
 ///
 /// 为什么用"每步覆写"而不是"进入即标记"：`ReachExit` 的语义是**玩家位于区域内**，
 /// 与收集类条件必须**同时**成立（`01` §1.4），离开区域后不再满足。
-#[derive(Resource, Debug, Default, Clone, Copy)]
+///
+/// 多玩家：记录**有玩家站在出口里**的房间集合（不同玩家可能在不同房间）。
+#[derive(Resource, Debug, Default, Clone)]
 pub struct ExitProbe {
-    pub room_index: u32,
-    pub inside: bool,
+    pub rooms: BTreeSet<u32>,
 }
+
+/// 房间实体的稳定编号（生成顺序）。联机快照用它告诉客户端「哪些果实已被拾取」
+/// （`05` §5.15.3）。
+#[derive(Component, Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ZoneId(pub u32);
+
+/// 已被拾取并销毁的房间实体编号。客户端据此销毁对应果实（`05` §5.15.3）。
+#[derive(Resource, Debug, Default, Clone)]
+pub struct PickedZones(pub BTreeSet<u32>);
 
 // ---------- 当前房间判定 ----------
 
@@ -135,11 +147,13 @@ impl Plugin for RoomPlugin {
             .add_message::<DecorationGranted>()
             .add_message::<CollectiblePicked>()
             .init_resource::<ExitProbe>()
+            .init_resource::<PickedZones>()
             .add_systems(
                 FixedUpdate,
                 check_pickups_and_zones
                     .in_set(GameSet::Physics)
-                    .run_if(in_state(GameState::Playing)),
+                    .run_if(in_state(GameState::Playing))
+                    .run_if(crate::net::not_client),
             )
             .add_systems(
                 Update,
@@ -150,14 +164,11 @@ impl Plugin for RoomPlugin {
             )
             .add_systems(
                 Update,
-                (
-                    evaluate_goals,
-                    reward::grant_rewards,
-                    check_level_complete,
-                )
+                (evaluate_goals, reward::grant_rewards, check_level_complete)
                     .chain()
                     .in_set(GameSet::Room)
-                    .run_if(in_state(GameState::Playing)),
+                    .run_if(in_state(GameState::Playing))
+                    .run_if(crate::net::not_client),
             );
     }
 }
@@ -165,13 +176,15 @@ impl Plugin for RoomPlugin {
 /// 用玩家 AABB 中心判定当前房间（带滞回），只在真正切换时写资源。
 pub fn track_current_room(
     loaded: Option<Res<LoadedLevel>>,
-    player: Query<&PlayerMotion>,
+    players: Query<(&PlayerId, &PlayerMotion)>,
     mut current: ResMut<CurrentRoom>,
 ) {
     let Some(loaded) = loaded else {
         return;
     };
-    let Some(motion) = player.iter().next() else {
+    // 焦点玩家 = 编号最小者（主机/单人）。目标判定按**每个玩家各自的房间**做，
+    // 这里只维护 HUD/裁剪/调试用的焦点房间（`02` §2.2）。
+    let Some((_, motion)) = players.iter().min_by_key(|(id, _)| *id) else {
         return;
     };
     let now = (current.col, current.row);
@@ -186,7 +199,10 @@ pub fn track_current_room(
     if next == now {
         return;
     }
-    info!("当前房间：({}, {}) → ({}, {})", now.0, now.1, next.0, next.1);
+    info!(
+        "当前房间：({}, {}) → ({}, {})",
+        now.0, now.1, next.0, next.1
+    );
     current.col = next.0;
     current.row = next.1;
 }
@@ -204,7 +220,8 @@ fn emit_room_entered(
         return;
     };
     entered.write(RoomEntered {
-        room_index: level_format::room_index(current.col, current.row, loaded.level.grid.cols) as u32,
+        room_index: level_format::room_index(current.col, current.row, loaded.level.grid.cols)
+            as u32,
     });
 }
 
@@ -214,51 +231,64 @@ pub fn aabb_overlaps(a: &Aabb, b: &Aabb) -> bool {
 }
 
 /// 房间内实体传感器：拾取果实、探测出口。只在**当前房间**内判定（`01` §1.4）。
+#[allow(clippy::too_many_arguments)]
 pub fn check_pickups_and_zones(
     loaded: Option<Res<LoadedLevel>>,
-    current: Option<Res<CurrentRoom>>,
     progress: Option<ResMut<LevelProgress>>,
     mut probe: ResMut<ExitProbe>,
-    players: Query<&PlayerMotion>,
-    zones: Query<(Entity, &RoomZone)>,
+    mut picked_zones: ResMut<PickedZones>,
+    players: Query<(&PlayerId, &PlayerMotion)>,
+    zones: Query<(Entity, &RoomZone, Option<&ZoneId>)>,
     mut commands: Commands,
     mut picked: MessageWriter<CollectiblePicked>,
 ) {
-    let (Some(loaded), Some(current), Some(mut progress)) = (loaded, current, progress) else {
+    let (Some(loaded), Some(mut progress)) = (loaded, progress) else {
         return;
     };
-    let Some(motion) = players.iter().next() else {
-        return;
-    };
-    let room_index =
-        level_format::room_index(current.col, current.row, loaded.level.grid.cols) as u32;
-    if probe.room_index != room_index {
-        probe.room_index = room_index;
-        probe.inside = false;
-    }
-    let player = motion.0.aabb;
+    let grid = (loaded.level.grid.cols, loaded.level.grid.rows);
+    probe.rooms.clear();
 
-    for (entity, zone) in &zones {
-        if zone.room_index != room_index {
-            continue; // 离屏房间不判定
-        }
+    // 玩家按房间分组；每个实体只判定一次（两个玩家同时压在同一颗果实上不能算两颗）。
+    let players: Vec<(u32, (u32, u32), Aabb)> = players
+        .iter()
+        .filter_map(|(_, motion)| {
+            let pos = world_to_room(motion.0.aabb.center(), grid.0, grid.1)?;
+            Some((
+                level_format::room_index(pos.col, pos.row, grid.0) as u32,
+                (pos.col, pos.row),
+                motion.0.aabb,
+            ))
+        })
+        .collect();
+
+    for (entity, zone, zone_id) in &zones {
         match zone.kind {
             RoomZoneKind::Exit => {
-                if aabb_overlaps(&player, &zone.aabb) {
-                    probe.inside = true;
+                if players.iter().any(|(room, _, aabb)| {
+                    *room == zone.room_index && aabb_overlaps(aabb, &zone.aabb)
+                }) {
+                    probe.rooms.insert(zone.room_index);
                 }
             }
             RoomZoneKind::Fruit => {
                 // 拾取外扩 `PICKUP_INFLATE`：差一点也算吃到（`06` §6.5.4）
-                if aabb_overlaps(&player.inset(-PICKUP_INFLATE), &zone.aabb) {
-                    let total = progress.collect_fruit(current.col, current.row);
-                    picked.write(CollectiblePicked { room_index });
-                    commands.entity(entity).despawn();
-                    info!(
-                        "收集果实：房间 ({}, {}) 累计 {total}",
-                        current.col, current.row
-                    );
+                let Some((room, (col, row), _)) = players
+                    .iter()
+                    .find(|(room, _, aabb)| {
+                        *room == zone.room_index
+                            && aabb_overlaps(&aabb.inset(-PICKUP_INFLATE), &zone.aabb)
+                    })
+                    .map(|(room, coord, aabb)| (*room, *coord, *aabb))
+                else {
+                    continue;
+                };
+                let total = progress.collect_fruit(col, row);
+                if let Some(zone_id) = zone_id {
+                    picked_zones.0.insert(zone_id.0);
                 }
+                picked.write(CollectiblePicked { room_index: room });
+                commands.entity(entity).despawn();
+                info!("收集果实：房间 ({}, {}) 累计 {total}", col, row);
             }
             // 存档点由 `checkpoint::activate_checkpoint` 按 `E` 激活（`02` §2.5）。
             RoomZoneKind::Checkpoint => {}
@@ -277,46 +307,55 @@ pub fn fruit_count(room: &Room) -> u32 {
 /// 当前房间的条件求值；满足且此前未通关 ⇒ 标记通关并发 `RoomCleared`（单调）。
 pub fn evaluate_goals(
     loaded: Option<Res<LoadedLevel>>,
-    current: Option<Res<CurrentRoom>>,
     probe: Res<ExitProbe>,
     progress: Option<ResMut<LevelProgress>>,
+    players: Query<&PlayerMotion>,
     mut cleared: MessageWriter<RoomCleared>,
 ) {
-    let (Some(loaded), Some(current), Some(mut progress)) = (loaded, current, progress) else {
+    let (Some(loaded), Some(mut progress)) = (loaded, progress) else {
         return;
     };
-    let room_index =
-        level_format::room_index(current.col, current.row, loaded.level.grid.cols) as u32;
-    // 探针还没覆盖本房间（刚切换）⇒ 本帧不判定，避免用上一房间的出口结果
-    if probe.room_index != room_index {
-        return;
+    let cols = loaded.level.grid.cols;
+    let rows = loaded.level.grid.rows;
+
+    // 只判定**有玩家在内**的房间；多玩家跨房间时各自房间都会判定。
+    let mut occupied = BTreeSet::new();
+    for motion in &players {
+        if let Some(pos) = world_to_room(motion.0.aabb.center(), cols, rows) {
+            occupied.insert(level_format::room_index(pos.col, pos.row, cols) as u32);
+        }
     }
-    let Some(room_data) = loaded.level.rooms.get(room_index as usize) else {
-        return;
-    };
-    let Some(room_progress) = progress.room(current.col, current.row).copied() else {
-        return;
-    };
-    if room_progress.cleared {
-        return;
+
+    for room_index in occupied {
+        let col = room_index % cols;
+        let row = room_index / cols;
+        let Some(room_data) = loaded.level.rooms.get(room_index as usize) else {
+            continue;
+        };
+        let Some(room_progress) = progress.room(col, row).copied() else {
+            continue;
+        };
+        if room_progress.cleared {
+            continue;
+        }
+        let runtime = RoomRuntime {
+            at_exit: probe.rooms.contains(&room_index),
+            collected_fruit: room_progress.collected_fruit,
+            total_fruit: fruit_count(room_data),
+        };
+        if !goals::goals_satisfied(&room_data.goals, &runtime) {
+            continue;
+        }
+        progress.mark_cleared(col, row);
+        info!(
+            "房间 ({}, {}) 通关（{}/{}）",
+            col,
+            row,
+            progress.cleared_count(),
+            progress.rooms.len()
+        );
+        cleared.write(RoomCleared { room_index });
     }
-    let runtime = RoomRuntime {
-        at_exit: probe.inside,
-        collected_fruit: room_progress.collected_fruit,
-        total_fruit: fruit_count(room_data),
-    };
-    if !goals::goals_satisfied(&room_data.goals, &runtime) {
-        return;
-    }
-    progress.mark_cleared(current.col, current.row);
-    info!(
-        "房间 ({}, {}) 通关（{}/{}）",
-        current.col,
-        current.row,
-        progress.cleared_count(),
-        progress.rooms.len()
-    );
-    cleared.write(RoomCleared { room_index });
 }
 
 /// 全部房间通关 ⇒ 进入结算（`01` §1.6）。
@@ -328,10 +367,7 @@ pub fn check_level_complete(
         return;
     };
     if progress.all_cleared() {
-        info!(
-            "全部房间通关（{} 个），进入结算",
-            progress.rooms.len()
-        );
+        info!("全部房间通关（{} 个），进入结算", progress.rooms.len());
         next.set(GameState::GameComplete);
     }
 }
@@ -444,9 +480,9 @@ mod tests {
         use level_format::{EntitySpec, Goal, Grid, Room, RoomCoord};
 
         use crate::config::physics::{PICKUP_SIZE, PLAYER_SIZE};
-        use crate::player::decor::Decorations;
         use crate::physics::Body;
         use crate::player::PlayerStepOutcome;
+        use crate::player::decor::Decorations;
         use crate::tiles::LevelTiles;
         use crate::world::progress::LevelProgress;
 
@@ -489,6 +525,7 @@ mod tests {
             .add_message::<RoomCleared>()
             .add_message::<DecorationGranted>()
             .init_resource::<ExitProbe>()
+            .init_resource::<PickedZones>()
             .init_resource::<Decorations>()
             .init_state::<GameState>();
         app.insert_resource(LoadedLevel {
@@ -504,6 +541,7 @@ mod tests {
         let player = app
             .world_mut()
             .spawn((
+                PlayerId(0),
                 PlayerMotion(Body::at_center(fruit_center)),
                 PlayerStepOutcome::default(),
             ))
@@ -567,9 +605,7 @@ mod tests {
             .run_system_once(reward::grant_rewards)
             .expect("授奖");
         assert!(
-            app.world()
-                .resource::<Decorations>()
-                .has("item_01"),
+            app.world().resource::<Decorations>().has("item_01"),
             "通关应授予房间奖励"
         );
 
@@ -586,7 +622,10 @@ mod tests {
     /// 组合条件：必须先收够果实、再站进出口区域（`01` §1.4）。
     #[test]
     fn combined_goals_require_both_at_the_same_time() {
-        let goals = [level_format::Goal::ReachExit, level_format::Goal::Collect { count: 2 }];
+        let goals = [
+            level_format::Goal::ReachExit,
+            level_format::Goal::Collect { count: 2 },
+        ];
         assert!(!goals::goals_satisfied(&goals, &runtime(false, 3, 3)));
         assert!(goals::goals_satisfied(&goals, &runtime(true, 2, 3)));
     }

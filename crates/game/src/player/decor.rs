@@ -9,7 +9,7 @@ use bevy::sprite::Anchor;
 use serde::{Deserialize, Serialize};
 
 use crate::config::render::{DECORATION_LAYERS, z};
-use crate::player::{PlayerFacing, PlayerMotion};
+use crate::player::{PlayerFacing, PlayerId, PlayerMotion};
 
 /// 装饰品元数据（`04` §6.2）：所属图层 + 相对脚底中点（`Anchor::BOTTOM_CENTER`）的偏移。
 #[derive(Debug, Clone, Copy)]
@@ -24,36 +24,156 @@ pub struct DecorationSpec {
 /// 新增 id 时必须同时：补 `assets/sprites/decorations/<id>.png`、在关卡里使用它。
 /// 每个 id 的图层与相对脚底的偏移（`04` §6.2）。层序见 `04` §6.1；偏移按层给出占位值。
 pub const DECORATION_SPECS: &[DecorationSpec] = &[
-    DecorationSpec { id: "item_01", layer: 0, offset: Vec2::new(0.0, 6.0) },
-    DecorationSpec { id: "item_02", layer: 1, offset: Vec2::new(0.0, 0.0) },
-    DecorationSpec { id: "item_03", layer: 2, offset: Vec2::new(0.0, 10.0) },
-    DecorationSpec { id: "item_04", layer: 3, offset: Vec2::new(0.0, 18.0) },
-    DecorationSpec { id: "item_05", layer: 4, offset: Vec2::new(0.0, 22.0) },
-    DecorationSpec { id: "item_06", layer: 5, offset: Vec2::new(0.0, 26.0) },
-    DecorationSpec { id: "item_07", layer: 6, offset: Vec2::new(0.0, 20.0) },
-    DecorationSpec { id: "item_08", layer: 0, offset: Vec2::new(0.0, 6.0) },
-    DecorationSpec { id: "item_09", layer: 1, offset: Vec2::new(0.0, 0.0) },
-    DecorationSpec { id: "item_10", layer: 2, offset: Vec2::new(0.0, 10.0) },
-    DecorationSpec { id: "item_11", layer: 3, offset: Vec2::new(0.0, 18.0) },
-    DecorationSpec { id: "item_12", layer: 4, offset: Vec2::new(0.0, 22.0) },
-    DecorationSpec { id: "item_13", layer: 5, offset: Vec2::new(0.0, 26.0) },
-    DecorationSpec { id: "item_14", layer: 6, offset: Vec2::new(0.0, 20.0) },
-    DecorationSpec { id: "item_15", layer: 0, offset: Vec2::new(0.0, 6.0) },
-    DecorationSpec { id: "item_16", layer: 1, offset: Vec2::new(0.0, 0.0) },
-    DecorationSpec { id: "item_17", layer: 2, offset: Vec2::new(0.0, 10.0) },
-    DecorationSpec { id: "item_18", layer: 3, offset: Vec2::new(0.0, 18.0) },
-    DecorationSpec { id: "item_19", layer: 4, offset: Vec2::new(0.0, 22.0) },
-    DecorationSpec { id: "item_20", layer: 5, offset: Vec2::new(0.0, 26.0) },
-    DecorationSpec { id: "item_21", layer: 6, offset: Vec2::new(0.0, 20.0) },
-    DecorationSpec { id: "item_22", layer: 0, offset: Vec2::new(0.0, 6.0) },
-    DecorationSpec { id: "item_23", layer: 1, offset: Vec2::new(0.0, 0.0) },
-    DecorationSpec { id: "item_24", layer: 2, offset: Vec2::new(0.0, 10.0) },
-    DecorationSpec { id: "item_25", layer: 3, offset: Vec2::new(0.0, 18.0) },
-    DecorationSpec { id: "item_26", layer: 4, offset: Vec2::new(0.0, 22.0) },
-    DecorationSpec { id: "item_27", layer: 5, offset: Vec2::new(0.0, 26.0) },
-    DecorationSpec { id: "item_28", layer: 6, offset: Vec2::new(0.0, 20.0) },
-    DecorationSpec { id: "item_29", layer: 0, offset: Vec2::new(0.0, 6.0) },
-    DecorationSpec { id: "item_30", layer: 1, offset: Vec2::new(0.0, 0.0) },
+    DecorationSpec {
+        id: "item_01",
+        layer: 0,
+        offset: Vec2::new(0.0, 6.0),
+    },
+    DecorationSpec {
+        id: "item_02",
+        layer: 1,
+        offset: Vec2::new(0.0, 0.0),
+    },
+    DecorationSpec {
+        id: "item_03",
+        layer: 2,
+        offset: Vec2::new(0.0, 10.0),
+    },
+    DecorationSpec {
+        id: "item_04",
+        layer: 3,
+        offset: Vec2::new(0.0, 18.0),
+    },
+    DecorationSpec {
+        id: "item_05",
+        layer: 4,
+        offset: Vec2::new(0.0, 22.0),
+    },
+    DecorationSpec {
+        id: "item_06",
+        layer: 5,
+        offset: Vec2::new(0.0, 26.0),
+    },
+    DecorationSpec {
+        id: "item_07",
+        layer: 6,
+        offset: Vec2::new(0.0, 20.0),
+    },
+    DecorationSpec {
+        id: "item_08",
+        layer: 0,
+        offset: Vec2::new(0.0, 6.0),
+    },
+    DecorationSpec {
+        id: "item_09",
+        layer: 1,
+        offset: Vec2::new(0.0, 0.0),
+    },
+    DecorationSpec {
+        id: "item_10",
+        layer: 2,
+        offset: Vec2::new(0.0, 10.0),
+    },
+    DecorationSpec {
+        id: "item_11",
+        layer: 3,
+        offset: Vec2::new(0.0, 18.0),
+    },
+    DecorationSpec {
+        id: "item_12",
+        layer: 4,
+        offset: Vec2::new(0.0, 22.0),
+    },
+    DecorationSpec {
+        id: "item_13",
+        layer: 5,
+        offset: Vec2::new(0.0, 26.0),
+    },
+    DecorationSpec {
+        id: "item_14",
+        layer: 6,
+        offset: Vec2::new(0.0, 20.0),
+    },
+    DecorationSpec {
+        id: "item_15",
+        layer: 0,
+        offset: Vec2::new(0.0, 6.0),
+    },
+    DecorationSpec {
+        id: "item_16",
+        layer: 1,
+        offset: Vec2::new(0.0, 0.0),
+    },
+    DecorationSpec {
+        id: "item_17",
+        layer: 2,
+        offset: Vec2::new(0.0, 10.0),
+    },
+    DecorationSpec {
+        id: "item_18",
+        layer: 3,
+        offset: Vec2::new(0.0, 18.0),
+    },
+    DecorationSpec {
+        id: "item_19",
+        layer: 4,
+        offset: Vec2::new(0.0, 22.0),
+    },
+    DecorationSpec {
+        id: "item_20",
+        layer: 5,
+        offset: Vec2::new(0.0, 26.0),
+    },
+    DecorationSpec {
+        id: "item_21",
+        layer: 6,
+        offset: Vec2::new(0.0, 20.0),
+    },
+    DecorationSpec {
+        id: "item_22",
+        layer: 0,
+        offset: Vec2::new(0.0, 6.0),
+    },
+    DecorationSpec {
+        id: "item_23",
+        layer: 1,
+        offset: Vec2::new(0.0, 0.0),
+    },
+    DecorationSpec {
+        id: "item_24",
+        layer: 2,
+        offset: Vec2::new(0.0, 10.0),
+    },
+    DecorationSpec {
+        id: "item_25",
+        layer: 3,
+        offset: Vec2::new(0.0, 18.0),
+    },
+    DecorationSpec {
+        id: "item_26",
+        layer: 4,
+        offset: Vec2::new(0.0, 22.0),
+    },
+    DecorationSpec {
+        id: "item_27",
+        layer: 5,
+        offset: Vec2::new(0.0, 26.0),
+    },
+    DecorationSpec {
+        id: "item_28",
+        layer: 6,
+        offset: Vec2::new(0.0, 20.0),
+    },
+    DecorationSpec {
+        id: "item_29",
+        layer: 0,
+        offset: Vec2::new(0.0, 6.0),
+    },
+    DecorationSpec {
+        id: "item_30",
+        layer: 1,
+        offset: Vec2::new(0.0, 0.0),
+    },
 ];
 
 pub fn spec_of(id: &str) -> Option<&'static DecorationSpec> {
@@ -97,9 +217,7 @@ impl Decorations {
 
     /// 某个槽位上装备的 id。
     pub fn equipped_at(&self, layer: usize) -> Option<&str> {
-        self.equipped
-            .get(layer)
-            .and_then(|slot| slot.as_deref())
+        self.equipped.get(layer).and_then(|slot| slot.as_deref())
     }
 
     /// 全部槽位（归一化到 `DECORATION_LAYERS`）。
@@ -125,15 +243,14 @@ impl Decorations {
     /// 卸下某一层；本来就没装备返回 `false`。
     pub fn unequip(&mut self, layer: usize) -> bool {
         self.ensure_slots();
-        self.equipped.get_mut(layer).is_some_and(|slot| slot.take().is_some())
+        self.equipped
+            .get_mut(layer)
+            .is_some_and(|slot| slot.take().is_some())
     }
 
     /// 从存档恢复（未知 id 保留在"拥有"里，但装备位会被校验掉）。
     pub fn restore(owned: Vec<String>, equipped: Vec<Option<String>>) -> Self {
-        let mut decorations = Self {
-            owned,
-            equipped,
-        };
+        let mut decorations = Self { owned, equipped };
         decorations.ensure_slots();
         // 只保留「已拥有且元数据已知」的装备
         let owned = decorations.owned.clone();
@@ -163,7 +280,14 @@ pub struct DecorationLayer(pub usize);
 /// （`ChildOf`），`GlobalTransform` 会把父级 Z（玩家本体 `z::PLAYER`）叠加进来。因此局部值
 /// 必须减掉父级 Z，否则实际落在 `81.0 + layer_index`，会盖住粒子（60）与前景瓦片（70）。
 pub fn decoration_local_z(layer: usize) -> f32 {
-    z::DECORATION_BASE + layer as f32 - z::PLAYER
+    decoration_local_z_for(0, layer)
+}
+
+/// 第 `player` 个玩家的第 `layer` 层装饰品**局部** Z。
+///
+/// 玩家本体的 Z 是 `z::player_z(player)`（多人不同 Z，`00` §0.4），所以局部偏移必须减掉它。
+pub fn decoration_local_z_for(player: u8, layer: usize) -> f32 {
+    z::DECORATION_BASE + layer as f32 - z::player_z(player)
 }
 
 /// 朝向镜像后的装饰品偏移（`04` §4.5 / §6.2）：朝左时 `x` 取反、`y` 不变。
@@ -180,57 +304,34 @@ pub fn sync_decoration_layers(
     mut commands: Commands,
     decorations: Res<Decorations>,
     assets: Res<AssetServer>,
-    players: Query<(Entity, &PlayerFacing), With<PlayerMotion>>,
-    layers: Query<(Entity, &DecorationLayer)>,
+    players: Query<(Entity, &PlayerId, &PlayerFacing), With<PlayerMotion>>,
+    layers: Query<Entity, With<DecorationLayer>>,
 ) {
     if !decorations.is_changed() {
         return;
     }
-    let Some((player, facing)) = players.iter().next() else {
-        return;
-    };
-    let facing_right = facing.0;
-    // 现有的层：layer -> entity
-    let mut existing: Vec<Option<Entity>> = vec![None; DECORATION_LAYERS];
-    for (entity, layer) in &layers {
-        if layer.0 < DECORATION_LAYERS {
-            existing[layer.0] = Some(entity);
-        }
+    // 装备变化是低频事件：整组重建，避免为每个玩家维护一份复用表。
+    for entity in &layers {
+        commands.entity(entity).despawn();
     }
-
-    for layer in 0..DECORATION_LAYERS {
-        match decorations.equipped_at(layer) {
-            Some(id) => {
-                let Some(spec) = spec_of(id) else {
-                    // 未知 id 视为未装备（不报错、不生成占位）
-                    if let Some(entity) = existing[layer].take() {
-                        commands.entity(entity).despawn();
-                    }
-                    continue;
-                };
-                let image = assets.load(format!("sprites/decorations/{id}.png"));
-                match existing[layer].take() {
-                    Some(entity) => {
-                        // 替换装备：复用实体，只换贴图（翻转由 `sync_decoration_facing` 维持）
-                        commands.entity(entity).insert(Sprite::from_image(image));
-                    }
-                    None => {
-                        let offset = mirrored_offset(spec.offset, facing_right);
-                        commands.spawn((
-                            Sprite::from_image(image),
-                            Anchor::BOTTOM_CENTER,
-                            Transform::from_xyz(offset.x, offset.y, decoration_local_z(spec.layer)),
-                            DecorationLayer(layer),
-                            ChildOf(player),
-                        ));
-                    }
-                }
-            }
-            None => {
-                if let Some(entity) = existing[layer].take() {
-                    commands.entity(entity).despawn();
-                }
-            }
+    for (player, id, facing) in &players {
+        let facing_right = facing.0;
+        for layer in 0..DECORATION_LAYERS {
+            let Some(decoration_id) = decorations.equipped_at(layer) else {
+                continue;
+            };
+            let Some(spec) = spec_of(decoration_id) else {
+                continue; // 未知 id 视为未装备（不报错、不生成占位）
+            };
+            let image = assets.load(format!("sprites/decorations/{decoration_id}.png"));
+            let offset = mirrored_offset(spec.offset, facing_right);
+            commands.spawn((
+                Sprite::from_image(image),
+                Anchor::BOTTOM_CENTER,
+                Transform::from_xyz(offset.x, offset.y, decoration_local_z_for(id.0, spec.layer)),
+                DecorationLayer(layer),
+                ChildOf(player),
+            ));
         }
     }
 }
@@ -243,14 +344,15 @@ pub fn sync_decoration_facing(
     players: Query<(Entity, &PlayerFacing), With<PlayerMotion>>,
     mut layers: Query<(&DecorationLayer, &ChildOf, &mut Sprite, &mut Transform)>,
 ) {
-    let Some((player, facing)) = players.iter().next() else {
-        return;
-    };
-    let facing_right = facing.0;
+    // 每个装饰品实体跟随它自己的父玩家（多人时朝向可能相反）。
+    let mut facing_of = std::collections::HashMap::new();
+    for (player, facing) in &players {
+        facing_of.insert(player, facing.0);
+    }
     for (layer, parent, mut sprite, mut transform) in &mut layers {
-        if parent.parent() != player {
+        let Some(&facing_right) = facing_of.get(&parent.parent()) else {
             continue;
-        }
+        };
         let Some(spec) = decorations.equipped_at(layer.0).and_then(spec_of) else {
             continue;
         };
@@ -340,10 +442,7 @@ mod tests {
         let mut equipped = vec![None; DECORATION_LAYERS];
         equipped[item_01_layer] = Some("item_01".to_string());
         let decorations = Decorations::restore(vec!["item_01".to_string()], equipped.clone());
-        assert_eq!(
-            decorations.equipped_at(item_01_layer),
-            Some("item_01")
-        );
+        assert_eq!(decorations.equipped_at(item_01_layer), Some("item_01"));
         assert_eq!(decorations.equipped().len(), DECORATION_LAYERS);
         // 未拥有 ⇒ 装备位被清空
         let decorations = Decorations::restore(vec![], equipped);

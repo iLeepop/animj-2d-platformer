@@ -7,10 +7,10 @@ use bevy::camera::visibility::RenderLayers;
 use bevy::prelude::*;
 use bevy_egui::{EguiContexts, EguiPrimaryContextPass, egui};
 
+use crate::EditorMode;
 use crate::session::EditorSession;
 use crate::tools::PlaytestRequest;
 use crate::view::ProjectionState;
-use crate::EditorMode;
 
 /// 退出试玩请求（`F5`/`F6` 之外的编程入口：UI 按钮、自动化冒烟）。
 #[derive(Resource, Default)]
@@ -100,12 +100,15 @@ fn enter_play(
     for entity in &players {
         commands.entity(entity).despawn();
     }
-    let center = game::world::room_spawn_center(
-        &session.doc,
-        session.doc.start.col,
-        session.doc.start.row,
+    let center =
+        game::world::room_spawn_center(&session.doc, session.doc.start.col, session.doc.start.row);
+    game::player::spawn::spawn_player(
+        &mut commands,
+        &sheet,
+        &anim.set,
+        game::player::PlayerId(0),
+        center,
     );
-    game::player::spawn::spawn_player(&mut commands, &sheet, &anim.set, center);
 
     // 编辑投影让位给 game 的世界：**显式销毁**（否则叠加层仍画在试玩画面上）
     for entity in &projection_entities {
@@ -204,8 +207,7 @@ fn exit_play(
     mut next_mode: ResMut<NextState<EditorMode>>,
     _session: Option<Res<EditorSession>>,
 ) {
-    let requested =
-        request.0 || keys.just_pressed(KeyCode::F5) || keys.just_pressed(KeyCode::F6);
+    let requested = request.0 || keys.just_pressed(KeyCode::F5) || keys.just_pressed(KeyCode::F6);
     if !requested {
         return;
     }
@@ -267,8 +269,7 @@ mod tests {
             "F5 在试玩态必须退出到编辑态"
         );
         assert_eq!(
-            *app
-                .world()
+            *app.world()
                 .resource::<State<game::state::GameState>>()
                 .get(),
             game::state::GameState::Paused

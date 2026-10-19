@@ -10,7 +10,7 @@
 
 use bevy::prelude::*;
 
-use crate::player::{PlayerInput, PlayerMotion, PlayerStepOutcome};
+use crate::player::{PlayerInput, PlayerInputs, PlayerMotion, PlayerStepOutcome};
 use crate::render::sprite_anim::CurrentAnimation;
 
 /// 脚本的一步输入：物理动作 + 交互动作。
@@ -131,7 +131,7 @@ fn tick_demo_step(mut step: ResMut<DemoStep>) {
 
 /// 用脚本覆盖本固定步的输入（覆盖采样结果，因此不依赖窗口焦点）。
 fn drive_script_input(
-    mut input: ResMut<PlayerInput>,
+    mut inputs: ResMut<PlayerInputs>,
     script: Res<DemoScript>,
     step: Res<DemoStep>,
     mut announced: Local<Option<u32>>,
@@ -145,7 +145,7 @@ fn drive_script_input(
     let Some(active) = active else {
         return;
     };
-    *input = PlayerInput {
+    inputs.slots[0] = PlayerInput {
         move_x: active.move_x,
         jump_pressed: active.jump_pressed,
         jump_held: active.jump_held,

@@ -147,12 +147,12 @@ fn drive_demo_play(
 fn drive_demo_movement(
     cli: Res<Cli>,
     tick: Res<FrameTick>,
-    mut input: ResMut<game::player::PlayerInput>,
+    mut inputs: ResMut<game::player::PlayerInputs>,
 ) {
     if !cli.demo_play {
         return;
     }
-    input.move_x = if (21..60).contains(&tick.0) { 1 } else { 0 };
+    inputs.slots[0].move_x = if (21..60).contains(&tick.0) { 1 } else { 0 };
 }
 
 /// `--demo-room col,row`：第 10 帧切换房间（无头验证相机与网格是否跟随）。

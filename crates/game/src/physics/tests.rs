@@ -6,7 +6,7 @@
 use bevy::math::Vec2;
 
 use super::aabb::Aabb;
-use super::core::{TILE, overlaps_tile_kind, step, substep_count};
+use super::core::{TILE, overlaps_tile_kind, step, step_with_players, substep_count};
 use super::tile::{TileKind, TileWorld};
 use super::{Body, StepInput, StepOutcome};
 use crate::config::physics::*;
@@ -226,7 +226,11 @@ fn h2_oneway_is_passable_from_below() {
     }
     assert!(peak > TILE * 3.0, "应当能穿过单向平台：peak={peak}");
     assert!(body.grounded, "落回后应站住");
-    assert!((body.aabb.min.y - TILE * 3.0).abs() < 1e-2, "应站在平台顶面：{}", body.aabb.min.y);
+    assert!(
+        (body.aabb.min.y - TILE * 3.0).abs() < 1e-2,
+        "应站在平台顶面：{}",
+        body.aabb.min.y
+    );
 }
 
 // ---------- 辅助 ----------
@@ -1083,4 +1087,113 @@ fn t21_reset_gives_clean_state() {
         &mut out,
     );
     assert!(!out.jumped, "重置后第一步不得起跳");
+}
+
+// ---------- 玩家之间：实心盒（`06` §6.4.10）----------
+
+/// 另一个玩家挡在右边：水平移动被夹在对方左面，速度被吸收。
+#[test]
+fn other_player_blocks_horizontal_movement() {
+    let world = flat_world();
+    let cfg = DEFAULT_PHYSICS;
+    let mut body = Body::at_center(Vec2::new(100.0, TILE + PLAYER_SIZE.y / 2.0));
+    let other = Aabb::from_center_size(Vec2::new(160.0, TILE + PLAYER_SIZE.y / 2.0), PLAYER_SIZE);
+    let mut out = StepOutcome::default();
+    for _ in 0..120 {
+        step_with_players(
+            &cfg,
+            &world,
+            &mut body,
+            StepInput {
+                move_x: 1,
+                ..Default::default()
+            },
+            &[other],
+            &mut out,
+        );
+    }
+    assert!(
+        body.aabb.max.x <= other.min.x + 1e-3,
+        "不得穿过另一个玩家：max.x = {}，对方 min.x = {}",
+        body.aabb.max.x,
+        other.min.x
+    );
+    assert_eq!(out.hit_wall_x, 1);
+    assert_box_invariant(&body, "撞到另一个玩家");
+}
+
+/// 站在另一个玩家头上：支撑探测必须把他当可站立面，且不穿过去。
+#[test]
+fn standing_on_another_player_grounds_the_body() {
+    let world = flat_world();
+    let cfg = DEFAULT_PHYSICS;
+    // 对方站在地板上（脚底 = TILE），顶面 = TILE + 28。
+    let other = Aabb::from_center_size(Vec2::new(160.0, TILE + PLAYER_SIZE.y / 2.0), PLAYER_SIZE);
+    let top = other.max.y;
+    let mut body = Body::at_center(Vec2::new(160.0, top + PLAYER_SIZE.y / 2.0 + 1.0));
+    let mut out = StepOutcome::default();
+    for _ in 0..60 {
+        step_with_players(
+            &cfg,
+            &world,
+            &mut body,
+            StepInput::default(),
+            &[other],
+            &mut out,
+        );
+    }
+    assert!(body.grounded, "站在另一个玩家头上必须算 grounded");
+    assert!(
+        (body.aabb.min.y - top).abs() < 1e-3,
+        "脚底必须贴合对方顶面：{} vs {}",
+        body.aabb.min.y,
+        top
+    );
+    assert_box_invariant(&body, "站在另一个玩家头上");
+}
+
+/// 下方玩家跳起撞到上方玩家：撞头吸收上升速度，位置不重叠。
+#[test]
+fn other_player_blocks_jumping_through() {
+    let world = flat_world();
+    let cfg = DEFAULT_PHYSICS;
+    let other = Aabb::from_center_size(
+        Vec2::new(160.0, TILE + PLAYER_SIZE.y * 1.5 + 16.0),
+        PLAYER_SIZE,
+    );
+    let mut body = Body::at_center(Vec2::new(160.0, TILE + PLAYER_SIZE.y / 2.0));
+    let mut out = StepOutcome::default();
+    // 起跳
+    step_with_players(
+        &cfg,
+        &world,
+        &mut body,
+        StepInput {
+            jump_pressed: true,
+            jump_held: true,
+            ..Default::default()
+        },
+        &[other],
+        &mut out,
+    );
+    for _ in 0..120 {
+        step_with_players(
+            &cfg,
+            &world,
+            &mut body,
+            StepInput {
+                jump_held: true,
+                ..Default::default()
+            },
+            &[other],
+            &mut out,
+        );
+        assert!(
+            body.aabb.max.y <= other.min.y + 1e-3,
+            "不得穿过上方玩家：max.y = {}，对方 min.y = {}",
+            body.aabb.max.y,
+            other.min.y
+        );
+    }
+    assert_box_invariant(&body, "撞到上方玩家");
 }

@@ -5,7 +5,7 @@
 
 use bevy::prelude::*;
 
-use super::{PlayerMotion, PlayerStepOutcome};
+use super::{PlayerId, PlayerMotion, PlayerStepOutcome};
 use crate::checkpoint::{ActiveCheckpoint, CheckpointPoint};
 use crate::config::physics::HAZARD_INSET;
 use crate::physics::{TileKind, overlaps_tile_kind};
@@ -15,8 +15,11 @@ use crate::world::CurrentRoom;
 use crate::world::load::LoadedLevel;
 
 /// 角色死亡（buffered 消息，命名与载荷见 `05` §5.6）。
+///
+/// 多人时按玩家区分：只重置死亡的玩家，其他玩家继续（`01` §1.6）。
 #[derive(Message, Debug, Clone, Copy)]
 pub struct PlayerDied {
+    pub player_id: PlayerId,
     pub room_index: u32,
 }
 
@@ -29,7 +32,8 @@ impl Plugin for PlayerDeathPlugin {
             (check_hazards, respawn_on_death)
                 .chain()
                 .after(crate::player::apply_player_physics)
-                .in_set(GameSet::Physics),
+                .in_set(GameSet::Physics)
+                .run_if(crate::net::not_client),
         );
     }
 }
@@ -40,25 +44,30 @@ impl Plugin for PlayerDeathPlugin {
 pub fn check_hazards(
     tiles: Option<Res<LevelTiles>>,
     loaded: Option<Res<LoadedLevel>>,
-    current: Option<Res<CurrentRoom>>,
-    players: Query<&PlayerMotion>,
+    players: Query<(&PlayerId, &PlayerMotion)>,
     mut died: MessageWriter<PlayerDied>,
 ) {
-    let (Some(tiles), Some(loaded), Some(current)) = (tiles, loaded, current) else {
+    let (Some(tiles), Some(loaded)) = (tiles, loaded) else {
         return;
     };
-    let room_index =
-        level_format::room_index(current.col, current.row, loaded.level.grid.cols) as u32;
-    for motion in &players {
-        if overlaps_tile_kind(
+    let grid = (loaded.level.grid.cols, loaded.level.grid.rows);
+    for (id, motion) in &players {
+        if !overlaps_tile_kind(
             tiles.as_ref(),
             motion.0.aabb,
             -HAZARD_INSET,
             TileKind::Hazard,
         ) {
-            died.write(PlayerDied { room_index });
-            return;
+            continue;
         }
+        // 死亡房间按**该玩家**当前位置算；多玩家可能分处不同房间。
+        let room_index = crate::coords::world_to_room(motion.0.aabb.center(), grid.0, grid.1)
+            .map(|pos| level_format::room_index(pos.col, pos.row, grid.0) as u32)
+            .unwrap_or(0);
+        died.write(PlayerDied {
+            player_id: *id,
+            room_index,
+        });
     }
 }
 
@@ -101,46 +110,64 @@ pub fn respawn_on_death(
     loaded: Option<Res<LoadedLevel>>,
     mut current: Option<ResMut<CurrentRoom>>,
     active: Option<Res<ActiveCheckpoint>>,
-    mut players: Query<(&mut PlayerMotion, &mut PlayerStepOutcome)>,
+    tiles: Option<Res<LevelTiles>>,
+    mut players: Query<(&PlayerId, &mut PlayerMotion, &mut PlayerStepOutcome)>,
 ) {
+    let dead: Vec<PlayerId> = died.read().map(|message| message.player_id).collect();
+    if dead.is_empty() {
+        return;
+    }
     let (Some(loaded), Some(current)) = (loaded, current.as_mut()) else {
         return;
     };
-    if died.read().count() == 0 {
-        return;
-    }
     let now = (current.col, current.row);
     let checkpoint = active.and_then(|active| active.0);
-    for (mut motion, mut outcome) in &mut players {
-        let target = respawn_target(&loaded.level, checkpoint);
-        if target.room != now {
-            // 存档点/出生点可能在别的房间：显式切房间，避免滞回判定让相机/裁剪滞后一帧以上。
-            current.col = target.room.0;
-            current.row = target.room.1;
-            info!(
-                "角色死亡：回到{}所在房间 ({}, {})",
-                if target.from_checkpoint {
-                    "存档点"
-                } else {
-                    "出生点"
-                },
-                target.room.0,
-                target.room.1
-            );
-        }
+    let target = respawn_target(&loaded.level, checkpoint);
+    if target.room != now {
+        // 存档点/出生点可能在别的房间：显式切房间，避免滞回判定让相机/裁剪滞后一帧以上。
+        current.col = target.room.0;
+        current.row = target.room.1;
+        info!(
+            "角色死亡：回到{}所在房间 ({}, {})",
+            if target.from_checkpoint {
+                "存档点"
+            } else {
+                "出生点"
+            },
+            target.room.0,
+            target.room.1
+        );
+    }
+    for id in &dead {
         if target.from_checkpoint {
             info!(
-                "角色死亡：回到存档点 ({:.0}, {:.0})",
-                target.center.x, target.center.y
+                "玩家 {} 死亡：回到存档点 ({:.0}, {:.0})",
+                id.0, target.center.x, target.center.y
             );
         } else {
             info!(
-                "角色死亡：回到出生点 ({:.0}, {:.0})（房间 ({}, {})）",
-                target.center.x, target.center.y, target.room.0, target.room.1
+                "玩家 {} 死亡：回到出生点 ({:.0}, {:.0})（房间 ({}, {})）",
+                id.0, target.center.x, target.center.y, target.room.0, target.room.1
             );
         }
+    }
+
+    // 多人同时死亡时按 id 分列，避免两个盒子完全重叠。
+    let count = dead.iter().map(|id| id.index()).max().unwrap_or(0) + 1;
+    let centers = tiles
+        .as_ref()
+        .map(|tiles| {
+            crate::player::spawn::player_spawn_centers(target.center, count, tiles.as_ref())
+        })
+        .unwrap_or_else(|| vec![target.center; count]);
+
+    for (id, mut motion, mut outcome) in &mut players {
+        if !dead.contains(id) {
+            continue;
+        }
+        let center = centers.get(id.index()).copied().unwrap_or(target.center);
         // `Body::at_center` 保证「土狼时间用尽」，因此重生后不得凭空起跳（`06` §6.5.3 / T21）
-        motion.0 = crate::physics::Body::at_center(target.center);
+        motion.0 = crate::physics::Body::at_center(center);
         outcome.0 = crate::physics::StepOutcome::default();
     }
 }
@@ -259,11 +286,15 @@ mod tests {
         let player = app
             .world_mut()
             .spawn((
+                PlayerId(0),
                 PlayerMotion(Body::at_center(Vec2::new(700.0, 40.0))),
                 PlayerStepOutcome::default(),
             ))
             .id();
-        app.world_mut().write_message(PlayerDied { room_index: 1 });
+        app.world_mut().write_message(PlayerDied {
+            player_id: PlayerId(0),
+            room_index: 1,
+        });
         app.world_mut()
             .run_system_once(respawn_on_death)
             .expect("死亡重置系统应能运行");

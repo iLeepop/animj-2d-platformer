@@ -7,10 +7,9 @@
 use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use crate::player::{PlayerInput, PlayerMotion};
+use crate::player::{PlayerId, PlayerInputs, PlayerMotion};
 use crate::room::{RoomZone, RoomZoneKind, aabb_overlaps};
 use crate::state::GameSet;
-use crate::world::CurrentRoom;
 use crate::world::load::LoadedLevel;
 
 /// 关卡实体 kind（`03` §3.4）。
@@ -80,7 +79,8 @@ impl Plugin for CheckpointPlugin {
                 activate_checkpoint
                     .after(crate::player::apply_player_physics)
                     .before(crate::player::death::check_hazards)
-                    .in_set(GameSet::Physics),
+                    .in_set(GameSet::Physics)
+                    .run_if(crate::net::not_client),
             )
             .add_systems(Update, sync_checkpoint_visual.in_set(GameSet::PostPhysics));
     }
@@ -90,47 +90,51 @@ impl Plugin for CheckpointPlugin {
 ///
 /// `interact_pressed` 与跳跃一样是锁存量：这里消费一次，保证一个按下只被一个固定步看到。
 fn activate_checkpoint(
-    mut input: ResMut<PlayerInput>,
+    mut inputs: ResMut<PlayerInputs>,
     loaded: Option<Res<LoadedLevel>>,
-    current: Option<Res<CurrentRoom>>,
     mut active: ResMut<ActiveCheckpoint>,
-    players: Query<&PlayerMotion>,
+    players: Query<(&PlayerId, &PlayerMotion)>,
     zones: Query<&RoomZone>,
     mut activated: MessageWriter<CheckpointActivated>,
 ) {
-    if !input.interact_pressed {
-        return;
-    }
-    input.interact_pressed = false;
-    let (Some(loaded), Some(current)) = (loaded, current) else {
+    let Some(loaded) = loaded else {
         return;
     };
-    let Some(motion) = players.iter().next() else {
-        return;
-    };
-    let room_index =
-        level_format::room_index(current.col, current.row, loaded.level.grid.cols) as u32;
-    for zone in &zones {
-        if zone.kind != RoomZoneKind::Checkpoint || zone.room_index != room_index {
+    let grid = (loaded.level.grid.cols, loaded.level.grid.rows);
+    // 每个玩家各自按 E；一个按下只被一个固定步消费（`02` §2.5）。
+    for (id, motion) in &players {
+        if !inputs.get(*id).interact_pressed {
             continue;
         }
-        if !aabb_overlaps(&motion.0.aabb, &zone.aabb) {
+        inputs.get_mut(*id).interact_pressed = false;
+        let Some((col, row)) = crate::coords::world_to_room(motion.0.aabb.center(), grid.0, grid.1)
+            .map(|pos| (pos.col, pos.row))
+        else {
             continue;
-        }
-        let point = CheckpointPoint {
-            col: current.col,
-            row: current.row,
-            at: zone.at,
         };
-        if active.0 != Some(point) {
-            active.0 = Some(point);
-            activated.write(CheckpointActivated { point });
-            info!(
-                "存档点已设置：房间 ({}, {}) at ({}, {})",
-                point.col, point.row, point.at.0, point.at.1
-            );
+        let room_index = level_format::room_index(col, row, grid.0) as u32;
+        for zone in &zones {
+            if zone.kind != RoomZoneKind::Checkpoint || zone.room_index != room_index {
+                continue;
+            }
+            if !aabb_overlaps(&motion.0.aabb, &zone.aabb) {
+                continue;
+            }
+            let point = CheckpointPoint {
+                col,
+                row,
+                at: zone.at,
+            };
+            if active.0 != Some(point) {
+                active.0 = Some(point);
+                activated.write(CheckpointActivated { point });
+                info!(
+                    "玩家 {} 设置存档点：房间 ({}, {}) at ({}, {})",
+                    id.0, point.col, point.row, point.at.0, point.at.1
+                );
+            }
+            break;
         }
-        break;
     }
 }
 
@@ -169,6 +173,7 @@ mod tests {
     use super::*;
     use crate::physics::{Aabb, Body};
     use crate::room::RoomZoneKind;
+    use crate::world::CurrentRoom;
 
     const CHECKPOINT_AT: (i32, i32) = (96, 464);
 
@@ -205,7 +210,7 @@ mod tests {
     fn app() -> App {
         let level = level();
         let mut app = App::new();
-        app.init_resource::<PlayerInput>()
+        app.init_resource::<PlayerInputs>()
             .init_resource::<ActiveCheckpoint>()
             .add_message::<CheckpointActivated>()
             .insert_resource(LoadedLevel {
@@ -227,13 +232,12 @@ mod tests {
     }
 
     fn spawn_player(app: &mut App, center: Vec2) {
-        app.world_mut().spawn(PlayerMotion(Body::at_center(center)));
+        app.world_mut()
+            .spawn((PlayerId(0), PlayerMotion(Body::at_center(center))));
     }
 
     fn press_e(app: &mut App) {
-        app.world_mut()
-            .resource_mut::<PlayerInput>()
-            .interact_pressed = true;
+        app.world_mut().resource_mut::<PlayerInputs>().slots[0].interact_pressed = true;
         app.world_mut()
             .run_system_once(activate_checkpoint)
             .expect("存档点系统应能运行");
@@ -254,7 +258,7 @@ mod tests {
         };
         assert_eq!(app.world().resource::<ActiveCheckpoint>().0, Some(point));
         assert!(
-            !app.world().resource::<PlayerInput>().interact_pressed,
+            !app.world().resource::<PlayerInputs>().slots[0].interact_pressed,
             "按键必须被消费"
         );
         let activated = app
@@ -274,7 +278,7 @@ mod tests {
         press_e(&mut app);
 
         assert_eq!(app.world().resource::<ActiveCheckpoint>().0, None);
-        assert!(!app.world().resource::<PlayerInput>().interact_pressed);
+        assert!(!app.world().resource::<PlayerInputs>().slots[0].interact_pressed);
     }
 
     /// 存档点的世界坐标与房间下标遵循 `00` §0.3 的唯一换算入口。

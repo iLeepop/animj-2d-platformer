@@ -14,6 +14,8 @@ pub enum GameState {
     MainMenu,
     /// 关卡选择。列出 `assets/levels/*.level.ron`。
     LevelSelect,
+    /// 局域网联机：搜索房间 / 创建房间（`05` §5.15）。
+    OnlineMenu,
     /// 全局设置（音量 / 全屏）。可从主菜单或暂停菜单进入。
     Settings,
     /// 加载 `.level.ron`、校验、生成世界。失败则**停留在本状态**并显示错误。
@@ -37,6 +39,40 @@ pub enum StartupFlow {
     Menu,
     /// 直接加载默认关卡（编辑器、冒烟验证）。
     Direct,
+}
+
+/// 本局会话模式（`05` §5.15）。菜单在进入 `Loading` 前写入；网络插件据此决定
+/// 谁跑物理、谁接收快照。编辑器与单人游戏恒为 [`SessionMode::Solo`]。
+#[derive(Resource, Debug, Default, Clone, PartialEq, Eq)]
+pub enum SessionMode {
+    /// 单人离线。
+    #[default]
+    Solo,
+    /// 同屏双人（共享键盘，`06` §6.1.6）。
+    LocalCoop,
+    /// 主机：权威模拟全部玩家，并向客户端广播快照。
+    Host,
+    /// 客户端：只发送输入、应用主机快照。
+    Client { server: std::net::SocketAddr },
+}
+
+impl SessionMode {
+    /// 本进程需要生成的本地玩家数。客户端一个都不生成：玩家实体由主机快照创建。
+    pub fn local_players(&self) -> usize {
+        match self {
+            SessionMode::Solo | SessionMode::Host => 1,
+            SessionMode::LocalCoop => 2,
+            SessionMode::Client { .. } => 0,
+        }
+    }
+
+    pub fn is_client(&self) -> bool {
+        matches!(self, SessionMode::Client { .. })
+    }
+
+    pub fn is_host(&self) -> bool {
+        matches!(self, SessionMode::Host)
+    }
 }
 
 /// 从设置界面返回的目标状态（主菜单或暂停菜单）。

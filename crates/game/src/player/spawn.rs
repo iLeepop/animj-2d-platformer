@@ -6,12 +6,17 @@ use bevy::prelude::*;
 use bevy::sprite::Anchor;
 use level_format::TILE_PX;
 
-use super::{PlayerFacing, PlayerMotion, PlayerStepOutcome};
-use crate::config::render::{PLAYER_SHEET_COLUMNS, PLAYER_SHEET_IMAGE, PLAYER_SHEET_ROWS, z};
-use crate::physics::Body;
+use super::{PlayerFacing, PlayerId, PlayerMotion, PlayerStepOutcome};
+use crate::config::net::{PLAYER_SPAWN_GAP_PX, SPAWN_PLACEMENT_TRIES};
+use crate::config::physics::PLAYER_SIZE;
+use crate::config::render::{
+    PLAYER_SHEET_COLUMNS, PLAYER_SHEET_IMAGE, PLAYER_SHEET_ROWS, player_tint, z,
+};
+use crate::physics::{Aabb, Body, TileKind, overlaps_tile_kind};
 use crate::render::pixel_camera::PIXEL_PERFECT_LAYERS;
-use crate::render::sprite_anim::{AnimRow, AnimationFrames, AnimationTimer, CurrentAnimation};
 use crate::render::snap::{PixelSnap, snap_px};
+use crate::render::sprite_anim::{AnimRow, AnimationFrames, AnimationTimer, CurrentAnimation};
+use crate::tiles::LevelTiles;
 
 /// 角色图集句柄（图集布局只建一次）。
 #[derive(Resource, Clone)]
@@ -112,27 +117,62 @@ fn rebuild_player_sheets(
     });
 }
 
+/// 多玩家出生位置：第一个在 `base`，其余按 ±`PLAYER_SPAWN_GAP_PX` 寻找不与实心瓦片重叠的位置。
+///
+/// 不依赖房间数据（出生点可能被墙挤住）；找不到空位时退化为按 id 偏移（碰撞求解会处理）。
+pub fn player_spawn_centers(base: Vec2, count: usize, tiles: &LevelTiles) -> Vec<Vec2> {
+    let mut centers = Vec::with_capacity(count);
+    for index in 0..count {
+        if index == 0 {
+            centers.push(base);
+            continue;
+        }
+        let free = |x: f32| {
+            let aabb = Aabb::from_center_size(Vec2::new(x, base.y), PLAYER_SIZE);
+            !overlaps_tile_kind(tiles, aabb, 0.0, TileKind::Solid)
+        };
+        let mut chosen = base.x + index as f32 * PLAYER_SPAWN_GAP_PX;
+        for step in 1..=SPAWN_PLACEMENT_TRIES {
+            let offset = step as f32 * PLAYER_SPAWN_GAP_PX;
+            if free(base.x + offset) {
+                chosen = base.x + offset;
+                break;
+            }
+            if free(base.x - offset) {
+                chosen = base.x - offset;
+                break;
+            }
+        }
+        centers.push(Vec2::new(chosen, base.y));
+    }
+    centers
+}
+
 /// 在 `center`（世界像素，AABB 中心）生成角色实体。
 pub fn spawn_player(
     commands: &mut Commands,
     sheet: &PlayerSheet,
     anim: &crate::anim_data::PlayerAnimSet,
+    id: PlayerId,
     center: Vec2,
 ) -> Entity {
     let idle = anim.state(AnimRow::Idle);
+    let mut sprite = Sprite::from_atlas_image(
+        sheet.image.clone(),
+        TextureAtlas {
+            layout: sheet.layout.clone(),
+            index: idle.frames.first().copied().unwrap_or(0),
+        },
+    );
+    sprite.color = player_tint(id.0);
     commands
         .spawn((
+            id,
             PlayerMotion(Body::at_center(center)),
             PlayerStepOutcome::default(),
             // 默认朝右（`03` §3.4），由 `player::update_player_facing` 随输入更新。
             PlayerFacing::default(),
-            Sprite::from_atlas_image(
-                sheet.image.clone(),
-                TextureAtlas {
-                    layout: sheet.layout.clone(),
-                    index: idle.frames.first().copied().unwrap_or(0),
-                },
-            ),
+            sprite,
             // 帧动画：初始 idle（`04` §5.2）
             AnimationFrames::new(idle.frames.clone(), idle.looping),
             AnimationTimer::for_state(idle.frame_secs),
@@ -140,7 +180,7 @@ pub fn spawn_player(
             Anchor::BOTTOM_CENTER,
             // 位置语义 = AABB 底边中点（脚底中点），与 `06` §6.8.2 的投影一致；
             // 每帧由 `render::snap::sync_player_transform` 覆盖。
-            Transform::from_xyz(snap_px(center.x), snap_px(center.y), z::PLAYER),
+            Transform::from_xyz(snap_px(center.x), snap_px(center.y), z::player_z(id.0)),
             PIXEL_PERFECT_LAYERS,
             PixelSnap,
         ))

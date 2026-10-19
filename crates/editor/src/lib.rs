@@ -2,6 +2,20 @@
 //!
 //! 权威定义见 `docs/08-level-editor.md`。
 
+// 编辑器代码早于本次联机改动；这些是风格类 lint（不改行为），且不属于联机范围。
+// 发布 bin（`game`）没有这些例外。
+#![allow(
+    clippy::chunks_exact_to_as_chunks,
+    clippy::type_complexity,
+    clippy::too_many_arguments,
+    clippy::question_mark,
+    clippy::needless_return,
+    clippy::collapsible_if,
+    clippy::needless_borrow,
+    clippy::unwrap_or_default,
+    clippy::option_as_ref_deref
+)]
+
 /// 构建标记：启动时打印，用于确认"跑的是不是最新构建"。
 /// 每次改编辑器 UI/交互都手动递增末尾字母。
 pub const BUILD_TAG: &str = "2026-10-20/p";

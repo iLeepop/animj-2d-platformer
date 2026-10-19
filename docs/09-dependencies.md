@@ -11,7 +11,7 @@
 
 | # | 规则 | 依据 |
 |---|---|---|
-| R1 | 运行时依赖只有 `bevy` + `serde` + `ron`；`editor` crate 额外一个 `bevy_egui`（UI 基座）与一个 **仅工具用** 的 `png`（占位资产编码） | `00` §0.1 **D15** |
+| R1 | 运行时依赖只有 `bevy` + `serde` + `ron`；`editor` crate 额外一个 `bevy_egui`（UI 基座）与一个 **仅工具用** 的 `png`（占位资产编码）。联机只用 **`std::net::UdpSocket`**（标准库），**不新增网络 crate** | `00` §0.1 **D15**、**D18** |
 | R2 | `level_format` **禁止**依赖 `bevy`，只允许 `serde` + `ron` ⇒ 它在无窗口/无 GPU 环境下也能跑单元测试 | `00` §0.6 |
 | R3 | 任何新依赖进 `Cargo.toml` 前，必须先在 §9.2 的兼容矩阵里有一行且状态为「可用」；**禁止** git 依赖 | 本文 §9.2、§9.4.4 |
 
@@ -90,6 +90,7 @@
 | 性能 HUD、热重载 | 内建 `dev` 集合（`debug` + `bevy_dev_tools` + `render_dev_tools` + `file_watcher`）+ `bevy::diagnostic` | `iyes_perf_ui` / `bevy_screen_diagnostics` |
 | 像素完美缩放 | 自研（见 `07`） | `bevy_pixel_camera` |
 | 世界检查器 | 自研 egui 面板（`08`） | `bevy-inspector-egui`、`bevy_editor_pls` |
+| 联机传输 | 自研 UDP 协议（`std::net`，`05` §5.15） | `bevy_renet` / `lightyear` / `matchbox` 等第三方网络 crate（0.20 兼容性未取证，且会绕过 D15） |
 
 ---
 

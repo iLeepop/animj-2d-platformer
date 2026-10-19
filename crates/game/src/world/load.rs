@@ -4,8 +4,8 @@
 //! （`docs/AGENTS.md` §3.4）。
 
 use bevy::asset::{AssetEvent, LoadState};
-use bevy::sprite::Anchor;
 use bevy::prelude::*;
+use bevy::sprite::Anchor;
 use level_format::{Level, LevelIssue, Severity};
 
 use crate::config::physics::PICKUP_SIZE;
@@ -13,8 +13,8 @@ use crate::config::render::z;
 use crate::level_asset::LevelAsset;
 use crate::physics::Aabb;
 use crate::render::pixel_camera::PIXEL_PERFECT_LAYERS;
-use crate::room::{RoomZone, RoomZoneKind};
-use crate::state::GameState;
+use crate::room::{PickedZones, RoomZone, RoomZoneKind, ZoneId};
+use crate::state::{GameState, SessionMode};
 use crate::tiles::LevelTiles;
 use crate::world::CurrentRoom;
 use crate::world::progress::LevelProgress;
@@ -49,6 +49,10 @@ pub enum Notice {
     VersionMismatch,
     LevelNotFound,
     LoadFailed,
+    NetRejected,
+    NetDisconnected,
+    NetTimeout,
+    NetLevelMismatch,
 }
 
 impl Notice {
@@ -59,6 +63,10 @@ impl Notice {
             Notice::VersionMismatch => strings.save_version_mismatch,
             Notice::LevelNotFound => strings.save_level_not_found,
             Notice::LoadFailed => strings.save_load_failed,
+            Notice::NetRejected => strings.net_rejected,
+            Notice::NetDisconnected => strings.net_disconnected,
+            Notice::NetTimeout => strings.net_timeout,
+            Notice::NetLevelMismatch => strings.net_level_mismatch,
         }
     }
 }
@@ -137,6 +145,7 @@ pub(crate) fn request_level(
     commands.remove_resource::<StartRequest>();
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn poll_level(
     mut commands: Commands,
     mut pending: Option<ResMut<PendingLevel>>,
@@ -144,6 +153,7 @@ pub(crate) fn poll_level(
     server: Res<AssetServer>,
     player_sheet: Res<crate::player::spawn::PlayerSheet>,
     anim: Res<crate::anim_data::ActiveAnim>,
+    session: Res<SessionMode>,
     mut next: ResMut<NextState<GameState>>,
 ) {
     let Some(pending) = pending.as_mut() else {
@@ -270,8 +280,22 @@ pub(crate) fn poll_level(
         spawn_col,
         spawn_row
     );
-    crate::player::spawn::spawn_player(&mut commands, &player_sheet, &anim.set, center);
-    commands.insert_resource(LevelTiles::from_level(&level));
+    // 先建瓦片再算出生位：多人出生点需要查询实心格（`02` §2.5）。
+    let tiles = LevelTiles::from_level(&level);
+    let count = session.local_players();
+    let centers = crate::player::spawn::player_spawn_centers(center, count, &tiles);
+    for (index, spawn_center) in centers.into_iter().enumerate() {
+        crate::player::spawn::spawn_player(
+            &mut commands,
+            &player_sheet,
+            &anim.set,
+            crate::player::PlayerId(index as u8),
+            spawn_center,
+        );
+    }
+    info!("生成玩家：{count} 名（模式 {:?}）", *session);
+    commands.insert_resource(tiles);
+    commands.insert_resource(PickedZones::default());
     commands.insert_resource(LoadedLevel {
         level,
         handle: pending.handle.clone(),
@@ -335,6 +359,8 @@ pub(crate) fn hot_reload_level(
         warn!("热重载：关卡结构变化，进度已重置（`02` §2.3）");
     }
     commands.insert_resource(LevelTiles::from_level(&loaded.level));
+    // 房间实体以 0 重新编号；旧编号会让客户端误删新果实（`05` §5.15.5）。
+    commands.insert_resource(PickedZones::default());
     let grid = (loaded.level.grid.cols, loaded.level.grid.rows);
     let start = (loaded.level.start.col, loaded.level.start.row);
     let clamped = clamp_room((current.col, current.row), grid, start);
@@ -356,6 +382,7 @@ pub(crate) fn hot_reload_level(
 /// 视觉是占位色块，尺寸**等于判定尺寸**（拾取物 12×12、区域用声明尺寸/默认 32×32）。
 fn spawn_room_entities(commands: &mut Commands, level: &Level) {
     let (cols, rows) = (level.grid.cols, level.grid.rows);
+    let mut zone_id = 0u32;
     for (index, room) in level.rooms.iter().enumerate() {
         let (col, row) = ((index as u32) % cols, (index as u32) / cols);
         for spec in &room.entities {
@@ -389,11 +416,13 @@ fn spawn_room_entities(commands: &mut Commands, level: &Level) {
                     aabb,
                     at: spec.at,
                 },
+                ZoneId(zone_id),
                 Sprite::from_color(color, size),
                 Anchor::BOTTOM_CENTER,
                 Transform::from_xyz(center.x, aabb.min.y, zone_z),
                 PIXEL_PERFECT_LAYERS,
             ));
+            zone_id += 1;
         }
     }
 }

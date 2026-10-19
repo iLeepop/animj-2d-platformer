@@ -14,9 +14,10 @@ use crate::config::render::{
     MENU_FONT_PX, MENU_GAP_PX, MENU_PADDING_PX, MENU_TITLE_FONT_PX, VIEWPORT_H, VIEWPORT_W,
 };
 use crate::fonts::UiFont;
+use crate::net::discovery::LanBrowser;
 use crate::save;
 use crate::settings::GameSettings;
-use crate::state::{GameState, SettingsReturn};
+use crate::state::{GameState, SessionMode, SettingsReturn};
 use crate::world::load::{LoadMode, LoadNotice, Notice, StartRequest};
 
 /// 扫描到的关卡 id（`assets/levels/*.level.ron` 的文件名去后缀）。
@@ -35,6 +36,13 @@ struct LevelRoot;
 struct SettingsRoot;
 
 #[derive(Component)]
+struct OnlineRoot;
+
+/// 房间列表的容器：列表变化时只重建它的子节点，按钮顺序不变。
+#[derive(Component)]
+struct OnlineRoomList;
+
+#[derive(Component)]
 struct MenuStatusText;
 
 #[derive(Component)]
@@ -43,10 +51,17 @@ struct MenuButton(MenuAction);
 #[derive(Component, Debug, Clone)]
 enum MenuAction {
     StartGame,
+    LocalCoop,
+    Online,
     LoadSave,
     Settings,
     Exit,
     SelectLevel(String),
+    CreateRoom,
+    JoinRoom {
+        addr: std::net::SocketAddr,
+        level_id: String,
+    },
     VolumeDown,
     VolumeUp,
     ToggleFullscreen,
@@ -61,11 +76,15 @@ impl Plugin for MenuPlugin {
         app.insert_resource(LevelCatalog(assets::level_ids()))
             .add_systems(OnEnter(GameState::MainMenu), spawn_main_menu)
             .add_systems(OnEnter(GameState::LevelSelect), spawn_level_select)
+            .add_systems(OnEnter(GameState::OnlineMenu), spawn_online_menu)
             .add_systems(
                 Update,
                 (
                     handle_menu_buttons.run_if(in_state(GameState::MainMenu)),
                     handle_level_buttons.run_if(in_state(GameState::LevelSelect)),
+                    (handle_online_buttons, ensure_online_rooms)
+                        .chain()
+                        .run_if(in_state(GameState::OnlineMenu)),
                     (handle_settings_buttons, ensure_settings_ui)
                         .chain()
                         .run_if(in_state(GameState::Settings)),
@@ -124,6 +143,14 @@ fn spawn_main_menu(
         s.start_game,
         MenuAction::StartGame,
     );
+    menu_button(
+        &mut commands,
+        &font,
+        root,
+        s.local_coop,
+        MenuAction::LocalCoop,
+    );
+    menu_button(&mut commands, &font, root, s.online, MenuAction::Online);
     menu_button(
         &mut commands,
         &font,
@@ -197,6 +224,142 @@ fn spawn_level_select(
     menu_button(&mut commands, &font, root, s.back, MenuAction::Back);
 }
 
+/// 联机页：搜索结果列表 + 创建房间 + 返回。
+fn spawn_online_menu(mut commands: Commands, settings: Res<GameSettings>, font: Res<UiFont>) {
+    let s = settings.language.strings();
+    let root = commands
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                left: px(0.0),
+                top: px(0.0),
+                width: px(VIEWPORT_W as f32),
+                height: px(VIEWPORT_H as f32),
+                flex_direction: FlexDirection::Column,
+                padding: UiRect::all(px(MENU_PADDING_PX * 2.0)),
+                row_gap: px(MENU_GAP_PX),
+                ..default()
+            },
+            BackgroundColor(Color::srgb(0.04, 0.05, 0.09)),
+            GlobalZIndex(100),
+            OnlineRoot,
+            DespawnOnExit(GameState::OnlineMenu),
+        ))
+        .id();
+
+    commands.spawn((
+        Text::new(s.online_title),
+        font.text_font(MENU_TITLE_FONT_PX),
+        TextColor(Color::WHITE),
+        ChildOf(root),
+    ));
+    commands.spawn((
+        Node {
+            flex_direction: FlexDirection::Column,
+            row_gap: px(MENU_GAP_PX),
+            ..default()
+        },
+        OnlineRoomList,
+        ChildOf(root),
+    ));
+    menu_button(
+        &mut commands,
+        &font,
+        root,
+        s.create_room,
+        MenuAction::CreateRoom,
+    );
+    menu_button(&mut commands, &font, root, s.back, MenuAction::Back);
+}
+
+/// 房间集合变化时重建列表（`LanBrowser::revision` 是唯一判据）。
+#[allow(clippy::too_many_arguments)]
+fn ensure_online_rooms(
+    mut commands: Commands,
+    browser: Option<Res<LanBrowser>>,
+    settings: Res<GameSettings>,
+    font: Res<UiFont>,
+    slots: Query<Entity, With<OnlineRoomList>>,
+    children: Query<(Entity, &ChildOf)>,
+    mut revision: Local<Option<u64>>,
+) {
+    let Some(browser) = browser else {
+        return;
+    };
+    if *revision == Some(browser.revision) {
+        return;
+    }
+    *revision = Some(browser.revision);
+    let Some(slot) = slots.iter().next() else {
+        return;
+    };
+    for (child, parent) in &children {
+        if parent.parent() == slot {
+            commands.entity(child).despawn();
+        }
+    }
+
+    let s = settings.language.strings();
+    if browser.rooms.is_empty() {
+        commands.spawn((
+            Text::new(s.searching),
+            font.text_font(MENU_FONT_PX),
+            TextColor(Color::srgb(0.75, 0.78, 0.85)),
+            ChildOf(slot),
+        ));
+        return;
+    }
+    for (addr, room) in &browser.rooms {
+        let state = if room.players >= room.max_players {
+            s.room_full
+        } else {
+            ""
+        };
+        let label = format!(
+            "{}  {}/{}  {}  {state}",
+            room.name, room.players, room.max_players, room.level_id
+        );
+        menu_button(
+            &mut commands,
+            &font,
+            slot,
+            label,
+            MenuAction::JoinRoom {
+                addr: *addr,
+                level_id: room.level_id.clone(),
+            },
+        );
+    }
+}
+
+fn handle_online_buttons(
+    mut commands: Commands,
+    buttons: Query<&MenuButton, Added<Pressed>>,
+    mut session: ResMut<SessionMode>,
+    mut next: ResMut<NextState<GameState>>,
+) {
+    for button in &buttons {
+        match &button.0 {
+            MenuAction::CreateRoom => {
+                *session = SessionMode::Host;
+                info!("联机：创建房间（选择关卡后开始监听）");
+                next.set(GameState::LevelSelect);
+            }
+            MenuAction::JoinRoom { addr, level_id } => {
+                *session = SessionMode::Client { server: *addr };
+                info!("联机：加入房间 {addr}（关卡 {level_id}）");
+                commands.insert_resource(StartRequest {
+                    level_id: level_id.clone(),
+                    mode: LoadMode::NewGame,
+                });
+                next.set(GameState::Loading);
+            }
+            MenuAction::Back => next.set(GameState::MainMenu),
+            _ => {}
+        }
+    }
+}
+
 fn menu_button(
     commands: &mut Commands,
     font: &UiFont,
@@ -223,20 +386,33 @@ fn menu_button(
 }
 
 /// 菜单动作。`StartRequest` 由这里写入，`OnEnter(Loading)` 再消费（`05` §5.5）。
+#[allow(clippy::too_many_arguments)]
 fn handle_menu_buttons(
     mut commands: Commands,
     buttons: Query<&MenuButton, Added<Pressed>>,
     catalog: Res<LevelCatalog>,
     mut notice: ResMut<LoadNotice>,
     mut return_state: ResMut<SettingsReturn>,
+    mut session: ResMut<SessionMode>,
     mut next: ResMut<NextState<GameState>>,
     mut exit: MessageWriter<AppExit>,
 ) {
     for button in &buttons {
         match &button.0 {
             MenuAction::StartGame => {
+                *session = SessionMode::Solo;
                 notice.0 = Notice::None;
                 next.set(GameState::LevelSelect);
+            }
+            MenuAction::LocalCoop => {
+                *session = SessionMode::LocalCoop;
+                notice.0 = Notice::None;
+                info!("本地双人：P1 方向键 + Z/E，P2 WASD + W/空格 + F");
+                next.set(GameState::LevelSelect);
+            }
+            MenuAction::Online => {
+                notice.0 = Notice::None;
+                next.set(GameState::OnlineMenu);
             }
             MenuAction::LoadSave => match save::load_raw() {
                 None => {
@@ -326,7 +502,7 @@ fn escape_back(
         return;
     }
     match state.get() {
-        GameState::LevelSelect => next.set(GameState::MainMenu),
+        GameState::LevelSelect | GameState::OnlineMenu => next.set(GameState::MainMenu),
         GameState::Settings => next.set(return_state.0),
         _ => {}
     }

@@ -252,6 +252,7 @@ fn handle_pause_buttons(
     mut settings_return: ResMut<crate::state::SettingsReturn>,
     progress: Option<Res<LevelProgress>>,
     checkpoint: Option<Res<crate::checkpoint::ActiveCheckpoint>>,
+    mode: Res<crate::state::SessionMode>,
     mut exit: MessageWriter<AppExit>,
 ) {
     for button in &interactions {
@@ -265,7 +266,7 @@ fn handle_pause_buttons(
                 next.set(GameState::Settings);
             }
             PauseAction::Save => {
-                if let Some(progress) = progress.as_ref() {
+                if let Some(progress) = progress.as_ref().filter(|_| !mode.is_client()) {
                     save::persist_now(
                         progress,
                         &decorations,
@@ -274,7 +275,7 @@ fn handle_pause_buttons(
                 }
             }
             PauseAction::MainMenu => {
-                if let Some(progress) = progress.as_ref() {
+                if let Some(progress) = progress.as_ref().filter(|_| !mode.is_client()) {
                     save::persist_now(
                         progress,
                         &decorations,
@@ -285,7 +286,7 @@ fn handle_pause_buttons(
                 next.set(GameState::MainMenu);
             }
             PauseAction::Quit => {
-                if let Some(progress) = progress.as_ref() {
+                if let Some(progress) = progress.as_ref().filter(|_| !mode.is_client()) {
                     save::persist_now(
                         progress,
                         &decorations,

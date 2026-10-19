@@ -271,9 +271,11 @@ mod tests {
                         // 该瓦片的**中心**（房间局部，原点左上 +Y 向下）→ 世界
                         let local = Vec2::new(
                             tx as f32 * tile + tile / 2.0,
-                            (level_format::ROOM_PX - TILE_PX) as f32 - ty as f32 * tile + tile / 2.0,
+                            (level_format::ROOM_PX - TILE_PX) as f32 - ty as f32 * tile
+                                + tile / 2.0,
                         );
-                        let world = crate::coords::room_local_to_world(col, row, level.grid.rows, local);
+                        let world =
+                            crate::coords::room_local_to_world(col, row, level.grid.rows, local);
 
                         // 路径一：坐标换算 + 瓦片存储（渲染语义）
                         let stored = tiles.tile_at_world(world);
@@ -430,15 +432,35 @@ mod tests {
         level.tileset = Some("sprites/tiles/custom.png".to_string());
         level.tileset_columns = 4;
         level.palette = vec![
-            PaletteEntry { char: 'S', name: "stone".into(), behavior: Behavior::Solid, cell: 5 },
-            PaletteEntry { char: 'g', name: "grass".into(), behavior: Behavior::None, cell: 7 },
-            PaletteEntry { char: 'p', name: "plank".into(), behavior: Behavior::OneWay, cell: 2 },
-            PaletteEntry { char: 'h', name: "hurt".into(), behavior: Behavior::Hazard, cell: 9 },
+            PaletteEntry {
+                char: 'S',
+                name: "stone".into(),
+                behavior: Behavior::Solid,
+                cell: 5,
+            },
+            PaletteEntry {
+                char: 'g',
+                name: "grass".into(),
+                behavior: Behavior::None,
+                cell: 7,
+            },
+            PaletteEntry {
+                char: 'p',
+                name: "plank".into(),
+                behavior: Behavior::OneWay,
+                cell: 2,
+            },
+            PaletteEntry {
+                char: 'h',
+                name: "hurt".into(),
+                behavior: Behavior::Hazard,
+                cell: 9,
+            },
         ];
         // 底行用自定义实心；再放一格台阶/危险/装饰
         level.rooms[0].tiles[15] = "SSSSSSSSSSSSSSSS".to_string();
         level.rooms[0].tiles[14] = "................".to_string();
-        level.rooms[0].tiles[14] = format!("{}p.h{}", ".".repeat(12), ".".repeat(1));
+        level.rooms[0].tiles[14] = format!("{}p.h{}", ".".repeat(12), ".");
 
         let tiles = LevelTiles::from_level(&level);
         // 物理：自定义 `S` = 实心

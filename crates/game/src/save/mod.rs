@@ -104,7 +104,9 @@ pub fn save_path() -> PathBuf {
     {
         let base = std::env::var_os("XDG_DATA_HOME")
             .map(PathBuf::from)
-            .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/share")))
+            .or_else(|| {
+                std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/share"))
+            })
             .unwrap_or_else(|| PathBuf::from("."));
         base.join("animj").join("save.ron")
     }
@@ -158,9 +160,11 @@ pub struct SavePlugin;
 
 impl Plugin for SavePlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, save_on_progress)
-            .add_systems(Update, save_on_checkpoint)
-            .add_systems(Last, save_on_exit);
+        app.add_systems(
+            Update,
+            (save_on_progress, save_on_checkpoint).run_if(crate::net::not_client),
+        )
+        .add_systems(Last, save_on_exit.run_if(crate::net::not_client));
     }
 }
 
@@ -243,7 +247,7 @@ pub fn persist_now(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use level_format::{Grid, Level, Room, RoomCoord, ROOM_TILES};
+    use level_format::{Grid, Level, ROOM_TILES, Room, RoomCoord};
 
     fn level() -> Level {
         Level {
@@ -380,7 +384,10 @@ mod tests {
         write_atomic(&path, "first").expect("首次写");
         write_atomic(&path, "second").expect("覆盖写");
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "second");
-        assert!(!path.with_extension("ron.tmp").exists(), "临时文件必须已 rename");
+        assert!(
+            !path.with_extension("ron.tmp").exists(),
+            "临时文件必须已 rename"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

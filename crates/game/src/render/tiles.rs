@@ -168,6 +168,7 @@ fn tiles_need_rebuild(loaded: Option<Res<LoadedLevel>>, reload: Res<TilesetReloa
 }
 
 /// `LoadedLevel` 出现的同一帧生成瓦片实体。
+#[allow(clippy::too_many_arguments)]
 fn spawn_level_tiles(
     mut commands: Commands,
     loaded: Res<LoadedLevel>,
@@ -198,7 +199,7 @@ fn spawn_level_tiles(
         .map(|entry| entry.cell)
         .max()
         .unwrap_or(0);
-    let layout_rows = (max_cell as u32 + 1).div_ceil(columns).max(1);
+    let layout_rows = (max_cell + 1).div_ceil(columns).max(1);
     let (image, layout) = match &level.tileset {
         Some(path) => (
             {

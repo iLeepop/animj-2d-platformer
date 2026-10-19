@@ -36,13 +36,14 @@ flowchart LR
 | 路径 | 内容 |
 |---|---|
 | `lib.rs` | `pub fn add_game_plugins(app: &mut App)` —— 注册全部玩法插件，**不含** `DefaultPlugins`/窗口/资产源/任何编辑器类型。两个 bin 各自负责外壳（`DefaultPlugins`、`AssetPlugin.file_path` 见 `09` §9.6） |
-| `config/{mod,physics,render,room}.rs` | **所有运行时常量的唯一代码落点**（所有者文档见各文件头注释） |
+| `config/{mod,physics,render,room,net}.rs` | **所有运行时常量的唯一代码落点**（所有者文档见各文件头注释；`net` 归本文 §5.15） |
 | `coords.rs` | `room_local_to_world` / `world_to_room` / `room_center`（`00` §0.3 的唯一换算入口） |
 | `physics/{mod,aabb,tile,core,tests}.rs` | **纯函数物理内核**（`06`）：`Aabb`、`TileWorld`/`TileKind`、`step`、`overlaps_tile_kind`，以及 T1–T21 不变量测试 |
 | `player/{mod,input,spawn,death}.rs` | ECS 适配层（`06` §6.1.5）：`PlayerMotion`/`PlayerInput`、输入采样、生成、Hazard 死亡与重生 |
 | `demo.rs` | 验证用脚本输入与物理度量（`--demo walk` / `--demo jump`），见 `AGENTS.md` §4 |
 | `tiles.rs` | `RoomTiles` / `LevelTiles` 存储、`tile_at_world`、以及 `TileWorld` 的房间映射实现（`06` §6.6） |
-| `state.rs` | `GameState`、`GameSet`、`StartupFlow`、`SettingsReturn` |
+| `state.rs` | `GameState`（含 `OnlineMenu`）、`GameSet`、`StartupFlow`、`SettingsReturn`、`SessionMode` |
+| `net/{mod,protocol,discovery,host,client}.rs` | 局域网联机（本文 §5.15）：消息编解码、房间搜索、主机权威快照、客户端输入/应用 |
 | `i18n.rs` | 语言枚举 `Language` + 中/英文案表 + 状态名（`05` §5.14） |
 | `fonts.rs` | UI 字体加载（`assets/fonts` → `ANIMJ_UI_FONT` → 系统 CJK；`04` §9） |
 | `settings.rs` | 全局设置（音量/全屏）：`GameSettings`、路径、读写、投射到 `GlobalVolume` / `WindowMode`（`05` §5.13） |
@@ -67,10 +68,11 @@ flowchart LR
 | `anim_data.rs` | 角色动画数据（`assets/anim/player.anim.ron`，`04` §5.5）：类型/校验/加载器/内置回退 |
 | `save/mod.rs` | `SaveData` + `save_path()` + 原子写（M6） |
 
-> **当前进度（2026-10-20，M7）**：已落地 `lib.rs` / `config/{mod,physics,render,room}.rs` / `coords.rs` / `physics/**` /
+> **当前进度（2026-10-20，M8）**：已落地 `lib.rs` / `config/{mod,physics,render,room,net}.rs` / `coords.rs` / `physics/**` /
 > `player/{mod,input,spawn,death,decor}.rs` / `demo.rs` / `tiles.rs` / `state.rs` / `settings.rs` / `level_asset.rs` /
 > `world/{mod,load,progress}.rs`（加载 + 校验 + 热重载 + 进度）/ `room/{mod,goals,reward}.rs`（房间判定、
-> 传感器、条件求值、授奖、全通）/ `camera/{mod,rig}.rs`（无状态跟随 + 地图钳制）/
+> 传感器、条件求值、授奖、全通）/ `camera/{mod,rig}.rs`（多玩家中点 + 地图钳制）/
+> `net/{mod,protocol,discovery,host,client}.rs`（本地双人之外的局域网联机）/
 > `render/{mod,pixel_camera,snap,tiles,hud,pause,menu,debug}.rs` / `save/mod.rs`。
 > **尚未落地**：编辑器侧的区域框选（已明确移除，见 `08` §8.10.5）。
 > 不要去找不存在的文件。
@@ -118,7 +120,8 @@ flowchart LR
 | `PixelRenderPlugin` | 三相机（内层/外层/UI）、整数缩放、`UiScale` 同步、像素吸附 | 无 |
 | `TileRenderPlugin` | 瓦片 sprite 生成与可见性 | `WorldPlugin` |
 | `SpriteAnimPlugin` | 帧动画 + 按朝向水平翻转 sprite（装饰品同步镜像，`04` §4.5） | 无 |
-| `SavePlugin` | 读档（版本/地图/存档点校验）+ 通关/授奖/设置存档点/退出即存 | `WorldPlugin`、`RoomPlugin` |
+| `SavePlugin` | 读档（版本/地图/存档点校验）+ 通关/授奖/设置存档点/退出即存。**客户端 `run_if(not_client)` 全部跳过** | `WorldPlugin`、`RoomPlugin` |
+| `NetPlugin` | `SessionMode` 资源、主机/客户端生命周期、UDP 收包、快照广播/应用、`OnlineMenu` 房间搜索（本文 §5.15） | 无（只依赖 `std::net` + `serde`/`ron`） |
 | `HudPlugin` | HUD（进度/提示条/结算面板） | `CorePlugin` |
 | `PausePlugin` | 暂停菜单 + 装饰品装备界面（`GameState::Paused`，`Esc` 开关）；「设置」进 `Settings`、「主菜单」先存档再回 `MainMenu` | `CorePlugin` |
 | `MenuPlugin` | 主菜单 / 关卡选择 / 设置 UI。**只由 `add_render_plugins` 注册（发布 bin）**；写入 `StartRequest` 驱动加载 | `WorldPlugin`、`SavePlugin`、`SettingsPlugin`、`CorePlugin` |
@@ -155,8 +158,18 @@ pub enum GameSet { Input, Physics, PostPhysics, Room, Camera, Fx, Snap }
 #[derive(States, Default, Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum GameState {
     #[default] Boot,
-    MainMenu, LevelSelect, Settings,
+    MainMenu, LevelSelect, OnlineMenu, Settings,
     Loading, Playing, Paused, GameComplete,
+}
+```
+
+```rust
+#[derive(Resource, Default)]
+pub enum SessionMode {
+    #[default] Solo,
+    LocalCoop,
+    Host,
+    Client { server: SocketAddr },
 }
 ```
 
@@ -164,7 +177,8 @@ pub enum GameState {
 |---|---|---|
 | `Boot` | 按 `StartupFlow` 选入口 | `Menu` → `MainMenu`；`Direct` → 写入 `StartRequest`（默认关卡，`LoadMode::Auto`）→ `Loading` |
 | `MainMenu` | 开始游戏 / 读取存档 / 设置 / 退出 | 进入时**销毁整局世界**（玩家、瓦片、房间实体、关卡级资源） |
-| `LevelSelect` | 列出 `assets/levels/*.level.ron` | 选择关卡 ⇒ `StartRequest{ NewGame }` → `Loading` |
+| `LevelSelect` | 列出 `assets/levels/*.level.ron` | 选择关卡 ⇒ `StartRequest{ NewGame }` → `Loading`（`SessionMode` 决定单人/双人/主机） |
+| `OnlineMenu` | 搜索局域网房间 / 创建房间 | 「创建房间」⇒ `SessionMode::Host` → `LevelSelect`；点击房间 ⇒ `SessionMode::Client{server}` + `StartRequest{ NewGame }` → `Loading` |
 | `Settings` | 音量 / 全屏 | 返回 `SettingsReturn`（主菜单或暂停菜单） |
 | `Loading` | 加载 `.level.ron`、校验、按 `StartRequest.mode` 建立进度、生成世界 | 成功 → `Playing`；校验失败 → 停留在 `Loading` 并打印错误 |
 | `Playing` | 正常游戏 | — |
@@ -177,6 +191,11 @@ pub enum GameState {
 - 「读取存档」在菜单里先 `save::load_raw()` 检查版本与关卡是否存在，再发 `Continue`；
   真正的版本/地图/存档点校验仍在 `save::load_validated` 内部的 `SaveData::restore`。
 - **门控规则**：玩法系统（`GameSet::Input` / `Physics` / `PostPhysics` / `Room` / `Camera` / `Fx`）统一以 `in_state(GameState::Playing)` 为 run condition；跨状态系统（`Snap`、HUD、存档、调试）不门控或按各自状态门控。
+- **联机门控**：客户端（`SessionMode::Client`）跳过物理、死亡、存档点、房间目标/拾取、存档与热重载；
+  客户端只保留输入采样、网络上行/下行、相机与渲染。统一用 `net::not_client` / `net::is_client` 两个 run condition。
+- **联机调度**：`PreUpdate`/`Update` 轮询 UDP（主机 `poll_host`、客户端 `poll_client`/`send_join`）；
+  `FixedUpdate` 的 `GameSet::Input` 发送客户端输入，`.after(GameSet::Physics)` 广播主机快照；
+  `Update` 的 `GameSet::PostPhysics`（早于 `GameSet::Camera`）应用客户端快照。
 - 编辑器因此**零侵入**地复用同一套插件：编辑态把 `GameState` 停在 `Paused`，试玩时置 `Playing`（见 `08` §8.3 / §8.6）。编辑器**不得**给任何 `game` 系统追加 `run_if`，`game` 也**不得**知道编辑器的存在。
 - **游戏不用状态机表达"房间是否通关"**：房间无缝，通关是进度数据（`02` §2.3），不是状态。
 
@@ -198,17 +217,21 @@ flowchart TB
 
 | 消息/事件 | 种类 | 载荷 | 发布者 → 消费者 |
 |---|---|---|---|
-| `PlayerInput` | 资源 | `move_x: i8`, `jump_pressed: bool`, `jump_held: bool`, `interact_pressed: bool` | `player/input` → 物理/存档点 |
+| `PlayerInputs` | 资源 | `slots: [PlayerInput; MAX_PLAYERS]`（`move_x` / `jump_pressed` / `jump_held` / `interact_pressed`） | `player/input` 写本地槽；网络层写远程槽 → 物理/存档点 |
+| `SessionMode` | 资源 | `Solo` / `LocalCoop` / `Host` / `Client { server }` | 菜单/CLI 写入 → 加载与网络门控 |
+| `HostNet` / `ClientNet` | 资源 | UDP socket、连接表/玩家编号、序号、待应用快照 | `net/host`、`net/client`（§5.15） |
+| `LanBrowser` | 资源 | 发现 socket、房间表、`revision` | `net/discovery` → `OnlineMenu` UI |
 | `StartRequest` | 资源 | `level_id: String`, `mode: LoadMode` | 菜单/冒烟 → `OnEnter(Loading)` 消费 |
-| `LoadNotice` | 资源 | `Notice`（`NoSave` / `VersionMismatch` / `LevelNotFound` / `LoadFailed`） | 加载失败 → 主菜单状态行（按当前语言渲染） |
+| `LoadNotice` | 资源 | `Notice`（`NoSave` / `VersionMismatch` / `LevelNotFound` / `LoadFailed` / `NetRejected` / `NetDisconnected` / `NetTimeout` / `NetLevelMismatch`） | 加载/联机失败 → 主菜单状态行（按当前语言渲染） |
 | `GameSettings` | 资源 | `version`, `volume: f32`, `fullscreen: bool` | 设置界面 → `SettingsPlugin` |
 | `SettingsReturn` | 资源 | 目标 `GameState`（`MainMenu` / `Paused`） | 设置界面返回 |
-| `PlayerDied` | `Message` | `room_index: u32` | `player/death` → 音效/特效/HUD |
+| `PlayerDied` | `Message` | `player_id: PlayerId`, `room_index: u32` | `player/death` → 音效/特效/HUD |
 | `CheckpointActivated` | `Message` | `point: CheckpointPoint`（房间 + 局部 `at`） | `checkpoint` → 存档（立即写盘） |
 | `RoomEntered` | `Message` | `room_index: u32` | `room` → HUD/调试/编辑器 |
 | `RoomCleared` | `Message` | `room_index: u32` | `room/goals` → 奖励/HUD/存档 |
 | `DecorationGranted` | `Message` | `decoration_id: String` | `room/reward` → HUD/存档 |
 | `CollectiblePicked` | `Message` | `room_index: u32` | `room` 传感器 → HUD/音效（`06` §6.5.4） |
+| `ZoneId` / `PickedZones` | 组件 / 资源 | 房间实体编号 / 已拾取编号集合 | 主机快照 → 客户端销毁已拾取果实（§5.15.3） |
 | `LevelValidated` | `Message` | `issues: Vec<LevelIssue>` | 加载/编辑器 → HUD/编辑器面板 |
 
 - 跨模块通信优先用**消息**（buffered，`Message` 派生；0.20 中 `EventWriter/EventReader` 已不存在，见 `10`）。
@@ -264,6 +287,8 @@ pub const GRAVITY: f32 = /* … */;
 | 单元 | `render::debug::toggled`：输入的 `just_pressed` 语义（长按与松开都不得翻转） | `crates/game/src/render/debug.rs` 内 `#[cfg(test)]` |
 | 集成（无头） | **输入链路**：`MinimalPlugins` + `InputPlugin`，注入 winit 同型的 `KeyboardInput` 消息 → `ButtonInput<KeyCode>` → 系统行为。它同时钉住**调度顺序**（读输入的系统必须在 `Update`，晚于输入系统的 `PreUpdate`） | 同上 |
 | 集成 | `simulate(level, scripted_inputs, frames)` 无 Bevy 确定性回放：断言最终位置、通关状态 | `crates/game/tests/` |
+| 单元 | 联机协议：RON/二进制快照往返、截断包拒绝、完整快照 ≤ 单包上限；发现查询/响应回环 | `net/protocol.rs`、`net/discovery.rs` 内 `#[cfg(test)]` |
+| 单元 | 多玩家物理：玩家阻挡水平移动、站在玩家头上、撞头；输入槽隔离 | `physics/tests.rs`、`player/{mod,input}.rs` |
 
 - 测试**不得**依赖窗口 / GPU / 显示器；需要 Bevy 的测试用 `MinimalPlugins` 搭无头 App（**已验证可用**，见 `10` §10.2.8）。
 - **输入类行为不要靠 OS 级按键注入验证**（`SetForegroundWindow` 在无交互桌面的会话里会被拒、`PostMessage` 会被 winit 因为窗口无焦点而丢弃）。注入 `KeyboardInput` 消息能覆盖到「winit 之上」的全部链路，且是确定性的。
@@ -343,3 +368,67 @@ pub struct GameSettings {
 | 字体 | `UiFontPlugin` 在 `PreStartup` 加载唯一字体（优先级见 `04` §9）；所有 UI `Text` 用 `UiFont::text_font(px)` |
 | 切换时机 | 设置界面按钮 `ToggleLanguage` 改 `GameSettings.language` ⇒ 设置页重建；返回主菜单/关卡选择时 `OnEnter` 重建；暂停菜单在 settings 变化时重建；HUD 每帧读取 |
 | 持久化 | 与音量/全屏同一个 `settings.ron`，旧文件缺字段按中文加载 |
+
+## 5.15 联机（本地双人 / 局域网）
+
+### 5.15.1 会话模式
+
+| 模式 | 本地玩家 | 权威 | 说明 |
+|---|---|---|---|
+| `Solo` | 1 | 本进程 | 默认；旧行为不变 |
+| `LocalCoop` | 2 | 本进程 | 同屏共享键盘；相机跟随两人中点 |
+| `Host` | 1 | 本进程 | 绑定 UDP `NET_PORT`，接受最多 3 个远程玩家 |
+| `Client` | 0 | 远端主机 | 只发送输入、应用快照；**不跑物理、不写存档** |
+
+`SessionMode` 由菜单或 CLI 写入；`OnEnter(MainMenu)` 会关闭 socket 并复位为 `Solo`。
+玩家实体带 `PlayerId(u8)`，输入按编号放在 `PlayerInputs.slots`（`06` §6.1.5、§6.11）。
+
+### 5.15.2 传输与协议
+
+- 传输：`std::net::UdpSocket`，非阻塞；**零新增依赖**（`09` §9.0 R1）。
+- 端口：`NET_PORT = 42345`。主机在 `0.0.0.0:NET_PORT` 同时接收发现查询与游戏包；
+  客户端游戏 socket 绑定临时端口，避免同机双开冲突。
+- 编解码（`net/protocol.rs`）：
+  - 发现/加入/输入等低频消息：`TAG_RON` + RON 文本（与关卡/存档同一套 `serde`）。
+  - 每固定步快照：`TAG_SNAPSHOT` + 定长小端二进制。布局见源码头注释；单包 ≤ `MAX_PACKET_BYTES = 1200`，
+    超限直接丢弃（避免 IP 分片）。房间上限 64 ⇒ 通关集合用 `u64` 位图。
+- 协议版本 `PROTOCOL_VERSION = 1`；发现响应带版本，不匹配不显示。
+- 其余常量（`config/net.rs`，本文拥有）：`MAX_PLAYERS = 4`、`MAX_PACKETS_PER_FRAME = 64`、
+  `CONNECT_TIMEOUT_SECS = 10`、`CLIENT_TIMEOUT_SECS = 5`、`REMOTE_INPUT_STALE_SECS = 0.25`、
+  `DISCOVERY_INTERVAL_SECS = 1`、`ROOM_TTL_SECS = 3.5`、`JOIN_RETRY_SECS = 0.25`、`PLAYER_SPAWN_GAP_PX = 24`、
+  `SPAWN_PLACEMENT_TRIES = 8`、`SNAPSHOT_MAX_ROOMS = 64`。
+
+### 5.15.3 同步模型（主机权威）
+
+| 方向 | 频率 | 内容 |
+|---|---|---|
+| 客户端 → 主机 `Input` | 每固定步（60 Hz） | 序号 + `PlayerInput` 四个字段；主机按序号丢弃乱序/重复包 |
+| 主机 → 客户端 `Snapshot` | 每固定步（60 Hz） | 全部玩家 `(id, x, y, vx, vy, grounded, facing)`、通关房间、果实计数、已拾取 `ZoneId`、当前存档点 |
+| `Join` / `Welcome` / `Reject` | 0.25 s 重试 / 事件 | 加入握手；主机分配最小空闲 `PlayerId(1..MAX_PLAYERS)` |
+| `Discover` / `RoomInfo` | 1 s 查询 + 响应 | 房间搜索（§5.15.4） |
+| `Bye` / 超时 | 离开 / 5 s 静默 | 移除玩家实体并清空输入槽 |
+
+- 主机物理按 `PlayerId` 升序推进；远程输入写入对应槽位，因此远程玩家与本地玩家走**完全相同**的
+  `physics::step`（含玩家间碰撞，`06` §6.11）。
+- 远程跳跃/交互按键按**或**写入锁存槽位（同一固定步之间到达的多个输入包不会互相吞掉）；
+  超过 0.25 s 没有新输入时把 `move_x` / `jump_held` 清零（客户端暂停或卡顿不会让角色一直走）。
+- 客户端**不跑** `apply_player_physics` / Hazard / 存档点 / 条件求值 / 存档 / 热重载；
+  快照在 `Update` 的 `GameSet::PostPhysics`（早于 `Camera`）写入 `PlayerMotion`。
+- 快照是**完整状态**而非增量：丢包在下一帧自愈。
+- 客户端不生成玩家：玩家实体由第一份快照创建；离开的玩家由快照差集销毁。
+
+### 5.15.4 局域网房间搜索
+
+- `OnlineMenu` 进入时绑定临时 UDP socket 并开始搜索；离开即销毁。
+- 浏览器每 `DISCOVERY_INTERVAL_SECS = 1.0` 秒向 `255.255.255.255:NET_PORT` 与 `127.0.0.1:NET_PORT`
+  发送 `Discover{token}`；主机回复 `RoomInfo{token, protocol, name, level_id, players, max_players, port}`。
+- 响应按源地址去重，`ROOM_TTL_SECS = 3.5` 秒未刷新即从列表移除；`revision` 变化驱动 UI 重建。
+- 用「查询/响应」而非主机周期广播：不需要 `SO_REUSEADDR`，同机主机+客户端可并存。
+
+### 5.15.5 已知边界
+
+- 不做公网穿透/NAT、账号、匹配、反作弊、房间密码。
+- 不做客户端预测/回滚：LAN 下输入→画面为一个 RTT + 快照间隔；高延迟网络会明显滞后。
+- 不做分屏：多人共享一个相机视野，玩家可以跑到彼此看不见的位置（相机取中点）。
+- 客户端热重载被禁用；主机热重载不会同步房间实体编号（联机时建议不编辑关卡）。
+- 装饰品/存档进度：主机负责写入；客户端只读快照，不写本地存档。

@@ -13,7 +13,9 @@
 //! - `--screenshot <prefix>`：请求两张截图 `<prefix>-canvas.png`（内层画布）与 `<prefix>-window.png`。
 //! - `--self-check`：打印像素完美管线的不变量自检结果（`VERIFY:` 行）。
 //! - `--hide-ui`：截图前关闭 UI 窗口相机（UI 不进入离屏画布，逐像素比较需要）。
-//! - `--demo menu|levels|settings|menu-start|load-save|click`：界面冒烟，从主菜单开始。
+//! - `--seconds N`：按墙钟秒数退出（联机验证要两个进程同时存活）。
+//! - `--local-players 2`：本地双人；`--host`：开房；`--join <host:port>`：加入主机。
+//! - `--demo menu|levels|settings|menu-start|load-save|click|online`：界面冒烟，从主菜单开始。
 //! - `--demo walk|jump|hop|checkpoint|edge|pause|restart`：玩法冒烟，直接进默认关卡。
 //!
 //! **入口规则**：带任何验证开关或 `--demo`（菜单类除外）时用 `StartupFlow::Direct`
@@ -33,12 +35,20 @@ use game::world::load::LoadedLevel;
 #[derive(Resource, Clone, Default)]
 struct Cli {
     frames: Option<u32>,
+    /// 按墙钟秒数退出（联机验证需要两个进程同时存活；`--frames` 在高帧率下会瞬间跑完）。
+    seconds: Option<f32>,
     screenshot_prefix: Option<String>,
     self_check: bool,
     /// `--demo walk|jump`：注入脚本输入（M1 的「可实测」手段）。
     demo: Option<String>,
     /// 截图前关闭 UI 相机：让窗口截图只含 canvas（逐像素比较「窗口 == 画布 × k」）。
     hide_ui: bool,
+    /// `--host`：直接以主机身份进入默认关卡。
+    host: bool,
+    /// `--join <host:port>`：直接以客户端身份加入。
+    join: Option<std::net::SocketAddr>,
+    /// `--local-players 2`：本地双人（同屏）。
+    local_players: u8,
 }
 
 impl Cli {
@@ -48,10 +58,24 @@ impl Cli {
         while let Some(arg) = args.next() {
             match arg.as_str() {
                 "--frames" => cli.frames = args.next().and_then(|v| v.parse().ok()),
+                "--seconds" => cli.seconds = args.next().and_then(|v| v.parse().ok()),
                 "--screenshot" => cli.screenshot_prefix = args.next(),
                 "--demo" => cli.demo = args.next(),
                 "--self-check" => cli.self_check = true,
                 "--hide-ui" => cli.hide_ui = true,
+                "--host" => cli.host = true,
+                "--join" => {
+                    cli.join = args.next().and_then(|value| match value.parse() {
+                        Ok(addr) => Some(addr),
+                        Err(_) => {
+                            eprintln!("无效的 --join 地址：{value}（需要 host:port）");
+                            None
+                        }
+                    })
+                }
+                "--local-players" => {
+                    cli.local_players = args.next().and_then(|v| v.parse().ok()).unwrap_or(1)
+                }
                 other => eprintln!("忽略未知参数：{other}"),
             }
         }
@@ -67,6 +91,20 @@ impl Cli {
 /// 本进程的帧计数（不依赖 `FrameCountPlugin` 是否在插件组里）。
 #[derive(Resource, Default)]
 struct FrameTick(u32);
+
+/// 冒烟：`--demo online` 进入联机页，验证局域网搜索链路。
+fn drive_demo_online(
+    tick: Res<FrameTick>,
+    mut next: ResMut<NextState<game::state::GameState>>,
+    mut done: Local<bool>,
+) {
+    if *done || tick.0 < 20 {
+        return;
+    }
+    *done = true;
+    next.set(game::state::GameState::OnlineMenu);
+    println!("[demo online] 已进入联机搜索");
+}
 
 /// 冒烟：`--demo levels` 在主菜单后进入关卡选择。
 fn drive_demo_levels(
@@ -338,9 +376,12 @@ fn main() {
 
     let menu_demo = matches!(
         cli.demo.as_deref(),
-        Some("menu" | "levels" | "settings" | "menu-start" | "load-save" | "click")
+        Some("menu" | "levels" | "settings" | "menu-start" | "load-save" | "click" | "online")
     );
-    let headless = cli.frames.is_some() || cli.screenshot_prefix.is_some() || cli.self_check;
+    let headless = cli.frames.is_some()
+        || cli.seconds.is_some()
+        || cli.screenshot_prefix.is_some()
+        || cli.self_check;
     match cli.demo.as_deref() {
         Some("walk") => {
             app.add_plugins(game::demo::DemoPlugin {
@@ -377,6 +418,9 @@ fn main() {
         Some("levels") => {
             app.add_systems(Update, drive_demo_levels);
         }
+        Some("online") => {
+            app.add_systems(Update, drive_demo_online);
+        }
         Some("settings") => {
             app.add_systems(Update, drive_demo_settings);
         }
@@ -398,14 +442,28 @@ fn main() {
         }
         Some("menu") => {}
         Some(other) => eprintln!(
-            "未知 demo：{other}（可选 walk|jump|edge|hop|checkpoint|pause|menu|levels|settings|menu-start|load-save|restart|click）"
+            "未知 demo：{other}（可选 walk|jump|edge|hop|checkpoint|pause|menu|levels|settings|menu-start|load-save|restart|click|online）"
         ),
         None => {}
     }
 
+    // 会话模式：CLI 直接指定；菜单会覆盖它（主菜单/联机页）。
+    let session = if let Some(server) = cli.join {
+        game::state::SessionMode::Client { server }
+    } else if cli.host {
+        game::state::SessionMode::Host
+    } else if cli.local_players >= 2 {
+        game::state::SessionMode::LocalCoop
+    } else {
+        game::state::SessionMode::Solo
+    };
+    println!("会话模式：{session:?}");
+    app.insert_resource(session);
+
     // 验证/脚本入口沿用旧语义：直接进默认关卡（Auto = 有存档读档，没有就新开）。
     // 无参数启动才是玩家入口，从主菜单开始。
-    if !menu_demo && (headless || cli.demo.is_some()) {
+    let session_direct = cli.host || cli.join.is_some() || cli.local_players >= 2;
+    if !menu_demo && (headless || cli.demo.is_some() || session_direct) {
         app.insert_resource(game::state::StartupFlow::Direct);
     }
 
@@ -633,22 +691,28 @@ fn self_check(
 
     // ⑨ 角色存在，且渲染投影 == `Aabb` 的单向投影（`06` §6.8.2）
     let players: Vec<_> = player_q.iter().collect();
-    let projection_ok = players.len() == 1
-        && players[0].1.is_some_and(|transform| {
-            let aabb = players[0].0.0.aabb;
-            (transform.translation.x - aabb.center().x.round()).abs() < 0.001
-                && (transform.translation.y - aabb.min.y.round()).abs() < 0.001
+    let projection_ok = !players.is_empty()
+        && players.iter().all(|(motion, transform)| {
+            transform.is_some_and(|transform| {
+                let aabb = motion.0.aabb;
+                (transform.translation.x - aabb.center().x.round()).abs() < 0.001
+                    && (transform.translation.y - aabb.min.y.round()).abs() < 0.001
+            })
         });
     check("player transform == aabb", projection_ok);
 
-    // ⑩ 内层相机跟随玩家 AABB 中心，并被钳制在地图内（`02` §2.2）
-    let expected_camera = players.first().and_then(|(motion, _)| {
+    // ⑩ 内层相机跟随**所有玩家 AABB 中心的中点**，并被钳制在地图内（`02` §2.2）
+    let midpoint = if players.is_empty() {
+        None
+    } else {
+        let sum = players
+            .iter()
+            .fold(Vec2::ZERO, |sum, (motion, _)| sum + motion.0.aabb.center());
+        Some(sum / players.len() as f32)
+    };
+    let expected_camera = midpoint.and_then(|center| {
         loaded.as_ref().map(|loaded| {
-            game::camera::rig::follow_target(
-                motion.0.aabb.center(),
-                loaded.level.grid.cols,
-                loaded.level.grid.rows,
-            )
+            game::camera::rig::follow_target(center, loaded.level.grid.cols, loaded.level.grid.rows)
         })
     });
     let camera_follows = expected_camera.is_some_and(|expected| {
@@ -661,8 +725,10 @@ fn self_check(
     check("camera follows player", camera_follows);
 
     // ⑪ 角色碰撞盒尺寸不变形（R1–R5：反向/压扁的 AABB 会静默关闭全部碰撞）
-    let box_ok = players.len() == 1
-        && (players[0].0.0.aabb.size() - game::config::physics::PLAYER_SIZE).length() <= 1e-3;
+    let box_ok = !players.is_empty()
+        && players.iter().all(|(motion, _)| {
+            (motion.0.aabb.size() - game::config::physics::PLAYER_SIZE).length() <= 1e-3
+        });
     check("player collider size", box_ok);
 
     if failures.is_empty() {
@@ -676,7 +742,19 @@ fn self_check(
     }
 }
 
-fn exit_after_frames(cli: Res<Cli>, tick: Res<FrameTick>, mut exit: MessageWriter<AppExit>) {
+fn exit_after_frames(
+    cli: Res<Cli>,
+    tick: Res<FrameTick>,
+    time: Res<Time>,
+    mut exit: MessageWriter<AppExit>,
+) {
+    if let Some(seconds) = cli.seconds
+        && time.elapsed_secs() >= seconds
+    {
+        println!("已运行 {seconds:.1} 秒，退出");
+        exit.write(AppExit::Success);
+        return;
+    }
     if let Some(frames) = cli.frames
         && tick.0 >= frames
     {

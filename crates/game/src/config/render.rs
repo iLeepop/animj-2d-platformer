@@ -85,8 +85,16 @@ pub mod z {
     pub const CHECKPOINT: f32 = 21.0;
     /// 敌人。见 `00` §0.4。
     pub const ENEMY: f32 = 30.0;
-    /// 角色本体。见 `00` §0.4。
+    /// 角色本体基准。见 `00` §0.4。
     pub const PLAYER: f32 = 40.0;
+
+    /// 第 `player` 个角色的 Z：`PLAYER + 0.1 × player`。
+    ///
+    /// 玩家之间会互相碰撞（同屏重叠），必须用不同 Z 保证绘制顺序稳定（`00` §0.4）；
+    /// 上限 `MAX_PLAYERS = 4` ⇒ 最大 40.3，仍低于装饰品的 41.0。
+    pub fn player_z(player: u8) -> f32 {
+        PLAYER + player as f32 * 0.1
+    }
     /// 装饰品图层基准：实际 Z = `DECORATION_BASE + layer_index`（槽位见 `04` §6.1）。
     pub const DECORATION_BASE: f32 = 41.0;
     /// 粒子 / 特效。见 `00` §0.4。
@@ -99,6 +107,18 @@ pub mod z {
     /// 外层视图里那张离屏纹理 sprite 的 Z。**本文定义**，不属于 `00` §0.4 的游戏 Z 表：
     /// 外层视图里只有它一个 sprite，因此不会与任何游戏 sprite 冲突（`07` §7.1.3）。
     pub const CANVAS: f32 = 0.0;
+}
+
+/// 多玩家颜色（`04` §3.2）：只用于 `Sprite::color` 着色，不新增贴图。
+///
+/// 顺序即玩家编号；主机/单人是白色（保持原视觉）。
+pub fn player_tint(player: u8) -> Color {
+    match player {
+        0 => Color::WHITE,
+        1 => Color::srgb(0.55, 0.90, 1.00),
+        2 => Color::srgb(1.00, 0.85, 0.45),
+        _ => Color::srgb(0.70, 1.00, 0.60),
+    }
 }
 
 /// 房间背景板颜色（`04` §7.4 占位调色板的 `bg`）。

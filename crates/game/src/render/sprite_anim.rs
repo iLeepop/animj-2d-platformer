@@ -93,7 +93,10 @@ impl AnimationTimer {
     }
 
     pub fn for_state(frame_secs: f32) -> Self {
-        Self(Timer::from_seconds(frame_secs.max(0.01), TimerMode::Repeating))
+        Self(Timer::from_seconds(
+            frame_secs.max(0.01),
+            TimerMode::Repeating,
+        ))
     }
 }
 
@@ -141,6 +144,7 @@ impl Plugin for SpriteAnimPlugin {
 }
 
 /// 按物理状态切换动画行（只在变化时重置，避免每帧打断帧序）。
+#[allow(clippy::type_complexity)]
 fn drive_player_animation(
     anim: Res<crate::anim_data::ActiveAnim>,
     sheets: Res<crate::player::spawn::PlayerSheet>,
@@ -182,7 +186,11 @@ fn drive_player_animation(
         if sprite.image != target.0 {
             sprite.image = target.0;
         }
-        if sprite.texture_atlas.as_ref().map(|atlas| atlas.layout.clone()) != Some(target.1.clone())
+        if sprite
+            .texture_atlas
+            .as_ref()
+            .map(|atlas| atlas.layout.clone())
+            != Some(target.1.clone())
             && let Some(atlas) = sprite.texture_atlas.as_mut()
         {
             atlas.layout = target.1;
