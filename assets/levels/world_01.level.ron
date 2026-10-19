@@ -124,7 +124,7 @@
     background: Some((
         layers: [
             (
-                image: "sprites/background/bg.png",
+                image: "sprites/backgrounds/bg.png",
                 scroll_x: 30,
                 scroll_y: 0,
             ),

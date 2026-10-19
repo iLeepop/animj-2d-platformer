@@ -58,7 +58,7 @@ assets/
 | 类别 | 规则 | 示例 | 依据 |
 |---|---|---|---|
 | 角色图集 | 固定文件名 `assets/sprites/player/cat_sheet.png` | — | `00` §0.6 |
-| 瓦片图集 | 固定文件名 `assets/sprites/tiles/tileset.png` | — | `00` §0.5 / §0.6 |
+| 瓦片图集 | 占位资产固定为 `assets/sprites/tiles/tileset.png`；真实美术可由关卡 `tileset` 字段指向独立文件（如 `tileset_n.png`），并用该关卡的 `tileset_columns` 描述列数 | — | `00` §0.5 / §0.6、本文 §7.3 |
 | 装饰品 | `snake_case`，**文件名（去扩展名）严格等于装饰品 id** | id `straw_hat` → `assets/sprites/decorations/straw_hat.png` | `00` §0.5 |
 | 背景层 | `snake_case`，可自由命名；尺寸自定（建议 ≥ 512×512），必须能无缝平铺 | `assets/sprites/backgrounds/sky.png` | `03` §3.10 / `07` §7.13 |
 | 关卡文件 | `assets/levels/<level_id>.level.ron`，文件内 `name` 必须等于 `<level_id>` | — | `00` §0.5 |
@@ -576,10 +576,10 @@ animj-dev gen-placeholder-assets [--out assets] [--force]
 
 | 项 | 值 |
 |---|---|
-| 文件 | `assets/sprites/tiles/tileset.png` |
+| 文件 | 占位：`assets/sprites/tiles/tileset.png`；真实美术可由关卡 `tileset` 指向独立文件（当前示例 `tileset_n.png`，6 列） |
 | 单元 | `TILE_PX × TILE_PX`（见 `00` §0.3） |
-| 列数 | **`TILESET_COLUMNS = 8`**（固定） |
-| 行数 | `N = ceil(可渲染条目数 / TILESET_COLUMNS)`（随 `03` §3.3 中可渲染条目增长而增长；当前 4 条 ⇒ `N = 1`） |
+| 列数 | 占位固定 **`TILESET_COLUMNS = 8`**；真实美术由关卡的 `tileset_columns` 决定（当前示例为 6） |
+| 行数 | `N = ceil(可渲染条目数 / 列数)`（随 `03` §3.3 中可渲染条目增长而增长；占位当前 4 条 ⇒ `N = 1`） |
 | `padding` / `offset` | `0` / `0`（调用处 `None`/`None`） |
 | 总尺寸 | `(32 × 8) × (32 × N)` = `256 × 32N`，宽高均可被 `TILE_PX` 整除 |
 | 索引顺序 | 行主序；`tile_index = row * TILESET_COLUMNS + col` |
