@@ -1233,7 +1233,9 @@ fn v14_kind_must_be_registered() {
     // 正例：v1 注册表内的 kind
     let mut level = valid_level();
     level.rooms[0].entities.push(entity("fruit", (96, 464)));
-    level.rooms[0].entities.push(entity("checkpoint", (128, 464)));
+    level.rooms[0]
+        .entities
+        .push(entity("checkpoint", (128, 464)));
     assert!(issues_of(&level, "V14").is_empty());
     assert!(issues_of(&featureful_level(), "V14").is_empty());
 
@@ -1250,7 +1252,11 @@ fn v14_kind_must_be_registered() {
                 .message
                 .contains(&format!("未知实体 kind '{kind}'"))
         );
-        assert!(issues[0].message.contains("player_spawn / exit / fruit / checkpoint"));
+        assert!(
+            issues[0]
+                .message
+                .contains("player_spawn / exit / fruit / checkpoint")
+        );
     }
 }
 
@@ -1459,24 +1465,56 @@ fn v19_rejects_bad_palette_entries() {
         tileset: None,
         tileset_columns: 8,
         palette: vec![
-            level_format::PaletteEntry { char: '.', name: "air".into(), behavior: level_format::Behavior::None, cell: 0 },
-            level_format::PaletteEntry { char: 'x', name: "".into(), behavior: level_format::Behavior::Solid, cell: 1 },
-            level_format::PaletteEntry { char: 'x', name: "dup".into(), behavior: level_format::Behavior::Solid, cell: 2 },
+            level_format::PaletteEntry {
+                char: '.',
+                name: "air".into(),
+                behavior: level_format::Behavior::None,
+                cell: 0,
+            },
+            level_format::PaletteEntry {
+                char: 'x',
+                name: "".into(),
+                behavior: level_format::Behavior::Solid,
+                cell: 1,
+            },
+            level_format::PaletteEntry {
+                char: 'x',
+                name: "dup".into(),
+                behavior: level_format::Behavior::Solid,
+                cell: 2,
+            },
         ],
         background: None,
         grid: level_format::Grid { cols: 1, rows: 1 },
         start: level_format::RoomCoord { col: 0, row: 0 },
         rooms: vec![level_format::Room {
-            name: None, reward: None, spawn: None, goals: vec![level_format::Goal::ReachExit],
+            name: None,
+            reward: None,
+            spawn: None,
+            goals: vec![level_format::Goal::ReachExit],
             tiles: vec![".".repeat(16); 16],
             entities: vec![
-                level_format::EntitySpec { kind: "player_spawn".into(), at: (64, 464), size: None, id: None },
-                level_format::EntitySpec { kind: "exit".into(), at: (448, 464), size: None, id: None },
+                level_format::EntitySpec {
+                    kind: "player_spawn".into(),
+                    at: (64, 464),
+                    size: None,
+                    id: None,
+                },
+                level_format::EntitySpec {
+                    kind: "exit".into(),
+                    at: (448, 464),
+                    size: None,
+                    id: None,
+                },
             ],
         }],
     };
     for row in 0..16 {
-        level.rooms[0].tiles[row] = if row == 15 { "#".repeat(16) } else { ".".repeat(16) };
+        level.rooms[0].tiles[row] = if row == 15 {
+            "#".repeat(16)
+        } else {
+            ".".repeat(16)
+        };
     }
     let issues = level_format::validate(&level);
     let v19: Vec<_> = issues
@@ -1546,7 +1584,10 @@ fn v20_rejects_bad_background_layers() {
     let v20: Vec<_> = issues_of(&level, "V20");
     assert_eq!(v20.len(), 4, "{v20:?}");
     assert!(v20.iter().any(|issue| issue.message.contains("超过上限")));
-    assert!(v20.iter().any(|issue| issue.message.contains("image 不能为空")));
+    assert!(
+        v20.iter()
+            .any(|issue| issue.message.contains("image 不能为空"))
+    );
     assert_eq!(
         v20.iter()
             .filter(|issue| issue.message.contains("超出 0..=100"))

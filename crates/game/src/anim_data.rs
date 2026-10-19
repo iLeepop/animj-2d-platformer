@@ -165,11 +165,14 @@ impl AssetLoader for AnimLoader {
             .map_err(|error| AnimLoadError(format!("读取失败：{error}")))?;
         let text = String::from_utf8(bytes)
             .map_err(|error| AnimLoadError(format!("不是 UTF-8：{error}")))?;
-        let set: PlayerAnimSet = ron::from_str(&text)
-            .map_err(|error| AnimLoadError(format!("解析失败：{error}")))?;
+        let set: PlayerAnimSet =
+            ron::from_str(&text).map_err(|error| AnimLoadError(format!("解析失败：{error}")))?;
         let issues = set.validate();
         if !issues.is_empty() {
-            return Err(AnimLoadError(format!("动画数据校验失败：{}", issues.join("；"))));
+            return Err(AnimLoadError(format!(
+                "动画数据校验失败：{}",
+                issues.join("；")
+            )));
         }
         Ok(set)
     }
@@ -211,12 +214,8 @@ impl Plugin for AnimDataPlugin {
 }
 
 /// 动画文件热重载：编辑器保存后**无需重启**即可生效（编辑器与游戏共用本系统）。
-fn watch_anim_file(
-    mut active: ResMut<ActiveAnim>,
-    mut last: Local<Option<std::time::SystemTime>>,
-) {
-    let path =
-        std::path::Path::new(&crate::assets::asset_file_path()).join(ANIM_PATH);
+fn watch_anim_file(mut active: ResMut<ActiveAnim>, mut last: Local<Option<std::time::SystemTime>>) {
+    let path = std::path::Path::new(&crate::assets::asset_file_path()).join(ANIM_PATH);
     let Ok(modified) = std::fs::metadata(&path).and_then(|meta| meta.modified()) else {
         return;
     };

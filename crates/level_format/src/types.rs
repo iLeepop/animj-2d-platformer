@@ -73,7 +73,6 @@ pub struct BackgroundLayer {
     pub scroll_y: u8,
 }
 
-
 /// 一个完整关卡 = `grid.cols × grid.rows` 个房间。见 `docs/03-level-format.md` §3.2
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(deny_unknown_fields)]
@@ -116,27 +115,53 @@ pub fn columns_from_sheet_width(width: u32) -> u32 {
 pub fn normalize_asset_path(path: &str) -> Option<String> {
     let path = path.trim().replace('\\', "/");
     let path = path.trim_start_matches("./");
-    let stripped = path
-        .strip_prefix("assets/")
-        .unwrap_or(path);
+    let stripped = path.strip_prefix("assets/").unwrap_or(path);
     let stripped = stripped.trim_start_matches('/');
-    if stripped.is_empty() { None } else { Some(stripped.to_string()) }
+    if stripped.is_empty() {
+        None
+    } else {
+        Some(stripped.to_string())
+    }
 }
 
 impl Level {
     /// 内置调色板（等价 v1 的固定 legend）。
     pub fn builtin_palette() -> Vec<PaletteEntry> {
         vec![
-            PaletteEntry { char: '#', name: "solid".into(), behavior: Behavior::Solid, cell: 0 },
-            PaletteEntry { char: '=', name: "oneway".into(), behavior: Behavior::OneWay, cell: 1 },
-            PaletteEntry { char: '^', name: "spike".into(), behavior: Behavior::Hazard, cell: 2 },
-            PaletteEntry { char: '*', name: "decor".into(), behavior: Behavior::None, cell: 3 },
+            PaletteEntry {
+                char: '#',
+                name: "solid".into(),
+                behavior: Behavior::Solid,
+                cell: 0,
+            },
+            PaletteEntry {
+                char: '=',
+                name: "oneway".into(),
+                behavior: Behavior::OneWay,
+                cell: 1,
+            },
+            PaletteEntry {
+                char: '^',
+                name: "spike".into(),
+                behavior: Behavior::Hazard,
+                cell: 2,
+            },
+            PaletteEntry {
+                char: '*',
+                name: "decor".into(),
+                behavior: Behavior::None,
+                cell: 3,
+            },
         ]
     }
 
     /// 生效调色板（空 ⇒ 内置）。
     pub fn palette(&self) -> Vec<PaletteEntry> {
-        if self.palette.is_empty() { Self::builtin_palette() } else { self.palette.clone() }
+        if self.palette.is_empty() {
+            Self::builtin_palette()
+        } else {
+            self.palette.clone()
+        }
     }
 
     pub fn entry_of(&self, ch: char) -> Option<PaletteEntry> {

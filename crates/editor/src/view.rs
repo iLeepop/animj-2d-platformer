@@ -7,9 +7,9 @@ use bevy::prelude::*;
 use bevy::sprite::Anchor;
 use level_format::{ROOM_PX, ROOM_TILES, TILE_PX};
 
+use crate::EditorMode;
 use crate::camera::room_center_world;
 use crate::session::EditorSession;
-use crate::EditorMode;
 
 /// 编辑态投影的房间根。
 #[derive(Component)]
@@ -324,9 +324,6 @@ fn spawn_room(
         ));
     }
 }
-
-
-
 
 #[cfg(test)]
 mod tests {

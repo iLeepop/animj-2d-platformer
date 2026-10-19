@@ -6,8 +6,8 @@
 
 use std::path::PathBuf;
 
-use level_format::{Level, LevelIssue, ROOM_TILES, Room, Severity, TileKind, room_index};
 use bevy::prelude::*;
+use level_format::{Level, LevelIssue, ROOM_TILES, Room, Severity, TileKind, room_index};
 
 /// 撤销栈上限（`08` §8.5.2）。
 pub const UNDO_LIMIT: usize = 128;
@@ -141,11 +141,7 @@ impl EditorSession {
     /// 房间局部（`ty` 自底向上）的瓦片字符。
     pub fn tile_char(&self, tx: usize, ty: usize) -> Option<char> {
         let file_row = ROOM_TILES - 1 - ty;
-        self.room()
-            .tiles
-            .get(file_row)?
-            .chars()
-            .nth(tx)
+        self.room().tiles.get(file_row)?.chars().nth(tx)
     }
 
     // ---------- 事务 ----------
@@ -173,7 +169,9 @@ impl EditorSession {
         self.dirty = self
             .saved_text
             .as_ref()
-            .map(|text| level_format::write(&self.doc).replace("\r\n", "\n") != text.replace("\r\n", "\n"))
+            .map(|text| {
+                level_format::write(&self.doc).replace("\r\n", "\n") != text.replace("\r\n", "\n")
+            })
             .unwrap_or(true);
         self.doc_revision = self.doc_revision.wrapping_add(1);
         true
@@ -246,7 +244,9 @@ impl EditorSession {
         // 内置调色板（palette 为空）不可删；先物化再删
         self.begin_edit();
         self.doc.palette = palette;
-        self.doc.palette.retain(|candidate| candidate.char != entry.char);
+        self.doc
+            .palette
+            .retain(|candidate| candidate.char != entry.char);
         true
     }
 
@@ -348,7 +348,10 @@ impl EditorSession {
             return false;
         }
         self.begin_edit();
-        let kind = self.doc.rooms[room_index].entities.remove(entity_index).kind;
+        let kind = self.doc.rooms[room_index]
+            .entities
+            .remove(entity_index)
+            .kind;
         self.selected_entity = None;
         info!("编辑器：删除实体 rooms[{room_index}].entities[{entity_index}] ({kind})");
         true
@@ -426,8 +429,6 @@ impl EditorSession {
         removed
     }
 
-
-
     /// 接受外部改动（`08` §8.7.4）：整份替换，清空 undo/redo，记账。
     pub fn accept_external(&mut self) {
         let Some(level) = self.pending_external.take() else {
@@ -496,10 +497,7 @@ impl EditorSession {
         };
         let issues = level_format::validate(&self.doc);
         self.file_issues = issues.clone();
-        if issues
-            .iter()
-            .any(|issue| issue.severity == Severity::Fatal)
-        {
+        if issues.iter().any(|issue| issue.severity == Severity::Fatal) {
             return Err("存在 Fatal 级问题，拒绝写盘（避免覆盖损坏数据）".to_string());
         }
         let mut text = level_format::write(&self.doc).replace("\r\n", "\n");
@@ -697,7 +695,10 @@ mod tests {
         // 点中实体
         assert_eq!(crate::tools::entity_at(&session, center), Some(index));
         // 点不中
-        assert_eq!(crate::tools::entity_at(&session, center + Vec2::new(200.0, 0.0)), None);
+        assert_eq!(
+            crate::tools::entity_at(&session, center + Vec2::new(200.0, 0.0)),
+            None
+        );
         // 拖动吸附到瓦片中心（房间局部）
         session.begin_edit();
         session.set_entity_at_world(index, center + Vec2::new(20.0, 0.0), true);
@@ -799,7 +800,6 @@ mod tests {
         session.dedupe_singletons();
         assert_eq!(session.dedupe_singletons(), 0);
     }
-
 
     /// 任意房间实体删除：一个 undo 步骤、可整步回退，越界安全。
     #[test]

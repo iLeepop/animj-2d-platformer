@@ -8,8 +8,8 @@ use bevy_egui::PrimaryEguiContext;
 use bevy_egui::input::egui_wants_any_pointer_input;
 use level_format::{ROOM_PX, ROOM_TILES, TILE_PX};
 
-use crate::session::EditorSession;
 use crate::EditorMode;
+use crate::session::EditorSession;
 
 /// 编辑态唯一相机（`08` §8.4.1）。
 #[derive(Component)]
@@ -114,7 +114,12 @@ pub fn quantize_translation(translation: Vec2, scale: f32) -> Vec2 {
 }
 
 /// 缩放后保持光标下的世界点不动（`08` §8.4.2 的解析式）。
-pub fn anchored_translation(before_world: Vec2, cursor: Vec2, window: Vec2, new_scale: f32) -> Vec2 {
+pub fn anchored_translation(
+    before_world: Vec2,
+    cursor: Vec2,
+    window: Vec2,
+    new_scale: f32,
+) -> Vec2 {
     before_world - (cursor - window / 2.0) * new_scale
 }
 
@@ -125,7 +130,9 @@ fn scroll_zoom(
     keys: Res<ButtonInput<KeyCode>>,
     window: Option<Single<&Window, With<PrimaryWindow>>>,
     mut view: ResMut<EditorViewState>,
-    camera: Option<Single<(&Camera, &GlobalTransform, &mut Transform, &mut Projection), With<EditorCamera>>>,
+    camera: Option<
+        Single<(&Camera, &GlobalTransform, &mut Transform, &mut Projection), With<EditorCamera>>,
+    >,
 ) {
     let Some(window) = window else {
         return;
@@ -160,7 +167,10 @@ fn scroll_zoom(
     }
     if let Some(before) = before {
         let size = window.size();
-        let target = quantize_translation(anchored_translation(before, cursor, size, new_scale), new_scale);
+        let target = quantize_translation(
+            anchored_translation(before, cursor, size, new_scale),
+            new_scale,
+        );
         camera.2.translation.x = target.x;
         camera.2.translation.y = target.y;
         // `08` §8.4.2 要求的自检：下一帧光标下的世界点必须基本不变（`GlobalTransform` 本帧还是旧值）
@@ -221,7 +231,6 @@ fn reset_view_on_home(
         ortho.scale = view.scale();
     }
 }
-
 
 /// **自愈不变量**：`current_room` 一旦变化，相机必须跟到新房间中心。
 ///
@@ -373,7 +382,10 @@ mod tests {
         let t = anchored_translation(before, cursor, window, new_scale);
         // 由 t 反推光标世界点：world = t + (cursor - win/2) * scale
         let world = t + (cursor - window / 2.0) * new_scale;
-        assert!(world.distance(before) < 1e-3, "world={world:?} before={before:?}");
+        assert!(
+            world.distance(before) < 1e-3,
+            "world={world:?} before={before:?}"
+        );
     }
 }
 

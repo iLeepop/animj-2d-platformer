@@ -17,9 +17,9 @@ pub fn watch_external_changes(
     let (Some(loaded), Some(session)) = (loaded, session.as_mut()) else {
         return;
     };
-    let modified = events.read().any(|event| {
-        matches!(event, AssetEvent::Modified { id } if *id == loaded.handle.id())
-    });
+    let modified = events
+        .read()
+        .any(|event| matches!(event, AssetEvent::Modified { id } if *id == loaded.handle.id()));
     if !modified {
         return;
     }

@@ -22,7 +22,9 @@ pub fn condition_met(goal: &Goal, runtime: &RoomRuntime) -> bool {
         Goal::ReachExit => runtime.at_exit,
         Goal::Collect { count } => runtime.collected_fruit >= *count,
         // 房间没有果实时不成立（校验也要求 `CollectAll` 的房间至少 1 个果实）
-        Goal::CollectAll => runtime.total_fruit > 0 && runtime.collected_fruit >= runtime.total_fruit,
+        Goal::CollectAll => {
+            runtime.total_fruit > 0 && runtime.collected_fruit >= runtime.total_fruit
+        }
     }
 }
 
@@ -74,8 +76,14 @@ mod tests {
     #[test]
     fn goals_are_and_combined() {
         let goals = [Goal::ReachExit, Goal::Collect { count: 2 }];
-        assert!(!goals_satisfied(&goals, &runtime(false, 2, 3)), "不在出口不算");
-        assert!(!goals_satisfied(&goals, &runtime(true, 1, 3)), "果实不够不算");
+        assert!(
+            !goals_satisfied(&goals, &runtime(false, 2, 3)),
+            "不在出口不算"
+        );
+        assert!(
+            !goals_satisfied(&goals, &runtime(true, 1, 3)),
+            "果实不够不算"
+        );
         assert!(goals_satisfied(&goals, &runtime(true, 2, 3)));
     }
 

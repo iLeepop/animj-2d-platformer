@@ -19,23 +19,8 @@ pub use error::{LevelError, LevelIssue, Severity};
 pub use io::{read, write};
 pub use legend::{LEGEND, RENDERABLE_TILE_KINDS, TileKind};
 pub use types::{
-    columns_from_sheet_width,
-    normalize_asset_path,
-    Background,
-    BackgroundLayer,
-    EntitySpec,
-    MAX_BACKGROUND_LAYERS,
-    Goal,
-    Grid,
-    Level,
-    ROOM_PX,
-    ROOM_TILES,
-    Room,
-    RoomCoord,
-    TILE_PX,
-    VERSION,
-    room_index,
-    Behavior,
-    PaletteEntry,
+    Background, BackgroundLayer, Behavior, EntitySpec, Goal, Grid, Level, MAX_BACKGROUND_LAYERS,
+    PaletteEntry, ROOM_PX, ROOM_TILES, Room, RoomCoord, TILE_PX, VERSION, columns_from_sheet_width,
+    normalize_asset_path, room_index,
 };
 pub use validate::{name_matches_file, validate};

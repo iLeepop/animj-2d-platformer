@@ -403,13 +403,7 @@ mod placeholder {
                 }
                 level_format::TileKind::Decor => {
                     raster.fill_rect(cell_x + 8, cell_y + 8, CELL_PX - 16, CELL_PX - 16, color);
-                    raster.stroke_rect(
-                        cell_x + 8,
-                        cell_y + 8,
-                        CELL_PX - 16,
-                        CELL_PX - 16,
-                        OUTLINE,
-                    );
+                    raster.stroke_rect(cell_x + 8, cell_y + 8, CELL_PX - 16, CELL_PX - 16, OUTLINE);
                 }
                 level_format::TileKind::Air => {}
             }

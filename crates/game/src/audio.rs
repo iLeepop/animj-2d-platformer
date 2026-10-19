@@ -76,11 +76,9 @@ fn play_player_fx(
     outcomes: Query<&PlayerStepOutcome, Changed<PlayerStepOutcome>>,
 ) {
     for outcome in &outcomes {
-        if let Some(cue) = cue_for_outcome(
-            outcome.0.jumped,
-            outcome.0.landed,
-            outcome.0.head_bumped,
-        ) {
+        if let Some(cue) =
+            cue_for_outcome(outcome.0.jumped, outcome.0.landed, outcome.0.head_bumped)
+        {
             spawn_cue(&mut commands, &assets, cue);
         }
     }
