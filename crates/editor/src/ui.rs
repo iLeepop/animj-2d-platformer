@@ -200,6 +200,13 @@ fn paint_overlay(
     Ok(())
 }
 
+/// 底栏工具行中按钮/标签占用的宽度；剩余宽度给路径输入框。见 `08` §8.5.6。
+const BOTTOM_TOOLBAR_RESERVED_W: f32 = 360.0;
+/// 底栏校验问题区占底栏宽度的比例与上下限。见 `08` §8.5.6。
+const ISSUES_WIDTH_FRAC: f32 = 0.30;
+const ISSUES_WIDTH_MIN: f32 = 200.0;
+const ISSUES_WIDTH_MAX: f32 = 360.0;
+
 /// 底部栏高度（用户拖动分隔条）。面板用 `exact_size` 固定，永远贴住窗口底边。
 #[derive(Resource, Debug, Clone, Copy)]
 pub struct BottomHeight(pub f32);
@@ -759,7 +766,7 @@ fn bottom_panel(
             );
             handle.on_hover_cursor(egui::CursorIcon::ResizeVertical);
             // 路径输入吃掉按钮之后剩余宽度，窗口较窄时也不会把整行挤出去
-            let path_width = (ui.available_width() - 360.0).max(120.0);
+            let path_width = (ui.available_width() - BOTTOM_TOOLBAR_RESERVED_W).max(120.0);
             ui.horizontal(|ui| {
                 if ui.button("保存 (Ctrl+S)").clicked() {
                     session.status = match session.save() {
@@ -818,7 +825,8 @@ fn bottom_panel(
 
             // 横向分区：左侧 = 当前工具（自适应），右侧 = 校验问题（固定宽）。
             // 这样错误列表不再堆在工具内容下方，不再把底栏越撑越高。
-            let issues_width = (ui.available_width() * 0.30).clamp(200.0, 360.0);
+            let issues_width = (ui.available_width() * ISSUES_WIDTH_FRAC)
+                .clamp(ISSUES_WIDTH_MIN, ISSUES_WIDTH_MAX);
             egui::Panel::right("animj_editor_bottom_issues")
                 .resizable(false)
                 .exact_size(issues_width)

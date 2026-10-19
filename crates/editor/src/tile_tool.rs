@@ -202,6 +202,9 @@ fn cell_uv(cell: u32, columns: u32, sheet: egui::Vec2) -> egui::Rect {
     )
 }
 
+/// 地块卡片最小宽度；横向列数由此与可用宽度推导。见 `08` §8.5.7 B。
+const TILE_CARD_MIN_W: f32 = 200.0;
+
 /// 面板：贴图路径/列数 + 调色板列表 + 新建地块 + 32×32 网格选格。
 pub fn tile_panel(
     ui: &mut egui::Ui,
@@ -263,9 +266,8 @@ pub fn tile_panel(
         let palette = session.doc.palette();
         let sheet = texture.map(|texture| texture.size_vec2());
         let spacing = ui.spacing().item_spacing.x;
-        let min_card = 200.0;
         let available = ui.available_width();
-        let (columns_n, card_w) = responsive_columns(available, spacing, min_card);
+        let (columns_n, card_w) = responsive_columns(available, spacing, TILE_CARD_MIN_W);
         // 显式计算列数后按行切分：保证每行列数固定、卡片等宽（不再依赖自动换行的取整差异）。
         for (row_index, chunk) in palette.chunks(columns_n).enumerate() {
             ui.horizontal(|ui| {

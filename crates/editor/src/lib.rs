@@ -4,7 +4,7 @@
 
 /// 构建标记：启动时打印，用于确认"跑的是不是最新构建"。
 /// 每次改编辑器 UI/交互都手动递增末尾字母。
-pub const BUILD_TAG: &str = "2026-10-18/o";
+pub const BUILD_TAG: &str = "2026-10-20/p";
 
 /// egui 通行内的执行顺序（`08` §8.5.6）：**先**构成本帧所有面板，**再**处理世界输入。
 /// 顺序反了时 `ctx.egui_wants_pointer_input()` 读到的是上一帧的布局，点按钮会漏到画布。
@@ -143,8 +143,9 @@ pub fn init_session_from_loaded(
         let path = std::path::Path::new(&root.0).join("levels/world_01.level.ron");
         match std::fs::read_to_string(&path)
             .map_err(|error| error.to_string())
-            .and_then(|text| ron::from_str::<level_format::Level>(&text).map_err(|error| error.to_string()))
-        {
+            .and_then(|text| {
+                ron::from_str::<level_format::Level>(&text).map_err(|error| error.to_string())
+            }) {
             Ok(mut level) => {
                 correct_columns_from_tileset(&mut level, &root.0);
                 let mut session = EditorSession::new(level, Some(path.clone()));
@@ -152,15 +153,17 @@ pub fn init_session_from_loaded(
                 let count = session.file_issues.len();
                 commands.insert_resource(session);
                 next.set(game::state::GameState::Paused);
-                warn!("编辑器：关卡校验未通过，已直接打开 {}（{count} 条问题，见底栏错误列表）", path.display());
+                warn!(
+                    "编辑器：关卡校验未通过，已直接打开 {}（{count} 条问题，见底栏错误列表）",
+                    path.display()
+                );
             }
             Err(error) => error!("编辑器：无法读取关卡 {}：{error}", path.display()),
         }
         return;
     };
-    let path = std::path::Path::new(&root.0).join(game::world::load::level_asset_path(
-        &loaded.level.name,
-    ));
+    let path =
+        std::path::Path::new(&root.0).join(game::world::load::level_asset_path(&loaded.level.name));
     let mut level = loaded.level.clone();
     correct_columns_from_tileset(&mut level, &root.0);
     commands.insert_resource(EditorSession::new(level, Some(path)));
