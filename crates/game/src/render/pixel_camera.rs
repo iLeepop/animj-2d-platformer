@@ -5,7 +5,7 @@
 //! 放大到窗口，四周是清屏色（黑边）。
 
 use bevy::camera::visibility::RenderLayers;
-use bevy::camera::{ClearColorConfig, RenderTarget, ScalingMode};
+use bevy::camera::{ClearColorConfig, RenderTarget, ScalingMode, Viewport};
 use bevy::prelude::*;
 use bevy::render::render_resource::TextureUsages;
 use bevy::ui::UiScale;
@@ -151,14 +151,19 @@ fn setup_pixel_camera(mut commands: Commands, mut images: ResMut<Assets<Image>>)
 }
 
 /// 计算整数放大倍数 `k = max(MIN_CANVAS_SCALE, floor(min(w / VIEWPORT_W, h / VIEWPORT_H)))`
-/// 并写到外层相机的 `scale = 1 / k`。
+/// 并写到外层相机的 `scale = 1 / k`；同时把 UI 相机的视口限定到**居中游戏区域**。
 ///
 /// `ScalingMode::WindowSize` + `scale = s` 时视图覆盖的世界范围 = 窗口逻辑尺寸 × `s`；
 /// 要让视口的世界范围（= `VIEWPORT_W` 世界单位）占满 `k × VIEWPORT_W` 物理像素，就需要 `s = 1 / k`（`07` §7.2.2 推导）。
+///
+/// UI 相机如果仍以整个窗口为视口：全屏 1920×1080、`k = 3` 时 UI 逻辑尺寸是 640×360，
+/// 而菜单按 320×320 写 ⇒ 只占左上角。把 UI 视口设为居中的 `k*VIEWPORT` 正方形后，
+/// 逻辑尺寸恒为 320×320，菜单与游戏区域严格重合（黑边留在两侧）。
 fn fit_canvas(
     mut resized: MessageReader<WindowResized>,
     window: Single<&Window, With<PrimaryWindow>>,
     mut outer: Single<&mut Projection, With<OuterCamera>>,
+    mut ui_camera: Single<&mut Camera, (With<UiCamera>, Without<OuterCamera>)>,
     mut canvas_scale: ResMut<CanvasScale>,
 ) {
     // 优先用 resize 消息；启动首帧没有消息时回落到当前窗口尺寸
@@ -171,6 +176,25 @@ fn fit_canvas(
         .min(size.y / VIEWPORT_H as f32)
         .floor()
         .max(MIN_CANVAS_SCALE as f32) as u32;
+
+    // UI 视口 = 游戏画布在窗口里的整数像素矩形（居中）。全屏/改变窗口尺寸都必须跟着走。
+    let canvas_px = VIEWPORT_W * k;
+    let viewport = Viewport {
+        physical_position: UVec2::new(
+            (size.x.round().max(0.0) as u32).saturating_sub(canvas_px) / 2,
+            (size.y.round().max(0.0) as u32).saturating_sub(canvas_px) / 2,
+        ),
+        physical_size: UVec2::splat(canvas_px),
+        depth: 0.0..1.0,
+    };
+    let unchanged = ui_camera.viewport.as_ref().is_some_and(|current| {
+        current.physical_position == viewport.physical_position
+            && current.physical_size == viewport.physical_size
+            && current.depth == viewport.depth
+    });
+    if !unchanged {
+        ui_camera.viewport = Some(viewport);
+    }
 
     // 只在变化时写 Projection，避免每帧触发投影重算与 change detection 噪声
     if **canvas_scale == k {
@@ -186,9 +210,10 @@ fn fit_canvas(
 
 /// 让 UI 的逻辑坐标继续是 `VIEWPORT_W × VIEWPORT_H`。
 ///
-/// UI 相机的目标是原生窗口，逻辑尺寸会随窗口变成 640×640。`UiScale = k` 时
-/// `logical_size = 物理尺寸 / k = 320×320`，且 `Val::Px` / `FontSize::Px` 都乘 `k`
-/// ⇒ 布局与旧的 320 内层方案一致，但字形按 `k` 倍原生分辨率光栅化（不再放大低分辨率文本）。
+/// UI 相机的视口是居中的游戏区域，物理尺寸 = `k × VIEWPORT`。
+///
+/// `UiScale = k` 时 `logical_size = 视口物理尺寸 / k = 320×320`，且 `Val::Px` / `FontSize::Px`
+/// 都乘 `k` ⇒ 布局与旧的 320 内层方案一致，但字形按 `k` 倍原生分辨率光栅化（不再放大低分辨率文本）。
 fn sync_ui_scale(canvas_scale: Res<CanvasScale>, mut ui_scale: ResMut<UiScale>) {
     let target = canvas_scale.0 as f32;
     if ui_scale.0 != target {

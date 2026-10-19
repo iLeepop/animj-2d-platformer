@@ -904,6 +904,9 @@ pub fn add_debug_visualization(app: &mut App) {
 - **代价**：HUD 不再与游戏画面共享像素网格（无整数 texel 对齐）。这是明确的取舍：可点击、可读优先。
 - UI 相机：`Camera { order: UI_CAMERA_ORDER, clear_color: ClearColorConfig::None }`、`RenderLayers::none()`、`Msaa::Off`。
   `clear_color = None` 保证它不擦掉外层相机画好的 canvas；`RenderLayers::none()` 保证它不重复渲染世界。
+- **UI 相机的 `Viewport` 必须等于游戏区域在窗口中的居中矩形**（尺寸 `k × VIEWPORT`，位置 `(窗口 - 画布)/2`，整数像素）。
+  否则全屏 2560×1440、`k=4` 时 UI 逻辑尺寸会是 640×360，菜单按 320×320 写就只占左上角。
+  限定视口后逻辑尺寸恒为 320×320，菜单/HUD 与画布严格重合，黑边只留在窗口两侧。
 - UI 节点不受 `RenderLayers` 影响，只能被一个相机渲染。【已验证】<https://docs.rs/bevy/0.20.0/bevy/camera/visibility/struct.RenderLayers.html>
 - **所有 UI 尺寸/字号都按 `VIEWPORT_W` 宽的坐标系写**（例如 12 px 字号 ≈ 视口高度的 1/32），且**一律用 `px(..)` 的整数值**。
   **禁止**用「窗口/视口比例」单位（`vw()` / `vh()` / `percent()`）做 HUD 的定位与尺寸：它们会解析出小数像素。

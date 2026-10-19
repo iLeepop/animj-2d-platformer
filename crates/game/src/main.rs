@@ -228,10 +228,12 @@ fn log_restart_counts(
 /// 这条路径与鼠标完全一致：`PointerInput` → 拾取后端 → `PointerPress` observer → `Pressed`
 /// → 菜单按钮系统。UI 若仍挂在内层离屏相机上，拾取后端找不到同目标的指针，本 demo 会停在
 /// 主菜单并超时（这正是「GUI 点不动」的根因回归测试）。
+#[allow(clippy::too_many_arguments)]
 fn drive_demo_click(
     tick: Res<FrameTick>,
     state: Res<State<game::state::GameState>>,
     texts: Query<(&Text, &bevy::ui::UiGlobalTransform, &bevy::ui::ComputedNode)>,
+    ui_camera: Single<&Camera, With<game::render::pixel_camera::UiCamera>>,
     window: Single<Entity, With<bevy::window::PrimaryWindow>>,
     mut pointer: MessageWriter<bevy::picking::pointer::PointerInput>,
     mut position: Local<Vec2>,
@@ -250,7 +252,14 @@ fn drive_demo_click(
             else {
                 return;
             };
-            *position = transform.translation;
+            // `UiGlobalTransform` 以 UI 视口左上角为原点；指针位置是**窗口**物理坐标。
+            // 全屏时 UI 视口居中（有黑边），两者相差视口偏移。
+            let viewport_origin = ui_camera
+                .viewport
+                .as_ref()
+                .map(|viewport| viewport.physical_position.as_vec2())
+                .unwrap_or(Vec2::ZERO);
+            *position = transform.translation + viewport_origin;
             // 指针位置由 `Move` 更新；`Press` 只改按钮状态，不携带位置。
             pointer.write(PointerInput::new(
                 PointerId::Mouse,

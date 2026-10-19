@@ -646,6 +646,11 @@ app.insert_resource(UiScale(2.0));
   <https://docs.rs/bevy/0.20.0/bevy/prelude/struct.IsDefaultUiCamera.html>（prelude 导出；`UiTargetCamera` 见 `bevy::ui`）
 - `ClearColorConfig::None`：多台相机渲染同一窗口时，后续相机不清屏。【已验证】
   <https://docs.rs/bevy/0.20.0/bevy/camera/enum.ClearColorConfig.html>
+- `Camera { viewport: Option<Viewport> }`：`Viewport { physical_position, physical_size, depth }`（物理像素，左上原点）。
+  UI 相机的视口必须等于游戏画布在窗口中的居中矩形；否则全屏时 UI 逻辑尺寸不再是 320×320，菜单会缩在左上角。
+  UI 节点的 `UiGlobalTransform.translation` 以**视口左上角**为原点，而 `PointerInput.location.position` 是**窗口**物理坐标
+  ⇒ 注入点击时要加 `viewport.physical_position`（真实鼠标由拾取后端代劳）。【已验证】
+  <https://docs.rs/bevy/0.20.0/bevy/camera/struct.Viewport.html>
 - `RenderLayers::none()`：该相机不渲染任何世界层；UI 忽略 `RenderLayers`，仍会渲染。【已验证】
   <https://docs.rs/bevy/0.20.0/bevy/camera/visibility/struct.RenderLayers.html>
 - **模拟 UI 点击**（无头验证）：`PointerInput` 是 `Message`，字段 `{ pointer_id, location, action }`；
