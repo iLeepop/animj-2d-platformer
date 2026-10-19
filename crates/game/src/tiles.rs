@@ -275,8 +275,14 @@ mod tests {
                         );
                         let world = crate::coords::room_local_to_world(col, row, level.grid.rows, local);
 
-                        // 路径一：坐标换算 + 瓦片存储（渲染/玩法语义）
-                        let via_coords = tiles.tile_at_world(world);
+                        // 路径一：坐标换算 + 瓦片存储（渲染语义）
+                        let stored = tiles.tile_at_world(world);
+                        // 本测试比较的是**格位与碰撞语义**：`Decor` 的 behavior 是 None，
+                        // 物理网格里等价于 Air（外观种类不参与物理）。
+                        let via_coords = match stored {
+                            TileKind::Decor => TileKind::Air,
+                            other => other,
+                        };
                         // 路径二：物理网格（整数瓦片 + TileWorld）
                         let gx = (world.x / tile).floor() as i32;
                         let gy = (world.y / tile).floor() as i32;
@@ -290,7 +296,7 @@ mod tests {
                             via_coords, via_physics,
                             "房间 ({col},{row}) 瓦片 ({tx},{ty}) 世界 {world:?}：坐标路径 {via_coords:?} ≠ 物理路径 {via_physics:?}"
                         );
-                        assert_eq!(room.get(tx, ty), via_coords, "瓦片存储与坐标路径不一致");
+                        assert_eq!(room.get(tx, ty), stored, "瓦片存储与坐标路径不一致");
                     }
                 }
             }
