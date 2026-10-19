@@ -5,14 +5,15 @@
 //! 放大到窗口，四周是清屏色（黑边）。
 
 use bevy::camera::visibility::RenderLayers;
-use bevy::camera::{RenderTarget, ScalingMode};
+use bevy::camera::{ClearColorConfig, RenderTarget, ScalingMode};
 use bevy::prelude::*;
 use bevy::render::render_resource::TextureUsages;
+use bevy::ui::UiScale;
 use bevy::window::{PrimaryWindow, WindowResized};
 
 use crate::config::render::{
-    CAMERA_Z, CANVAS_FORMAT, INNER_CAMERA_ORDER, MIN_CANVAS_SCALE, OUTER_CAMERA_ORDER, VIEWPORT_H,
-    VIEWPORT_W, z,
+    CAMERA_Z, CANVAS_FORMAT, INNER_CAMERA_ORDER, MIN_CANVAS_SCALE, OUTER_CAMERA_ORDER,
+    UI_CAMERA_ORDER, VIEWPORT_H, VIEWPORT_W, z,
 };
 use crate::render::snap::PixelSnap;
 
@@ -28,6 +29,15 @@ pub struct InGameCamera;
 /// 把离屏纹理放大到窗口的外层相机。
 #[derive(Component)]
 pub struct OuterCamera;
+
+/// 只渲染屏幕空间 UI 的相机（目标 = 主窗口）。
+///
+/// 为什么 UI 不跟内层相机走：内层目标是 320×320 离屏纹理，UI 会被整数倍放大，文字先按 12 px
+/// 光栅化再放大 ⇒ 看起来就是「低分辨率文本放大」。更关键的是 `bevy_picking` 的 UI 后端只把
+/// **与窗口同目标**的相机纳入命中测试；内层相机目标是一张图片，指针事件永远匹配不上 ⇒ 按钮点不动。
+/// 因此 UI 单独用一台窗口相机，并按 `k` 设置 `UiScale`，既保持 320 坐标布局，又按原生分辨率光栅化。
+#[derive(Component)]
+pub struct UiCamera;
 
 /// 承载离屏纹理的 sprite。
 #[derive(Component)]
@@ -55,7 +65,7 @@ impl Plugin for PixelCameraPlugin {
             // 黑边 = 清屏色；这样「视口外区域」只有一种颜色
             .insert_resource(ClearColor(Color::BLACK))
             .add_systems(Startup, setup_pixel_camera)
-            .add_systems(Update, fit_canvas);
+            .add_systems(Update, (fit_canvas, sync_ui_scale).chain());
     }
 }
 
@@ -92,8 +102,6 @@ fn setup_pixel_camera(mut commands: Commands, mut images: ResMut<Assets<Image>>)
         crate::render::parallax::ParallaxCamera,
         PIXEL_PERFECT_LAYERS,
         PixelSnap,
-        // HUD 走内层相机 ⇒ HUD 与游戏画面共用一个像素格（07 §7.10.1）
-        IsDefaultUiCamera,
     ));
 
     // ③ 把离屏纹理铺进「高分辨率世界」
@@ -120,6 +128,25 @@ fn setup_pixel_camera(mut commands: Commands, mut images: ResMut<Assets<Image>>)
         Transform::from_xyz(0.0, 0.0, CAMERA_Z),
         OuterCamera,
         HIGH_RES_LAYERS,
+    ));
+
+    // ⑤ UI 相机：目标 = 主窗口（不是离屏纹理）。
+    //    这样 `bevy_picking` 才能把指针事件匹配到 UI 所属相机（其 `RenderTarget` 与指针的
+    //    `NormalizedRenderTarget` 同为 `Window`），按钮才会响应点击。`RenderLayers::none()`
+    //    确保它不重复渲染世界；`clear_color: None` 确保它不擦掉外层相机画好的 canvas。
+    commands.spawn((
+        Camera2d,
+        Camera {
+            order: UI_CAMERA_ORDER,
+            clear_color: ClearColorConfig::None,
+            ..default()
+        },
+        Projection::Orthographic(OrthographicProjection::default_2d()),
+        Msaa::Off,
+        Transform::from_xyz(0.0, 0.0, CAMERA_Z),
+        RenderLayers::none(),
+        IsDefaultUiCamera,
+        UiCamera,
     ));
 }
 
@@ -155,4 +182,16 @@ fn fit_canvas(
         return;
     };
     p.scale = 1.0 / k as f32;
+}
+
+/// 让 UI 的逻辑坐标继续是 `VIEWPORT_W × VIEWPORT_H`。
+///
+/// UI 相机的目标是原生窗口，逻辑尺寸会随窗口变成 640×640。`UiScale = k` 时
+/// `logical_size = 物理尺寸 / k = 320×320`，且 `Val::Px` / `FontSize::Px` 都乘 `k`
+/// ⇒ 布局与旧的 320 内层方案一致，但字形按 `k` 倍原生分辨率光栅化（不再放大低分辨率文本）。
+fn sync_ui_scale(canvas_scale: Res<CanvasScale>, mut ui_scale: ResMut<UiScale>) {
+    let target = canvas_scale.0 as f32;
+    if ui_scale.0 != target {
+        ui_scale.0 = target;
+    }
 }

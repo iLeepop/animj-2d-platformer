@@ -53,7 +53,7 @@ flowchart LR
 | `room/mod.rs` | 当前房间判定（含滞回） |
 | `room/goals.rs` | **纯函数**条件求值 + 通关判定（`01` §1.4） |
 | `room/reward.rs` | 授予装饰品（幂等） |
-| `render/pixel_camera.rs` | 双层相机 + 整数缩放（`07`） |
+| `render/pixel_camera.rs` | 三相机（内层世界 / 外层整数缩放 / UI 窗口）+ `UiScale = k`（`07` §7.1.2、§7.10.1） |
 | `render/snap.rs` | 像素吸附 + `Aabb → Transform` 投影（`06` §6.8.2） |
 | `render/tiles.rs` | 瓦片 sprite 批量生成 + 房间可见性裁剪 |
 | `render/parallax.rs` | 2D 视差背景（`03` §3.10 / `07` §7.13）：贴图平铺、相位与滚动、编辑器预览覆盖、mtime 重载 |
@@ -113,7 +113,7 @@ flowchart LR
 | `RoomPlugin` | 当前房间、条件求值、奖励 | `WorldPlugin` |
 | `CameraRigPlugin` | 相机跟随玩家 AABB 中心并钳制在关卡 AABB 内（`GameSet::Camera`） | `WorldPlugin` |
 | `ParallaxPlugin` | `Level.background` → 平铺 sprite；`ParallaxCamera` 视图换算；`BackgroundOverride` 预览；`PostUpdate` 早于 `Propagate` | `TileRenderPlugin`（`load_image`）、`WorldPlugin` |
-| `PixelRenderPlugin` | 双层相机、窗口缩放、像素吸附 | 无 |
+| `PixelRenderPlugin` | 三相机（内层/外层/UI）、整数缩放、`UiScale` 同步、像素吸附 | 无 |
 | `TileRenderPlugin` | 瓦片 sprite 生成与可见性 | `WorldPlugin` |
 | `SpriteAnimPlugin` | 帧动画 + 按朝向水平翻转 sprite（装饰品同步镜像，`04` §4.5） | 无 |
 | `SavePlugin` | 读档（版本/地图/存档点校验）+ 通关/授奖/设置存档点/退出即存 | `WorldPlugin`、`RoomPlugin` |

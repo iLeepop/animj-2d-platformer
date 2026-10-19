@@ -94,8 +94,8 @@ mod dev {
         ));
     }
 
-    /// 自建诊断行：FPS + 实体数。走 HUD 的同一套 `Node` + `Text`（内层相机），
-    /// 因此与游戏画面共用一个像素格（`07` §7.10.1）。
+    /// 自建诊断行：FPS + 实体数。走 HUD 的同一套 `Node` + `Text`（UI 窗口相机），
+    /// 逻辑坐标仍按 `VIEWPORT`（`UiScale = k`，`07` §7.10.1）。
     fn update_debug_text(
         enabled: Res<DebugDrawEnabled>,
         diagnostics: Res<DiagnosticsStore>,

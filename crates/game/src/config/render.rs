@@ -29,6 +29,8 @@ pub const WINDOW_TITLE: &str = "animj";
 pub const INNER_CAMERA_ORDER: isize = -1;
 /// 外层相机 `order`（默认值，不得更改）。见 `07` §7.1.2。
 pub const OUTER_CAMERA_ORDER: isize = 0;
+/// UI 相机 `order`：必须在 canvas 之后渲染（UI 覆盖在画面上，且目标都是窗口）。见 `07` §7.1.2。
+pub const UI_CAMERA_ORDER: isize = OUTER_CAMERA_ORDER + 1;
 
 /// 离屏渲染目标格式。必须是 sRGB 变体，否则整条管线颜色被系统性压暗（`07` §7.1.5）。
 pub const CANVAS_FORMAT: TextureFormat = TextureFormat::Bgra8UnormSrgb;

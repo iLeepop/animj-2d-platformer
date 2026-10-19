@@ -12,7 +12,8 @@
 //! - `--frames N`：跑满 N 帧后退出（否则窗口一直开着，CI 无法收尾）。
 //! - `--screenshot <prefix>`：请求两张截图 `<prefix>-canvas.png`（内层画布）与 `<prefix>-window.png`。
 //! - `--self-check`：打印像素完美管线的不变量自检结果（`VERIFY:` 行）。
-//! - `--demo menu|levels|settings|menu-start|load-save`：界面冒烟，从主菜单开始。
+//! - `--hide-ui`：截图前关闭 UI 窗口相机（UI 不进入离屏画布，逐像素比较需要）。
+//! - `--demo menu|levels|settings|menu-start|load-save|click`：界面冒烟，从主菜单开始。
 //! - `--demo walk|jump|hop|checkpoint|edge|pause|restart`：玩法冒烟，直接进默认关卡。
 //!
 //! **入口规则**：带任何验证开关或 `--demo`（菜单类除外）时用 `StartupFlow::Direct`
@@ -36,6 +37,8 @@ struct Cli {
     self_check: bool,
     /// `--demo walk|jump`：注入脚本输入（M1 的「可实测」手段）。
     demo: Option<String>,
+    /// 截图前关闭 UI 相机：让窗口截图只含 canvas（逐像素比较「窗口 == 画布 × k」）。
+    hide_ui: bool,
 }
 
 impl Cli {
@@ -48,6 +51,7 @@ impl Cli {
                 "--screenshot" => cli.screenshot_prefix = args.next(),
                 "--demo" => cli.demo = args.next(),
                 "--self-check" => cli.self_check = true,
+                "--hide-ui" => cli.hide_ui = true,
                 other => eprintln!("忽略未知参数：{other}"),
             }
         }
@@ -219,6 +223,84 @@ fn log_restart_counts(
     );
 }
 
+/// 冒烟：`--demo click` 用真实的 `PointerInput` 消息点一次「START GAME」。
+///
+/// 这条路径与鼠标完全一致：`PointerInput` → 拾取后端 → `PointerPress` observer → `Pressed`
+/// → 菜单按钮系统。UI 若仍挂在内层离屏相机上，拾取后端找不到同目标的指针，本 demo 会停在
+/// 主菜单并超时（这正是「GUI 点不动」的根因回归测试）。
+fn drive_demo_click(
+    tick: Res<FrameTick>,
+    state: Res<State<game::state::GameState>>,
+    texts: Query<(&Text, &bevy::ui::UiGlobalTransform, &bevy::ui::ComputedNode)>,
+    window: Single<Entity, With<bevy::window::PrimaryWindow>>,
+    mut pointer: MessageWriter<bevy::picking::pointer::PointerInput>,
+    mut position: Local<Vec2>,
+    mut stage: Local<u8>,
+) {
+    use bevy::camera::NormalizedRenderTarget;
+    use bevy::picking::pointer::{Location, PointerAction, PointerButton, PointerId, PointerInput};
+    use bevy::window::WindowRef;
+
+    let Some(target) = WindowRef::Primary.normalize(Some(*window)) else {
+        return;
+    };
+    match (tick.0, *stage) {
+        (28, 0) if *state.get() == game::state::GameState::MainMenu => {
+            let Some((_, transform, _)) = texts.iter().find(|(text, ..)| text.0 == "START GAME")
+            else {
+                return;
+            };
+            *position = transform.translation;
+            // 指针位置由 `Move` 更新；`Press` 只改按钮状态，不携带位置。
+            pointer.write(PointerInput::new(
+                PointerId::Mouse,
+                Location {
+                    target: NormalizedRenderTarget::Window(target),
+                    position: *position,
+                },
+                PointerAction::Move { delta: Vec2::ZERO },
+            ));
+            *stage = 1;
+            println!(
+                "[demo click] 指针移动到 START GAME @ ({:.0}, {:.0})",
+                position.x, position.y
+            );
+        }
+        (30, 1) => {
+            pointer.write(PointerInput::new(
+                PointerId::Mouse,
+                Location {
+                    target: NormalizedRenderTarget::Window(target),
+                    position: *position,
+                },
+                PointerAction::Press(PointerButton::Primary),
+            ));
+            *stage = 2;
+            println!("[demo click] 按下左键");
+        }
+        (32, 2) => {
+            pointer.write(PointerInput::new(
+                PointerId::Mouse,
+                Location {
+                    target: NormalizedRenderTarget::Window(target),
+                    position: *position,
+                },
+                PointerAction::Release(PointerButton::Primary),
+            ));
+            *stage = 3;
+        }
+        (40, 3) if *state.get() == game::state::GameState::LevelSelect => {
+            *stage = 4;
+            println!("[demo click] 点击生效：已进入关卡选择");
+        }
+        (80, 3) => {
+            *stage = 4;
+            println!("[demo click] 失败：仍停留在主菜单（拾取未命中）");
+        }
+        _ => {}
+    }
+}
+
 /// 冒烟专用：进入游戏后立刻打开暂停菜单（正常入口是 `Esc`）。
 fn open_pause_for_demo(
     mut menu: ResMut<game::render::pause::PauseMenu>,
@@ -240,7 +322,7 @@ fn main() {
 
     let menu_demo = matches!(
         cli.demo.as_deref(),
-        Some("menu" | "levels" | "settings" | "menu-start" | "load-save")
+        Some("menu" | "levels" | "settings" | "menu-start" | "load-save" | "click")
     );
     let headless = cli.frames.is_some() || cli.screenshot_prefix.is_some() || cli.self_check;
     match cli.demo.as_deref() {
@@ -292,12 +374,15 @@ fn main() {
         Some("load-save") => {
             app.add_systems(Update, drive_demo_load_save);
         }
+        Some("click") => {
+            app.add_systems(Update, drive_demo_click);
+        }
         Some("restart") => {
             app.add_systems(Update, (drive_demo_restart, log_restart_counts));
         }
         Some("menu") => {}
         Some(other) => eprintln!(
-            "未知 demo：{other}（可选 walk|jump|edge|hop|checkpoint|pause|menu|levels|settings|menu-start|load-save|restart）"
+            "未知 demo：{other}（可选 walk|jump|edge|hop|checkpoint|pause|menu|levels|settings|menu-start|load-save|restart|click）"
         ),
         None => {}
     }
@@ -331,6 +416,7 @@ fn capture_screenshots(
     tick: Res<FrameTick>,
     canvas: Option<Res<CanvasImage>>,
     debug_draw: Option<ResMut<game::render::debug::DebugDrawEnabled>>,
+    ui_camera: Option<Single<&mut Camera, With<game::render::pixel_camera::UiCamera>>>,
     mut done: Local<bool>,
 ) {
     let Some(prefix) = cli.screenshot_prefix.as_deref() else {
@@ -345,6 +431,16 @@ fn capture_screenshots(
     {
         debug_draw.0 = false;
         println!("截图前已关闭调试绘制（避免动态 FPS 文本污染逐像素比较）");
+    }
+    // UI 现在渲染在原生窗口上（不进入离屏画布）。做管线逐像素验证时显式关掉 UI 相机，
+    // 否则窗口里多出的 HUD/菜单必然与画布不同。
+    if cli.hide_ui
+        && tick.0 + 2 >= cli.check_frame()
+        && let Some(mut camera) = ui_camera
+        && camera.is_active
+    {
+        camera.is_active = false;
+        println!("截图前已关闭 UI 相机（逐像素比较只含游戏画面）");
     }
 
     if *done || tick.0 < cli.check_frame() {
@@ -372,6 +468,7 @@ type CameraQuery<'w, 's> = Query<
         &'static Projection,
         Has<InGameCamera>,
         Has<OuterCamera>,
+        Has<game::render::pixel_camera::UiCamera>,
     ),
 >;
 
@@ -424,17 +521,21 @@ fn self_check(
         canvas_size == Some((VIEWPORT_W, VIEWPORT_H)),
     );
 
-    // ② 两个相机都显式关了 MSAA（Camera 默认带 Msaa::Sample4）
+    // ② 三台相机（内层/外层/UI）都显式关了 MSAA（Camera 默认带 Msaa::Sample4）
     let camera_count = cameras.iter().count();
     let msaa_off = cameras
         .iter()
         .filter(|(msaa, ..)| **msaa == Msaa::Off)
         .count();
-    check("both cameras Msaa::Off", camera_count == 2 && msaa_off == 2);
+    let ui_cameras = cameras.iter().filter(|(.., is_ui)| *is_ui).count();
+    check(
+        "3 cameras (inner/outer/ui) Msaa::Off",
+        camera_count == 3 && msaa_off == 3 && ui_cameras == 1,
+    );
 
     // ③ 外层缩放严格等于 1 / k
     let k = canvas_scale.0;
-    let outer_scale_ok = cameras.iter().any(|(_, _, projection, _, is_outer)| {
+    let outer_scale_ok = cameras.iter().any(|(_, _, projection, _, is_outer, ..)| {
         is_outer
             && k >= 1
             && matches!(projection, Projection::Orthographic(p) if (p.scale - 1.0 / k as f32).abs() < 1e-6)
@@ -444,7 +545,7 @@ fn self_check(
     // ④ 内层相机落在整像素上（相机抖 1 像素会让整屏内容抖）
     let inner_integral = cameras
         .iter()
-        .filter(|(_, t, _, is_inner, _)| {
+        .filter(|(_, t, _, is_inner, ..)| {
             *is_inner && t.translation.x.fract() == 0.0 && t.translation.y.fract() == 0.0
         })
         .count();
@@ -535,7 +636,7 @@ fn self_check(
         })
     });
     let camera_follows = expected_camera.is_some_and(|expected| {
-        cameras.iter().any(|(_, transform, _, is_inner, _)| {
+        cameras.iter().any(|(_, transform, _, is_inner, ..)| {
             is_inner
                 && transform.translation.x == game::render::snap::snap_px(expected.x)
                 && transform.translation.y == game::render::snap::snap_px(expected.y)

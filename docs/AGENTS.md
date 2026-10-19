@@ -103,7 +103,7 @@ Bevy 0.17 → 0.20 之间发生了大量破坏性重命名（buffered event 体�
 | 占位资产 / 图集布局 | `cargo dev-cli -- gen-placeholder-assets --check` | 退出码 0（生成物与仓库文件逐字节一致） |
 | 坐标换算 | `cargo test -p level_format` 与 `cargo test --workspace --features dev` 里的 `coords::` 用例 | 往返换算与四角边界全绿 |
 | 物理 / 手感常量 | `cargo test -p game` + `cargo game -- --demo jump --frames 3000` | 单测全绿（T1–T21 + R1–R6 + H1–H2）**且**日志里每次 `DEMO 峰值上升` 都等于 `JUMP_HEIGHT_PX`（80.0，容差 0.5 px）；跳跃数 ≥ 1 |
-| 相机 / 渲染管线 | `cargo game -- --frames 90 --screenshot target/m0` | 日志 `VERIFY: PASS`（11/11，含 `camera follows player`）；两张截图做「窗口 == 画布 × k」逐像素比较，必须 **0 差异** |
+| 相机 / 渲染管线 | `cargo game -- --frames 90 --screenshot target/m0 --hide-ui` | 日志 `VERIFY: PASS`（11/11，含 `camera follows player`；三台相机全部 `Msaa::Off`）；两张截图做「窗口 == 画布 × k」逐像素比较，必须 **0 差异**。`--hide-ui` 会关闭 UI 窗口相机（UI 不再进入离屏画布） |
 | 相机跟随 / 地图边界 | `cargo test -p game` 的 `camera::rig` 用例 + 上一行的实机自检 | 单测锁定：地图内精确跟随、四边钳制、任何玩家位置下视野不越界、单房间地图居中；实机 `camera follows player` 与玩家 AABB 逐像素一致。房间判定滞回（7.9 px 不切 / 8.0 px 切）由 `cargo test -p game` 的 `room` 用例锁定 |
 | 关卡热重载（M3+） | 运行中改 `assets/levels/*.level.ron`（进程必须仍存活：窗口失焦时 >200 fps，`--frames N` 会**远早于**预期结束，见 `10` E9） | 日志出现 `检测到关卡文件变化` + `关卡热重载：…（N 个瓦片）`，且 N 与改动一致；非法改动则出现 `[字段路径] 规则编号 …` 与 `热重载被拒绝`，且旧关卡继续生效 |
 | 角色帧动画（M6） | `cargo game -- --demo jump --frames 3000` | 日志有 `动画数据已加载：4 个状态`（资产生效）与 `动画：Idle → Run → Jump → Fall`（行选择由 grounded/速度符号驱动）；`cargo test -p game` 覆盖内置默认值与自定义帧序列（`04` §5.5） |
@@ -111,7 +111,7 @@ Bevy 0.17 → 0.20 之间发生了大量破坏性重命名（buffered event 体�
 | 音效（M6） | `cargo dev-cli -- gen-placeholder-assets --check` + `cargo game -- --demo jump --frames 3000` | 11 个资产逐字节一致（含 7 个 WAV）；日志出现 `音效：audio/jump.wav`、`audio/land.wav`（walk 还会出现 `audio/death.wav`）；无 panic |
 | 存档（M6） | `cargo test -p game` + 两次运行：`ANIMJ_SAVE_DIR=target/save cargo game -- --demo walk --frames 3000` 再 `ANIMJ_SAVE_DIR=target/save cargo game -- --frames 90` | 第一次出现 `存档已写`；第二次出现 `读档：房间 1/2 已通关`，且**不再**出现 `房间 (0, 0) 通关` |
 | 暂停菜单（M6） | `cargo game -- --demo pause --frames 120 --screenshot target/pause` | 日志 `[demo pause] 已打开暂停菜单`、退出码 0、两张截图生成；菜单含 `SETTINGS` / `MAIN MENU`（`Esc` 与鼠标在无头会话不可注入，按钮交互需人工点一次） |
-| 主菜单 / 关卡选择 / 设置（M7） | `ANIMJ_SAVE_DIR=target/ui cargo game -- --demo menu --frames 90 --screenshot target/menu`（`--demo levels` / `--demo settings` 同理）；`--demo menu-start --frames 200`；`--demo restart --frames 200`；先 `--demo walk` 生成存档后 `--demo load-save --frames 90` | 三张 UI 截图均为 320² 画布 + 640² 窗口，且**窗口 == 画布 × 2 逐像素 0 差异**；settings 日志 `音量 -> 80%` / `全屏：开` / `全屏：关`，`settings.ron` 落盘 `volume: 0.8`；menu-start 出现 `已进入游戏`；restart 第二轮 `玩家 1，房间根 30` 且 `VERIFY: PASS`；load-save 出现 `读档：…`。⚠️ 点击菜单按钮需人工验证一次；`--demo` / `--frames` 入口直接进关卡，无参数启动才进主菜单 |
+| 主菜单 / 关卡选择 / 设置（M7） | `ANIMJ_SAVE_DIR=target/ui cargo game -- --demo menu --frames 90 --screenshot target/menu`（`--demo levels` / `--demo settings` 同理）；`--demo click --frames 120`；`--demo menu-start --frames 200`；`--demo restart --frames 200`；先 `--demo walk` 生成存档后 `--demo load-save --frames 90` | UI 渲染在**窗口**（画布为纯黑是正常的，因为 UI 不再进入离屏纹理）：窗口截图 640² 且有面板/文字像素；`--demo click` 日志 `点击生效：已进入关卡选择`（真实 `PointerInput` → 拾取 → `Pressed` 链路）；settings 日志 `音量 -> 80%` / `全屏：开` / `全屏：关`，`settings.ron` 落盘 `volume: 0.8`；menu-start 出现 `已进入游戏`；restart 第二轮 `玩家 1，房间根 30` 且 `VERIFY: PASS`；load-save 出现 `读档：…`。`--demo` / `--frames` 入口直接进关卡，无参数启动才进主菜单 |
 | 存档点 | `cargo game -- --demo checkpoint --frames 3000`，随后 `cargo game -- --frames 30` | 第一次日志出现 `存档点已设置` 与 `角色死亡：回到存档点`；第二次出现 `读档：…存档点已恢复` 且玩家从存档点位置开始；`cargo test -p game` 覆盖激活/失效回退/存档往返 |
 | 房间 / 条件 / 奖励（M4+） | `cargo test -p game`（`room::tests::m4_pipeline_*`）+ `cargo game -- --demo walk --frames 3000` | 无头链路：拾取→通关→授奖（幂等）→`GameComplete` 全绿；真实 App 里走过出口出现 `房间 … 通关（N/M）` 且自检 11/11 PASS。⚠️ **不要用 `--demo hop` 当判据**：脚本输入无法可靠地跳过错落在地面的出口、也无法从平台右缘避开尖刺 |
 | 编辑器 | `cargo test -p editor` + `cargo editor -- --frames 90 --screenshot target/editor` + `cargo editor -- --frames 140 --demo-play` | 单测全绿（撤销/保存/索引/实体按房间管理/实体命中与拖动/**外部改动确认/另存为**）；退出码 0、无 panic、截图非空；**试玩往返**日志出现 `试玩往返后编辑缓冲一致 = true（dirty = false）`，且 `--demo-play` 注入右移后日志 `试玩诊断：… 投影误差 ≤ 0.5px`（证明试玩时贴图跟随物理位置） |
@@ -127,7 +127,7 @@ Bevy 0.17 → 0.20 之间发生了大量破坏性重命名（buffered event 体�
 **怎么验证「像素完美」**（相机/渲染改动的硬要求）：
 
 ```bash
-cargo game -- --frames 90 --screenshot target/m0   # 产出 m0-canvas.png(320x320) 与 m0-window.png(640x640)
+cargo game -- --frames 90 --screenshot target/m0 --hide-ui   # 产出 m0-canvas.png(320x320) 与 m0-window.png(640x640)
 ```
 
 然后比对：窗口截图必须**逐像素**等于画布截图的整数倍放大（`k = 窗口宽 / 画布宽`），且画布内不得出现调色板之外的颜色（抗锯齿文本除外，它只该出现在 HUD 区域）。

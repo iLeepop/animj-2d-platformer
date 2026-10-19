@@ -1,7 +1,8 @@
 //! 主菜单 / 关卡选择 / 设置界面。所有者文档：`docs/05-architecture.md` §5.5、`docs/07-rendering.md` §7.10.5。
 //!
 //! 只有发布 bin 注册本插件：编辑器不经过菜单流程（`StartupFlow::Direct`，`05` §5.5）。
-//! UI 由内层相机渲染，坐标系是 `VIEWPORT_W × VIEWPORT_H`（`07` §7.10），因此尺寸一律用 `px()`。
+//! UI 由窗口相机渲染，`UiScale = k` 让逻辑坐标仍是 `VIEWPORT_W × VIEWPORT_H`（`07` §7.10.1），
+//! 因此尺寸一律用 `px()`；同时窗口目标保证 `bevy_picking` 能命中按钮。
 //!
 //! 文本只能是 ASCII（Bevy 默认字体缺 CJK 字形，会把该行后续文本一起丢掉，`10` §10.3.1 E7）。
 

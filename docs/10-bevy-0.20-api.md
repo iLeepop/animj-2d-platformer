@@ -611,6 +611,50 @@ fn apply(
   <https://docs.rs/bevy/0.20.0/bevy/window/enum.MonitorSelection.html>
 - 窗口实体用 `Single<&mut Window, With<PrimaryWindow>>` 取得；写 `Window::mode` 即请求 winit 切换。【已验证】（本仓 M7 实机：`全屏：开` → `全屏：关`，窗口尺寸随之变化，`fit_canvas` 重新计算 `k`）
 
+### 10.2.17 UI 相机、`UiScale` 与 UI 拾取（M7 可点击性修复）
+
+```rust
+use bevy::camera::ClearColorConfig;
+use bevy::camera::visibility::RenderLayers;
+use bevy::ui::UiScale;
+
+// 独立 UI 相机：目标 = 主窗口（默认 RenderTarget），不渲染世界、不擦除已有画面
+commands.spawn((
+    Camera2d,
+    Camera { order: 1, clear_color: ClearColorConfig::None, ..default() },
+    Msaa::Off,
+    RenderLayers::none(),
+    IsDefaultUiCamera,
+));
+
+// 保持 320 坐标系：窗口 640、k=2 ⇒ scale 2
+app.insert_resource(UiScale(2.0));
+```
+
+- `UiScale(pub f32)` 是全局 `Resource`，**只缩放固定单位**（`Val::Px`、`FontSize::Px` 等）；
+  `ComputedUiRenderTargetInfo.scale_factor = camera.target_scaling_factor() * ui_scale`，
+  `logical_size = physical_viewport_size / scale_factor` ⇒ `UiScale = k` 时窗口 640 的 UI 逻辑尺寸仍是 320，
+  布局与旧的 320 离屏方案一致，但字形按 640 分辨率光栅化。【已验证】源码核心逻辑见
+  <https://docs.rs/bevy/0.20.0/src/bevy_ui/lib.rs.html>（`UiScale` 定义）与
+  <https://docs.rs/bevy/0.20.0/src/bevy_ui/layout/convert.rs.html>（`Val::Px` 乘 `scale_factor`）；
+  <https://docs.rs/bevy/0.20.0/bevy/ui/struct.UiScale.html>
+- **UI 拾取要求「相机 `RenderTarget` == 指针 `NormalizedRenderTarget`」**：`bevy_ui` 的拾取后端按相机收集指针位置，
+  内层相机若渲染到 `RenderTarget::Image`，窗口指针永远匹配不到它 ⇒ 按钮无响应。
+  因此 UI 必须由**窗口相机**渲染（本仓用独立 UI 相机；也可用外层相机）。【已验证】源码：
+  <https://docs.rs/bevy/0.20.0/src/bevy_ui/picking_backend.rs.html>（`pointer_pos_by_camera` 与 `Location::is_in_viewport`）
+- `IsDefaultUiCamera` 指定 UI 默认相机；UI 根节点也可用 `UiTargetCamera(entity)` 覆盖。【已验证】
+  <https://docs.rs/bevy/0.20.0/bevy/prelude/struct.IsDefaultUiCamera.html>（prelude 导出；`UiTargetCamera` 见 `bevy::ui`）
+- `ClearColorConfig::None`：多台相机渲染同一窗口时，后续相机不清屏。【已验证】
+  <https://docs.rs/bevy/0.20.0/bevy/camera/enum.ClearColorConfig.html>
+- `RenderLayers::none()`：该相机不渲染任何世界层；UI 忽略 `RenderLayers`，仍会渲染。【已验证】
+  <https://docs.rs/bevy/0.20.0/bevy/camera/visibility/struct.RenderLayers.html>
+- **模拟 UI 点击**（无头验证）：`PointerInput` 是 `Message`，字段 `{ pointer_id, location, action }`；
+  `location.target` 用 `WindowRef::Primary.normalize(Some(primary_window))` 得到。
+  ⚠️ `PointerInput::receive` **只在 `PointerAction::Move` 时更新指针位置**，`Press` 只改按键状态；
+  因此注入点击必须先发一条 `Move`（带目标坐标），下一帧再发 `Press`。【已验证】（本仓 `--demo click`）
+  <https://docs.rs/bevy/0.20.0/src/bevy_picking/pointer.rs.html>
+- UI 节点的几何查询：`UiGlobalTransform`（`Affine2`，`translation` 为**物理像素**的节点中心）与 `ComputedNode`（`size()` 物理像素）。【已验证】（本仓 `--demo click` 用它们定位 `START GAME`）
+
 ---
 
 ## 10.3 0.20 破坏性变更 Top 10（含对本项目影响）

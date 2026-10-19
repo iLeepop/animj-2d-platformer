@@ -1,7 +1,8 @@
 //! 屏幕空间 HUD。所有者文档：`docs/07-rendering.md` §7.10。
 //!
-//! HUD 走**内层相机**（`IsDefaultUiCamera` 挂在它上面）⇒ HUD 与游戏画面共用一个像素格，
-//! 因此所有尺寸与字号都用 `px()` 的整数值，禁止 `vw()` / `vh()` / `percent()`。
+//! HUD 走 **UI 窗口相机**（`IsDefaultUiCamera` 挂在它上面），`UiScale = k` 让逻辑坐标仍然是
+//! `VIEWPORT_W × VIEWPORT_H`（`07` §7.10.1）。因此所有尺寸与字号都用 `px()` 的整数值，
+//! 禁止 `vw()` / `vh()` / `percent()`。
 
 use bevy::prelude::*;
 use bevy::text::FontSize;

@@ -45,6 +45,10 @@
 | `HIGH_RES_LAYERS` | `RenderLayers::layer(1)` | 只放「承载离屏纹理的 canvas sprite」；外层相机只看这一层 | 同上 |
 | `INNER_CAMERA_ORDER` | `-1` | 内层相机先渲染（必须先填满离屏纹理，外层才有的可采样） | 【已验证】<https://docs.rs/bevy/0.20.0/bevy/camera/struct.Camera.html>（`order`：高值后渲染、覆盖在上）+ 官方 example 注释 `order: -1 // Render before the "main pass" camera` |
 | `OUTER_CAMERA_ORDER` | `0` | 外层相机（默认值，**不要**改成别的） | 同上 |
+| `UI_CAMERA_ORDER` | `OUTER_CAMERA_ORDER + 1` | UI 相机：目标 = 主窗口，`clear_color = None`、`RenderLayers::none()`；必须在 canvas 之后渲染 | 同上 |
+
+- UI 用**独立窗口相机**渲染（`IsDefaultUiCamera` 挂在它上面），`UiScale = k` 把逻辑坐标钉在 `VIEWPORT_W × VIEWPORT_H`（详见 §7.10.1）。
+  这不是可选优化：`bevy_picking` 的 UI 后端只把「与指针同渲染目标」的相机纳入命中测试，内层相机目标是离屏纹理，按钮会永远点不动。
 
 - **未插 `RenderLayers` 的相机只渲染 layer 0**。【已验证】<https://docs.rs/bevy/0.20.0/bevy/camera/visibility/struct.RenderLayers.html>（example 注释原文：“This camera has no `RenderLayers` component, so it only renders entities belonging to render layer `0`.”）
 - **UI 节点不受 `RenderLayers` 影响**，只能被一个相机渲染。【已验证】同上（原文：“UI nodes can only be rendered by one camera at a time and ignore `RenderLayers`.”）
@@ -232,6 +236,28 @@ fn setup_pixel_camera(mut commands: Commands, mut images: ResMut<Assets<Image>>)
         HIGH_RES_LAYERS,
         // 外层相机恒在原点：canvas sprite 在原点 ⇒ 画面居中、四边等宽黑边
     ));
+
+    // ⑤ UI 相机：目标 = 主窗口（拾取要求相机与指针同目标）；不渲染世界、不清屏。
+    commands.spawn((
+        Camera2d,
+        Camera {
+            order: UI_CAMERA_ORDER,
+            clear_color: ClearColorConfig::None,
+            ..default()
+        },
+        Msaa::Off,
+        RenderLayers::none(),
+        IsDefaultUiCamera,
+        UiCamera,
+    ));
+}
+
+/// 保持 UI 逻辑坐标 = VIEWPORT：`UiScale = k`（见 §7.10.1）。
+fn sync_ui_scale(canvas_scale: Res<CanvasScale>, mut ui_scale: ResMut<UiScale>) {
+    let target = canvas_scale.0 as f32;
+    if ui_scale.0 != target {
+        ui_scale.0 = target;
+    }
 }
 
 /// 计算整数放大倍数 k 并写入外层相机的 `scale`。
@@ -839,7 +865,7 @@ pub fn add_debug_visualization(app: &mut App) {
 - `FpsOverlayPlugin { config: FpsOverlayConfig }`，实现 `Default`；运行期改配置走 `ResMut<FpsOverlayConfig>`。【已验证】<https://docs.rs/bevy/0.20.0/bevy/dev_tools/fps_overlay/struct.FpsOverlayPlugin.html>（`config` 字段；“this can be later be changed through `FpsOverlayConfig` resource”）
 - 覆盖层内部用 `GlobalZIndex(FPS_OVERLAY_ZINDEX)` 定位（`bevy_ui` 的 Z，不参与 sprite 排序）。【已验证】模块页常量 `FPS_OVERLAY_ZINDEX` <https://docs.rs/bevy/0.20.0/bevy/dev_tools/fps_overlay/index.html>
 - 官方提示：能用平台原生 overlay 时优先用（开销更低、数值更准），例如 Metal 下 `MTL_HUD_ENABLED=1`。【已验证】`FpsOverlayPlugin` 页面原文。
-- 因为 UI 由**内层相机**渲染（§7.10），FPS 覆盖层会落在 `VIEWPORT_W × VIEWPORT_H` 视口内、被放大 `k` 倍。这是**有意**的：调试覆盖层与画面共用同一像素格。
+- 因为 UI 由 **UI 窗口相机**渲染（§7.10.1），FPS 覆盖层按 `UiScale = k` 放大到原生窗口分辨率；它仍在 `VIEWPORT` 逻辑坐标系里排版，但不与游戏画面共享像素格。
 
 ### 7.9.3 feature 依赖汇总
 
@@ -861,30 +887,34 @@ pub fn add_debug_visualization(app: &mut App) {
 
 | 用途 | 用什么 | 坐标空间 | 由哪个相机渲染 |
 |---|---|---|---|
-| **游戏 HUD**：房间目标进度、收集计数、暂停菜单、提示 | `Node` + `Text`（`bevy_ui`） | 屏幕空间，逻辑像素 = **`VIEWPORT` 坐标系**（320 宽） | **内层相机**（`IsDefaultUiCamera`） |
+| **游戏 HUD**：房间目标进度、收集计数、暂停菜单、提示 | `Node` + `Text`（`bevy_ui`） | 屏幕空间，逻辑像素 = **`VIEWPORT` 坐标系**（320 宽，靠 `UiScale = k` 保持） | **UI 相机**（窗口目标，`IsDefaultUiCamera`） |
 | **提示条**（通关 / 获得装饰品） | 同上，单行文本 + `HUD_TOAST_SECS` 计时 | 同上 | 同上 |
 | **结算面板**（`GameComplete`） | 固定 px 几何的 `Node` + 居中 `Text` | 同上 | 同上 |
 | **世界内文字**：告示牌、道具名、飘字 | `Text2d` | 世界像素（Z = `z::TEXT2D`，数值见 `00` §0.4） | 内层相机（走 `PIXEL_PERFECT_LAYERS`，与 sprite 一起被放大 `k` 倍） |
 | 编辑器 UI | `bevy_egui` | 原生窗口分辨率 | 见 `08` |
 
-**为什么 HUD 走内层相机（而不是外层）**
+**为什么 UI 走独立窗口相机（而不是内层相机）**
 
-- 内层渲染目标就是 `VIEWPORT_W × VIEWPORT_H`，HUD 随之被整数倍放大 `k` 倍 ⇒ HUD 与游戏画面**共用一个像素格**，字体边缘、边框粗细、间距全部落在整数 texel 上，这才是像素风。
-- 若走外层相机（原生窗口分辨率）：字体在非 `VIEWPORT` 网格上以亚像素边缘渲染，与画面格不对齐；且窗口尺寸一变，HUD 的相对大小还会抖。
-- UI 节点不受 `RenderLayers` 影响（§7.1.2 的原文），所以内层相机（layer 0）依然会渲染 UI —— 不需要为 UI 单独开层。
-- 实现：内层相机实体上插 `IsDefaultUiCamera`；或给 UI 根节点插 `UiTargetCamera(in_game_camera_entity)`。
-  【已验证】<https://docs.rs/bevy/0.20.0/bevy/camera/visibility/struct.RenderLayers.html>（example 注释：“The default camera. `IsDefaultUiCamera` makes this the default camera to render UI elements to. Alternatively, you can add the `UiTargetCamera` component to root UI nodes to define which camera they should render to.”）
-- UI 的逻辑尺寸 = `VIEWPORT`（`VIEWPORT_W × VIEWPORT_H`）。依据：内层相机的 `RenderTarget::Image(ImageRenderTarget { scale_factor })` 文档明确 `scale_factor` “should almost always be 1.0”，`Camera::logical_viewport_size()` 对 image target 返回目标尺寸/缩放因子。【已验证】`ImageRenderTarget` <https://docs.rs/bevy/0.20.0/bevy/camera/struct.ImageRenderTarget.html> ；`Camera::logical_viewport_size` <https://docs.rs/bevy/0.20.0/bevy/camera/struct.Camera.html> ；结论为【INFERENCE】
+- **可点击性是硬约束**：`bevy_picking` 的 UI 后端按「相机 `RenderTarget` == 指针 `NormalizedRenderTarget`」把指针分配给相机。
+  内层相机的目标是离屏纹理，指针永远匹配不上 ⇒ `PointerPress` 不会发给任何 UI 节点 ⇒ 按钮点不动。
+- **字体精细度**：内层目标只有 320×320，12 px 字形先在该分辨率光栅化、再最近邻放大 `k` 倍，看起来就是「低像素文本放大」。
+  UI 相机直接渲染到窗口，同一字号按 `k` 倍物理像素光栅化，边缘由 `FontSmoothing::AntiAliased`（默认）平滑。
+- **布局不变**：`UiScale = k` 时 `ComputedUiRenderTargetInfo.logical_size = 窗口物理尺寸 / k = 320×320`，
+  且 `Val::Px` / `FontSize::Px` 都乘以 `k` ⇒ 所有 `px(..)` 常量与 320 坐标系完全不用改。
+- **代价**：HUD 不再与游戏画面共享像素网格（无整数 texel 对齐）。这是明确的取舍：可点击、可读优先。
+- UI 相机：`Camera { order: UI_CAMERA_ORDER, clear_color: ClearColorConfig::None }`、`RenderLayers::none()`、`Msaa::Off`。
+  `clear_color = None` 保证它不擦掉外层相机画好的 canvas；`RenderLayers::none()` 保证它不重复渲染世界。
+- UI 节点不受 `RenderLayers` 影响，只能被一个相机渲染。【已验证】<https://docs.rs/bevy/0.20.0/bevy/camera/visibility/struct.RenderLayers.html>
 - **所有 UI 尺寸/字号都按 `VIEWPORT_W` 宽的坐标系写**（例如 12 px 字号 ≈ 视口高度的 1/32），且**一律用 `px(..)` 的整数值**。
-  **禁止**用「窗口/视口比例」单位（`vw()` / `vh()` / `percent()`）做 HUD 的定位与尺寸：它们会解析出小数像素（`percent()` 还相对父节点），
-  在 `VIEWPORT` 网格上产生非整数偏移，破坏像素格。唯一例外是「铺满视口」这类不关心像素对齐的容器（`width: percent(100)` 仍建议改用 `px(VIEWPORT_W)`）。
+  **禁止**用「窗口/视口比例」单位（`vw()` / `vh()` / `percent()`）做 HUD 的定位与尺寸：它们会解析出小数像素。
+  唯一例外是「铺满视口」这类不关心像素对齐的容器。
 
 ### 7.10.2 0.20 正确写法（可直接抄写）
 
 ```rust
 use bevy::prelude::*;
 
-/// 屏幕空间 HUD（由内层相机渲染 → 落在 `VIEWPORT_W × VIEWPORT_H` 视口里）
+/// 屏幕空间 HUD（由 UI 窗口相机渲染；逻辑坐标仍按 VIEWPORT_W × VIEWPORT_H）
 fn spawn_hud(commands: &mut Commands, ui_font: &Handle<Font>) {
     commands.spawn((
         Text::new("目标: 到达出口"),
@@ -925,7 +955,7 @@ fn spawn_world_label(commands: &mut Commands, font: &Handle<Font>, at: Vec2, tex
 
 - 两个函数都是**构造器**（不是系统），由 `Startup` / 状态进入系统调用；系统侧只传 `&mut Commands` 与已加载的字体句柄。
 - `PIXEL_PERFECT_LAYERS` 见 §7.1.2；`PIXEL_PERFECT_LAYERS` 对 UI 节点无意义（UI 忽略 `RenderLayers`），只对 `Text2d` 需要。
-- 内层相机记得插 `IsDefaultUiCamera`（否则 `bevy_ui` 会回退到「第一个指向主窗口的相机」，在有外层相机时会选错）。
+- **UI 窗口相机**插 `IsDefaultUiCamera`（内层/外层都不插）。UI 相机的 `RenderTarget` 必须是窗口，否则拾取后端匹配不到指针，按钮点不动。
 
 ### 7.10.3 必须记住的 0.20 细节
 
@@ -958,7 +988,7 @@ fn spawn_world_label(commands: &mut Commands, font: &Handle<Font>, at: Vec2, tex
 
 | 项 | 约定 |
 |---|---|
-| 相机 | 与 HUD 相同：UI 由**内层相机**（`IsDefaultUiCamera`）渲染，坐标系 = `VIEWPORT_W × VIEWPORT_H` |
+| 相机 | 与 HUD 相同：UI 由 **UI 窗口相机**（`IsDefaultUiCamera`）渲染，逻辑坐标系 = `VIEWPORT_W × VIEWPORT_H`（`UiScale = k`） |
 | 背景 | 每个界面一个全屏不透明 `Node`（`left/top = 0`，`width/height = px(VIEWPORT_W/H)`），`GlobalZIndex(100)` 盖住 HUD 与暂停面板 |
 | 生命周期 | 根节点带 `DespawnOnExit(对应 GameState)`；设置界面在 `GameSettings` 变化时整块重建 |
 | 文本 | 只能 ASCII（默认字体缺 CJK 字形，`10` §10.3.1 E7） |
@@ -1039,7 +1069,7 @@ size   = v + 2 * p
 | R8 | Z 卫生 | §7.7.4(a) 的 CI `grep` 无输出；dev 下同 Z 重叠检测器在整关卡跑满 60 s 无 `warn`。**M0 只做 (a)**：(b) 的检测器推迟到 M3 —— M0 只有两种 sprite（瓦片 / 房间背景板）且 Z 天然不同，检测器无检测面（有非平凡重叠面的是可拾取物与角色） |
 | R9 | 瓦片规模 | 加载 30 房间关卡：瓦片实体 ≤ 7 680；同屏（同房间）≤ 256；房间裁剪生效（隐藏其它房间的 `RoomRoot` 后 `EntityCountDiagnosticsPlugin` 的实体数不变，但被 `ViewVisibility` 标记为可见的实体数下降到 ≤ 256） |
 | R10 | 调试可视化 | `dev` 构建下 FPS 覆盖层可见、AABB/网格 `Gizmos` 可见；`release`（不带 `dev`）构建下两者都不存在（feature 门控生效） |
-| R11 | HUD 像素格 | 暂停菜单与游戏画面共用同一像素格（截图放大后字体边缘落在整数 texel 上），且 HUD 不随窗口尺寸改变相对大小 |
+| R11 | UI 可点击 + 清晰 | UI 位于窗口相机（`RenderTarget` 与指针一致）⇒ 按钮可点击；文字按 `k` 倍原生分辨率光栅化，不做「低分辨率文本放大」；逻辑布局仍随 `k` 不变形 |
 | R12 | Y 方向 | 世界坐标 `+Y` 向上（Bevy 原生），房间局部坐标 `+Y` 向下（`00` §0.3）——用网格 gizmo 目测一次即可确认没有多做一次翻转 |
 
 ---
