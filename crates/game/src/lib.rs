@@ -18,6 +18,7 @@ pub mod player;
 pub mod render;
 pub mod room;
 pub mod save;
+pub mod settings;
 pub mod state;
 pub mod tiles;
 pub mod world;
@@ -83,9 +84,15 @@ pub fn add_game_plugins(app: &mut App) {
     app.add_plugins(render::parallax::ParallaxPlugin);
 }
 
-/// 注册像素完美渲染管线（**仅发布 bin `animj`**）。
+/// 注册像素完美渲染管线与**发布外壳**（主菜单 / 关卡选择 / 设置）。
 ///
-/// 编辑器不注册它：离屏像素完美管线（整数倍放大 + 黑边）的验收在 `animj` 上做（`08` §8.1.4）。
+/// 编辑器不注册它：离屏像素完美管线（整数倍放大 + 黑边）的验收在 `animj` 上做（`08` §8.1.4）；
+/// 菜单流程也只属于发布进程（编辑器用 `StartupFlow::Direct` 直达关卡，`05` §5.5）。
 pub fn add_render_plugins(app: &mut App) {
-    app.add_plugins((render::PixelRenderPlugin, render::hud::HudPlugin));
+    app.add_plugins((
+        render::PixelRenderPlugin,
+        render::hud::HudPlugin,
+        settings::SettingsPlugin,
+        render::menu::MenuPlugin,
+    ));
 }

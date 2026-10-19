@@ -42,9 +42,10 @@ flowchart LR
 | `player/{mod,input,spawn,death}.rs` | ECS 适配层（`06` §6.1.5）：`PlayerMotion`/`PlayerInput`、输入采样、生成、Hazard 死亡与重生 |
 | `demo.rs` | 验证用脚本输入与物理度量（`--demo walk` / `--demo jump`），见 `AGENTS.md` §4 |
 | `tiles.rs` | `RoomTiles` / `LevelTiles` 存储、`tile_at_world`、以及 `TileWorld` 的房间映射实现（`06` §6.6） |
-| `state.rs` | `GameState`、`GameSet` |
+| `state.rs` | `GameState`、`GameSet`、`StartupFlow`、`SettingsReturn` |
+| `settings.rs` | 全局设置（音量/全屏）：`GameSettings`、路径、读写、投射到 `GlobalVolume` / `WindowMode`（`05` §5.13） |
 | `level_asset.rs` | `Level` 的 Bevy `Asset` 包装 + `AssetLoader` 注册 + `Asset` 事件热重载 |
-| `world/load.rs` | 校验 → 生成瓦片 sprite → 生成实体与角色 → 放置玩家 |
+| `world/load.rs` | `StartRequest`/`LoadMode` → 校验 → 生成瓦片 sprite → 生成实体与角色 → 放置玩家 |
 | `world/progress.rs` | `LevelProgress` / `RoomProgress`（见 `02` §2.3） |
 | `player/decor.rs` | 装饰品装备与图层渲染（`01` §1.5、`04` §6） |
 | `checkpoint.rs` | 存档点：`E` 激活、`ActiveCheckpoint`、死亡/启动落点（`02` §2.5） |
@@ -58,15 +59,18 @@ flowchart LR
 | `render/parallax.rs` | 2D 视差背景（`03` §3.10 / `07` §7.13）：贴图平铺、相位与滚动、编辑器预览覆盖、mtime 重载 |
 | `render/sprite_anim.rs` | 自写帧动画（`04` §5） |
 | `render/hud.rs` | 屏幕空间 HUD |
+| `render/pause.rs` | 暂停菜单 + 装饰品装备界面（`Esc` 开关；含「设置」「主菜单」入口） |
+| `render/menu.rs` | 主菜单 / 关卡选择 / 设置界面（仅发布 bin；`05` §5.5、`07` §7.10.5） |
 | `render/debug.rs` | gizmos 网格、`F3` 调试开关、诊断行（dev feature，见 `07` §7.9） |
 | `anim_data.rs` | 角色动画数据（`assets/anim/player.anim.ron`，`04` §5.5）：类型/校验/加载器/内置回退 |
 | `save/mod.rs` | `SaveData` + `save_path()` + 原子写（M6） |
 
-> **当前进度（2026-10-17，M6 部分）**：：已落地 `lib.rs` / `config/{mod,physics,render,room}.rs` / `coords.rs` / `physics/**` /
-> `player/{mod,input,spawn,death,decor}.rs` / `demo.rs` / `tiles.rs` / `state.rs` / `level_asset.rs` /
+> **当前进度（2026-10-20，M7）**：已落地 `lib.rs` / `config/{mod,physics,render,room}.rs` / `coords.rs` / `physics/**` /
+> `player/{mod,input,spawn,death,decor}.rs` / `demo.rs` / `tiles.rs` / `state.rs` / `settings.rs` / `level_asset.rs` /
 > `world/{mod,load,progress}.rs`（加载 + 校验 + 热重载 + 进度）/ `room/{mod,goals,reward}.rs`（房间判定、
-> 传感器、条件求值、授奖、全通）/ `camera/{mod,rig}.rs`（无状态跟随 + 地图钳制）/ `render/{mod,pixel_camera,snap,tiles,hud,debug}.rs`。
-> **尚未落地**：编辑器侧的区域框选（已明确移除，见 `08` §8.10.5）、音效（`04` 尚无音频资产规范）。
+> 传感器、条件求值、授奖、全通）/ `camera/{mod,rig}.rs`（无状态跟随 + 地图钳制）/
+> `render/{mod,pixel_camera,snap,tiles,hud,pause,menu,debug}.rs` / `save/mod.rs`。
+> **尚未落地**：编辑器侧的区域框选（已明确移除，见 `08` §8.10.5）。
 > 不要去找不存在的文件。
 
 ### `crates/editor/src/`
@@ -114,7 +118,9 @@ flowchart LR
 | `SpriteAnimPlugin` | 帧动画 + 按朝向水平翻转 sprite（装饰品同步镜像，`04` §4.5） | 无 |
 | `SavePlugin` | 读档（版本/地图/存档点校验）+ 通关/授奖/设置存档点/退出即存 | `WorldPlugin`、`RoomPlugin` |
 | `HudPlugin` | HUD（进度/提示条/结算面板） | `CorePlugin` |
-| `PausePlugin` | 暂停菜单 + 装饰品装备界面（`GameState::Paused`，`Esc` 开关） | `CorePlugin` |
+| `PausePlugin` | 暂停菜单 + 装饰品装备界面（`GameState::Paused`，`Esc` 开关）；「设置」进 `Settings`、「主菜单」先存档再回 `MainMenu` | `CorePlugin` |
+| `MenuPlugin` | 主菜单 / 关卡选择 / 设置 UI。**只由 `add_render_plugins` 注册（发布 bin）**；写入 `StartRequest` 驱动加载 | `WorldPlugin`、`SavePlugin`、`SettingsPlugin`、`CorePlugin` |
+| `SettingsPlugin` | 读设置 → `GlobalVolume` + 主窗口 `WindowMode`；变化后原子写 `settings.ron`。**只由发布 bin 注册** | 无 |
 | `AudioFxPlugin` | 事件 → 音效（`04` §6.9；物理结果与 `05` §5.6 的消息） | `RoomPlugin`、`PlayerPlugin` |
 | `DebugPlugin` | gizmos / 诊断（仅 `dev` feature） | 全部 |
 
@@ -144,17 +150,29 @@ pub enum GameSet { Input, Physics, PostPhysics, Room, Camera, Fx, Snap }
 
 ```rust
 #[derive(States, Default, Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub enum GameState { #[default] Boot, Loading, Playing, Paused, GameComplete }
+pub enum GameState {
+    #[default] Boot,
+    MainMenu, LevelSelect, Settings,
+    Loading, Playing, Paused, GameComplete,
+}
 ```
 
 | 状态 | 含义 | 就绪判据 |
 |---|---|---|
-| `Boot` | 注册资产、读取存档 | 立即转 `Loading` |
-| `Loading` | 加载 `.level.ron`、校验、生成世界 | 加载 + 校验通过 → `Playing`；失败 → 停留在 `Loading` 并显示错误文本 |
+| `Boot` | 按 `StartupFlow` 选入口 | `Menu` → `MainMenu`；`Direct` → 写入 `StartRequest`（默认关卡，`LoadMode::Auto`）→ `Loading` |
+| `MainMenu` | 开始游戏 / 读取存档 / 设置 / 退出 | 进入时**销毁整局世界**（玩家、瓦片、房间实体、关卡级资源） |
+| `LevelSelect` | 列出 `assets/levels/*.level.ron` | 选择关卡 ⇒ `StartRequest{ NewGame }` → `Loading` |
+| `Settings` | 音量 / 全屏 | 返回 `SettingsReturn`（主菜单或暂停菜单） |
+| `Loading` | 加载 `.level.ron`、校验、按 `StartRequest.mode` 建立进度、生成世界 | 成功 → `Playing`；校验失败 → 停留在 `Loading` 并打印错误 |
 | `Playing` | 正常游戏 | — |
-| `Paused` | 暂停菜单、装饰品装备 | 冻结物理与计时 |
+| `Paused` | 暂停菜单、装饰品装备、编辑器编辑态 | 冻结物理与计时 |
 | `GameComplete` | 全部房间通关的结算 | 可返回 `Playing` 继续探索 |
 
+- `StartupFlow` 是部署级开关：发布 bin 默认 `Menu`；编辑器 bin 插入 `Direct`（`08` §8.2）。
+- `LoadMode`：`NewGame`（忽略存档、进度清空）/ `Continue`（存档缺失或不匹配 ⇒ 回主菜单 + 提示）/
+  `Auto`（有则读档，否则新开；编辑器与冒烟验证沿用旧行为）。
+- 「读取存档」在菜单里先 `save::load_raw()` 检查版本与关卡是否存在，再发 `Continue`；
+  真正的版本/地图/存档点校验仍在 `save::load_validated` 内部的 `SaveData::restore`。
 - **门控规则**：玩法系统（`GameSet::Input` / `Physics` / `PostPhysics` / `Room` / `Camera` / `Fx`）统一以 `in_state(GameState::Playing)` 为 run condition；跨状态系统（`Snap`、HUD、存档、调试）不门控或按各自状态门控。
 - 编辑器因此**零侵入**地复用同一套插件：编辑态把 `GameState` 停在 `Paused`，试玩时置 `Playing`（见 `08` §8.3 / §8.6）。编辑器**不得**给任何 `game` 系统追加 `run_if`，`game` 也**不得**知道编辑器的存在。
 - **游戏不用状态机表达"房间是否通关"**：房间无缝，通关是进度数据（`02` §2.3），不是状态。
@@ -178,6 +196,10 @@ flowchart TB
 | 消息/事件 | 种类 | 载荷 | 发布者 → 消费者 |
 |---|---|---|---|
 | `PlayerInput` | 资源 | `move_x: i8`, `jump_pressed: bool`, `jump_held: bool`, `interact_pressed: bool` | `player/input` → 物理/存档点 |
+| `StartRequest` | 资源 | `level_id: String`, `mode: LoadMode` | 菜单/冒烟 → `OnEnter(Loading)` 消费 |
+| `LoadNotice` | 资源 | `text: String` | 加载失败 → 主菜单状态行 |
+| `GameSettings` | 资源 | `version`, `volume: f32`, `fullscreen: bool` | 设置界面 → `SettingsPlugin` |
+| `SettingsReturn` | 资源 | 目标 `GameState`（`MainMenu` / `Paused`） | 设置界面返回 |
 | `PlayerDied` | `Message` | `room_index: u32` | `player/death` → 音效/特效/HUD |
 | `CheckpointActivated` | `Message` | `point: CheckpointPoint`（房间 + 局部 `at`） | `checkpoint` → 存档（立即写盘） |
 | `RoomEntered` | `Message` | `room_index: u32` | `room` → HUD/调试/编辑器 |
@@ -269,8 +291,10 @@ pub struct CheckpointPoint { pub col: u32, pub row: u32, pub at: (i32, i32) }
 | 地图不符 | `level_name` 或 `grid` 与当前关卡不同 → 忽略进度（保留装饰品清单？**否**，一并忽略，避免出现"有装饰品但没通关房间"的矛盾态） |
 | 存档点失效 | `checkpoint` 必须仍能在关卡数据里找到同房间同 `at` 的 `checkpoint` 实体；否则只丢弃存档点，其余进度照常恢复 |
 | 启动 | 有有效存档点 ⇒ 从存档点所在房间/位置开始；否则从 `player_spawn` 所在房间开始 |
-| 保存时机 | 通关（`RoomCleared`）/ 授奖（`DecorationGranted`）/ 设置存档点（`CheckpointActivated`）/ `AppExit` 各写一次；暂停菜单的「SAVE」「QUIT & SAVE」走同一条 `persist_now` |
+| 保存时机 | 通关（`RoomCleared`）/ 授奖（`DecorationGranted`）/ 设置存档点（`CheckpointActivated`）/ `AppExit` 各写一次；暂停菜单的「SAVE」「QUIT & SAVE」「MAIN MENU」走同一条 `persist_now` |
 | 自动化覆盖 | 环境变量 `ANIMJ_SAVE_DIR` 覆盖存档目录（CI / `--demo` 验证用；不改变发布行为） |
+| 读档入口 | 主菜单「读取存档」先用 `load_raw()` 判断「有没有、是哪一关」，再以 `Continue` 加载；失败回主菜单并在状态行提示 |
+| 新游戏 | `LoadMode::NewGame` 不读存档，进度与装饰品从零开始；实际覆盖存档发生在下一次保存事件（跨房间通关/存档点/退出/主菜单） |
 
 ## 5.12 代码规范
 
@@ -283,3 +307,22 @@ pub struct CheckpointPoint { pub col: u32, pub row: u32, pub at: (i32, i32) }
 | 注释风格 | 解释**为什么**，不解释**是什么**。禁止注释掉的死代码 |
 | 死代码 | 立即删除。禁止留 `#[allow(dead_code)]` 掩盖 |
 | Git | 一个提交一件事；信息格式 `scope: 祈使句摘要`，如 `physics: 修正单向平台在上升期的穿透` |
+
+## 5.13 设置
+
+```rust
+pub struct GameSettings {
+    pub version: u32,       // 当前 1；不符 ⇒ 忽略整份设置
+    pub volume: f32,        // 0.0..=1.0，10 档（每档 0.1）
+    pub fullscreen: bool,   // true = BorderlessFullscreen(Current)
+}
+```
+
+| 规则 | 说明 |
+|---|---|
+| 路径 | `settings_path()`：与 `save.ron` 同目录（`%APPDATA%\animj\settings.ron` / XDG 同理）；`ANIMJ_SAVE_DIR` 同时覆盖两者 |
+| 写盘 | 变化即写，复用 `save::write_atomic`（`.tmp` + rename） |
+| 音量 | `GlobalVolume = Volume::Linear(volume)`；只影响之后创建的音源，本项目音效均为一次性 `DESPAWN` ⇒ 等价即时生效 |
+| 全屏 | `WindowMode::BorderlessFullscreen(MonitorSelection::Current)` / `WindowMode::Windowed`；窗口缩放仍由像素管线按整数倍重新计算（`07` §7.2） |
+| 作用范围 | `SettingsPlugin` 只注册在发布 bin；编辑器窗口不被玩家设置改写 |
+| 界面 | 主菜单「SETTINGS」与暂停菜单「SETTINGS」共用同一块 UI；返回目标存在 `SettingsReturn` |

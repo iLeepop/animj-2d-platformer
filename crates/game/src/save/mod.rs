@@ -131,19 +131,27 @@ pub fn write_atomic(path: &Path, text: &str) -> std::io::Result<()> {
     std::fs::rename(&tmp, path)
 }
 
-/// 读档并校验；文件不存在 / 解析失败 / 校验失败都返回 `None`（不 panic、不猜测）。
-pub fn load_validated(
-    level: &Level,
-) -> Option<(LevelProgress, Decorations, Option<CheckpointPoint>)> {
+/// 读取并解析存档，但**不做**版本/地图校验。
+///
+/// 菜单用它在不加载关卡的前提下判断「有没有存档、属于哪一关」；真正恢复进度仍走
+/// [`load_validated`]（校验版本、地图与存档点）。
+pub fn load_raw() -> Option<SaveData> {
     let path = save_path();
     let text = std::fs::read_to_string(&path).ok()?;
     match from_text(&text) {
-        Ok(data) => data.restore(level),
+        Ok(data) => Some(data),
         Err(error) => {
             warn!("存档解析失败（{}）：{error}", path.display());
             None
         }
     }
+}
+
+/// 读档并校验；文件不存在 / 解析失败 / 校验失败都返回 `None`（不 panic、不猜测）。
+pub fn load_validated(
+    level: &Level,
+) -> Option<(LevelProgress, Decorations, Option<CheckpointPoint>)> {
+    load_raw()?.restore(level)
 }
 
 pub struct SavePlugin;

@@ -34,7 +34,9 @@ struct PauseButton(PauseAction);
 #[derive(Component, Debug, Clone)]
 enum PauseAction {
     Resume,
+    Settings,
     Save,
+    MainMenu,
     Quit,
     Equip(String),
     Unequip(usize),
@@ -112,7 +114,9 @@ fn rebuild_pause_ui(
         .id();
 
     button(&mut commands, root, "RESUME (Esc)", PauseAction::Resume);
+    button(&mut commands, root, "SETTINGS", PauseAction::Settings);
     button(&mut commands, root, "SAVE (Ctrl+S)", PauseAction::Save);
+    button(&mut commands, root, "MAIN MENU", PauseAction::MainMenu);
     button(&mut commands, root, "QUIT & SAVE", PauseAction::Quit);
 
     // 装饰品行放进滚动区：行数多时不再把面板顶出视口。
@@ -186,11 +190,13 @@ fn button(commands: &mut Commands, parent: Entity, label: &str, action: PauseAct
         .with_child((Text::new(label), TextColor(Color::WHITE)));
 }
 
+#[allow(clippy::too_many_arguments)]
 fn handle_pause_buttons(
     interactions: Query<&PauseButton, Added<Pressed>>,
     mut decorations: ResMut<Decorations>,
     mut menu: ResMut<PauseMenu>,
     mut next: ResMut<NextState<GameState>>,
+    mut settings_return: ResMut<crate::state::SettingsReturn>,
     progress: Option<Res<LevelProgress>>,
     checkpoint: Option<Res<crate::checkpoint::ActiveCheckpoint>>,
     mut exit: MessageWriter<AppExit>,
@@ -201,6 +207,10 @@ fn handle_pause_buttons(
                 menu.open = false;
                 next.set(GameState::Playing);
             }
+            PauseAction::Settings => {
+                settings_return.0 = GameState::Paused;
+                next.set(GameState::Settings);
+            }
             PauseAction::Save => {
                 if let Some(progress) = progress.as_ref() {
                     save::persist_now(
@@ -209,6 +219,17 @@ fn handle_pause_buttons(
                         checkpoint.as_ref().and_then(|point| point.0),
                     );
                 }
+            }
+            PauseAction::MainMenu => {
+                if let Some(progress) = progress.as_ref() {
+                    save::persist_now(
+                        progress,
+                        &decorations,
+                        checkpoint.as_ref().and_then(|point| point.0),
+                    );
+                }
+                menu.open = false;
+                next.set(GameState::MainMenu);
             }
             PauseAction::Quit => {
                 if let Some(progress) = progress.as_ref() {

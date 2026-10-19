@@ -39,10 +39,55 @@ pub fn texture_stamp(path: &str) -> Option<std::time::SystemTime> {
 #[derive(Resource, Debug, Clone)]
 pub struct AssetRoot(pub String);
 
+/// 关卡文件后缀（`00` §0.5）。文件名 `<level_id>.level.ron`。
+pub const LEVEL_FILE_SUFFIX: &str = ".level.ron";
+
+/// 文件名 → 关卡 id。不是 `<id>.level.ron`（或 id 为空）⇒ `None`。
+pub fn level_id_from_file_name(name: &str) -> Option<&str> {
+    name.strip_suffix(LEVEL_FILE_SUFFIX)
+        .filter(|id| !id.is_empty())
+}
+
+/// 扫描 `assets/levels/` 下的关卡 id，按字典序返回。
+///
+/// 目录不存在 / 不可读 ⇒ 空列表（菜单显示 `NO LEVELS FOUND`），不 panic。
+/// 只认文件名后缀，不解析关卡内容：损坏的关卡仍会出现在列表里，加载时按正常路径报错。
+pub fn level_ids() -> Vec<String> {
+    let dir = std::path::Path::new(&asset_file_path()).join("levels");
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut ids: Vec<String> = entries
+        .filter_map(Result::ok)
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .filter_map(|name| level_id_from_file_name(&name).map(str::to_owned))
+        .collect();
+    ids.sort();
+    ids
+}
+
 pub struct AssetPathPlugin;
 
 impl Plugin for AssetPathPlugin {
     fn build(&self, app: &mut App) {
         app.insert_resource(AssetRoot(asset_file_path()));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_level_ron_files_map_to_ids() {
+        assert_eq!(
+            level_id_from_file_name("world_01.level.ron"),
+            Some("world_01")
+        );
+        assert_eq!(level_id_from_file_name("a.level.ron"), Some("a"));
+        assert_eq!(level_id_from_file_name("world_01.ron"), None);
+        assert_eq!(level_id_from_file_name(".level.ron"), None);
+        assert_eq!(level_id_from_file_name("world_01.level.ron.bak"), None);
+        assert_eq!(level_id_from_file_name("world_01.level.RON"), None);
     }
 }

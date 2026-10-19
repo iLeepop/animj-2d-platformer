@@ -1,6 +1,9 @@
 //! `animj` 游戏可执行文件。
 //!
-//! 除正常游玩外，支持三个**用于验证**的开关（M0 的验收依赖它们，见 `docs/09-dependencies.md` §9.8）：
+//! 无参数启动进入**主菜单**（开始游戏 / 读取存档 / 设置 / 退出）。关卡选择扫描
+//! `assets/levels/*.level.ron`（`05` §5.5）。
+//!
+//! 验证开关（`AGENTS.md` §4）：
 //!
 //! ```text
 //! cargo run -p game --bin animj --features dev -- --frames 90 --screenshot target/m0
@@ -9,6 +12,11 @@
 //! - `--frames N`：跑满 N 帧后退出（否则窗口一直开着，CI 无法收尾）。
 //! - `--screenshot <prefix>`：请求两张截图 `<prefix>-canvas.png`（内层画布）与 `<prefix>-window.png`。
 //! - `--self-check`：打印像素完美管线的不变量自检结果（`VERIFY:` 行）。
+//! - `--demo menu|levels|settings|menu-start|load-save`：界面冒烟，从主菜单开始。
+//! - `--demo walk|jump|hop|checkpoint|edge|pause|restart`：玩法冒烟，直接进默认关卡。
+//!
+//! **入口规则**：带任何验证开关或 `--demo`（菜单类除外）时用 `StartupFlow::Direct`
+//! （`LoadMode::Auto`，与旧验证命令语义一致）；无参数启动才走主菜单。
 
 use bevy::image::{ImageFilterMode, ImageSampler};
 use bevy::prelude::*;
@@ -56,15 +64,166 @@ impl Cli {
 #[derive(Resource, Default)]
 struct FrameTick(u32);
 
-/// 冒烟专用：让暂停菜单在固定帧打开（正常入口是 `Esc`）。
-fn open_pause_for_demo(
+/// 冒烟：`--demo levels` 在主菜单后进入关卡选择。
+fn drive_demo_levels(
     tick: Res<FrameTick>,
+    mut next: ResMut<NextState<game::state::GameState>>,
+    mut done: Local<bool>,
+) {
+    if *done || tick.0 < 20 {
+        return;
+    }
+    *done = true;
+    next.set(game::state::GameState::LevelSelect);
+    println!("[demo levels] 已进入关卡选择");
+}
+
+/// 冒烟：`--demo settings` 打开设置，验证音量与全屏开关的投射链路。
+fn drive_demo_settings(
+    tick: Res<FrameTick>,
+    mut settings: ResMut<game::settings::GameSettings>,
+    mut return_state: ResMut<game::state::SettingsReturn>,
+    mut next: ResMut<NextState<game::state::GameState>>,
+    mut stage: Local<u8>,
+) {
+    match (tick.0, *stage) {
+        (20, 0) => {
+            return_state.0 = game::state::GameState::MainMenu;
+            next.set(game::state::GameState::Settings);
+            *stage = 1;
+            println!("[demo settings] 已打开设置");
+        }
+        (30, 1) => {
+            settings.adjust_volume(-2);
+            *stage = 2;
+            println!("[demo settings] 音量 -> {}%", settings.volume_percent());
+        }
+        (36, 2) => {
+            settings.fullscreen = true;
+            *stage = 3;
+            println!("[demo settings] 请求全屏");
+        }
+        (42, 3) => {
+            settings.fullscreen = false;
+            *stage = 4;
+            println!("[demo settings] 请求窗口");
+        }
+        _ => {}
+    }
+}
+
+/// 冒烟：`--demo menu-start` 走「主菜单 → 关卡选择 → 开始游戏」。
+fn drive_demo_menu_start(
+    tick: Res<FrameTick>,
+    mut commands: Commands,
+    mut next: ResMut<NextState<game::state::GameState>>,
+    mut stage: Local<u8>,
+) {
+    match (tick.0, *stage) {
+        (20, 0) => {
+            next.set(game::state::GameState::LevelSelect);
+            *stage = 1;
+            println!("[demo menu-start] 已进入关卡选择");
+        }
+        (30, 1) => {
+            commands.insert_resource(game::world::load::StartRequest {
+                level_id: game::world::load::DEFAULT_LEVEL_ID.to_string(),
+                mode: game::world::load::LoadMode::NewGame,
+            });
+            next.set(game::state::GameState::Loading);
+            *stage = 2;
+            println!("[demo menu-start] 已请求开始游戏");
+        }
+        _ => {}
+    }
+}
+
+fn log_playing_on_enter() {
+    println!("[demo menu-start] 已进入游戏");
+}
+
+/// 冒烟：`--demo load-save` 走「主菜单 → 读取存档」。与菜单按钮走同一条 `StartRequest` 路径。
+fn drive_demo_load_save(
+    tick: Res<FrameTick>,
+    mut commands: Commands,
+    mut next: ResMut<NextState<game::state::GameState>>,
+    mut done: Local<bool>,
+) {
+    if *done || tick.0 < 20 {
+        return;
+    }
+    *done = true;
+    match game::save::load_raw().filter(|data| data.version == game::save::SAVE_VERSION) {
+        Some(data) => {
+            println!("[demo load-save] 读取存档：{}", data.level_name);
+            commands.insert_resource(game::world::load::StartRequest {
+                level_id: data.level_name,
+                mode: game::world::load::LoadMode::Continue,
+            });
+            next.set(game::state::GameState::Loading);
+        }
+        None => println!("[demo load-save] 没有可用存档"),
+    }
+}
+
+/// 冒烟：验证「游戏中 → 主菜单 → 再开一局」不会残留上一局的实体。
+///
+/// 第二轮进入 `Playing` 时打印实体计数：玩家必须恰好 1 个、房间根必须等于关卡房间数。
+fn drive_demo_restart(
+    tick: Res<FrameTick>,
+    mut commands: Commands,
+    mut next: ResMut<NextState<game::state::GameState>>,
+) {
+    match tick.0 {
+        40 => {
+            println!("[demo restart] 回到主菜单");
+            next.set(game::state::GameState::MainMenu);
+        }
+        60 => {
+            commands.insert_resource(game::world::load::StartRequest {
+                level_id: game::world::load::DEFAULT_LEVEL_ID.to_string(),
+                mode: game::world::load::LoadMode::NewGame,
+            });
+            next.set(game::state::GameState::Loading);
+            println!("[demo restart] 再次开始游戏");
+        }
+        _ => {}
+    }
+}
+
+/// 第二轮进入 `Playing` 后（瓦片已生成）检查残留：玩家与房间根都不得翻倍。
+fn log_restart_counts(
+    state: Res<State<game::state::GameState>>,
+    players: Query<&game::player::PlayerMotion>,
+    roots: Query<&game::render::tiles::RoomRoot>,
+    zones: Query<&game::room::RoomZone>,
+    mut rounds: Local<u8>,
+    mut last_state: Local<Option<game::state::GameState>>,
+    mut logged: Local<bool>,
+) {
+    if *last_state != Some(*state.get()) {
+        if *state.get() == game::state::GameState::Playing {
+            *rounds += 1;
+        }
+        *last_state = Some(*state.get());
+    }
+    if *rounds < 2 || *logged || roots.is_empty() {
+        return;
+    }
+    *logged = true;
+    println!(
+        "[demo restart] 第二轮实体计数：玩家 {}，房间根 {}，房间实体 {}",
+        players.iter().count(),
+        roots.iter().count(),
+        zones.iter().count()
+    );
+}
+
+/// 冒烟专用：进入游戏后立刻打开暂停菜单（正常入口是 `Esc`）。
+fn open_pause_for_demo(
     mut menu: ResMut<game::render::pause::PauseMenu>,
     mut next: ResMut<NextState<game::state::GameState>>,
 ) {
-    if tick.0 != 20 {
-        return;
-    }
     menu.open = true;
     next.set(game::state::GameState::Paused);
     println!("[demo pause] 已打开暂停菜单");
@@ -78,6 +237,12 @@ fn main() {
     app.add_plugins(game::default_plugins());
     game::add_game_plugins(&mut app);
     game::add_render_plugins(&mut app);
+
+    let menu_demo = matches!(
+        cli.demo.as_deref(),
+        Some("menu" | "levels" | "settings" | "menu-start" | "load-save")
+    );
+    let headless = cli.frames.is_some() || cli.screenshot_prefix.is_some() || cli.self_check;
     match cli.demo.as_deref() {
         Some("walk") => {
             app.add_plugins(game::demo::DemoPlugin {
@@ -105,19 +270,54 @@ fn main() {
             });
         }
         Some("pause") => {
-            // 冒烟：第 20 帧打开暂停菜单（键盘 `Esc` 无法在无头会话注入）
-            app.add_systems(Update, open_pause_for_demo);
+            // 冒烟：进入 Playing 后立刻打开暂停菜单（键盘 `Esc` 无法在无头会话注入）
+            app.add_systems(
+                OnEnter(game::state::GameState::Playing),
+                open_pause_for_demo,
+            );
         }
-        Some(other) => eprintln!("未知 demo：{other}（可选 walk|jump|edge|hop|checkpoint|pause）"),
+        Some("levels") => {
+            app.add_systems(Update, drive_demo_levels);
+        }
+        Some("settings") => {
+            app.add_systems(Update, drive_demo_settings);
+        }
+        Some("menu-start") => {
+            app.add_systems(Update, drive_demo_menu_start);
+            app.add_systems(
+                OnEnter(game::state::GameState::Playing),
+                log_playing_on_enter,
+            );
+        }
+        Some("load-save") => {
+            app.add_systems(Update, drive_demo_load_save);
+        }
+        Some("restart") => {
+            app.add_systems(Update, (drive_demo_restart, log_restart_counts));
+        }
+        Some("menu") => {}
+        Some(other) => eprintln!(
+            "未知 demo：{other}（可选 walk|jump|edge|hop|checkpoint|pause|menu|levels|settings|menu-start|load-save|restart）"
+        ),
         None => {}
     }
+
+    // 验证/脚本入口沿用旧语义：直接进默认关卡（Auto = 有存档读档，没有就新开）。
+    // 无参数启动才是玩家入口，从主菜单开始。
+    if !menu_demo && (headless || cli.demo.is_some()) {
+        app.insert_resource(game::state::StartupFlow::Direct);
+    }
+
     app.insert_resource(cli)
         .init_resource::<FrameTick>()
         .add_systems(First, tick_frames)
-        .add_systems(Update, (capture_screenshots, exit_after_frames).chain())
+        .add_systems(Update, (capture_screenshots, exit_after_frames).chain());
+    // 菜单界面没有关卡，像素完美自检不适用；普通交互启动也不该往控制台刷 FAIL。
+    if headless && !menu_demo {
         // 自检放在 `PostUpdate` 的像素吸附**之后**：`sync_player_transform` 在 `GameSet::Snap` 内写
         // `Transform`，若在 `Update` 里比较，AABB 已前进而 Transform 还是上一帧的投影 ⇒ 假阴性。
-        .add_systems(PostUpdate, self_check.after(game::state::GameSet::Snap));
+        app.add_systems(PostUpdate, self_check.after(game::state::GameSet::Snap));
+    }
     app.run();
 }
 

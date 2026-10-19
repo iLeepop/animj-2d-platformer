@@ -2,21 +2,24 @@
 
 Bevy **0.20** 像素风 2D 平台跳跃游戏的规范文档集。**本目录是项目规范与契约的唯一权威来源。**
 
-## 当前状态（2026-10-17）
+## 当前状态（2026-10-20）
 
-**M0 骨架 · M1 角色移动 · M2 房间与相机 · M3 关卡数据 · M4 目标与奖励 · M5 关卡编辑器 已完成并通过验证** —— 判据见 `01` §1.9，实测明细见 `09` §9.8.1 与各文档的「已完成」标注。
+**M0 骨架 · M1 角色移动 · M2 房间与相机 · M3 关卡数据 · M4 目标与奖励 · M5 关卡编辑器 · M6 打磨 · M7 基础界面 已完成并通过验证** —— 判据见 `01` §1.9，实测明细见 `09` §9.8.1 与各文档的「已完成」标注。
 
 | 位置 | 内容 |
 |---|---|
 | `crates/level_format/` | 关卡数据结构、legend、`read`/`write`、V1–V18 校验（**零 bevy 依赖**，36 个测试） |
-| `crates/game/` | 玩法 crate：**存档读档**、暂停菜单与装饰品装备、**角色帧动画**、双层像素相机、像素吸附、瓦片渲染 + 房间裁剪、关卡加载 + 校验 + 热重载、房间判定（8 px 滞回）、**相机跟随玩家（钳制在地图内）**、**条件求值/拾取/通关/授奖/结算**、HUD（进度 + 提示条 + 结算面板）、调试叠层；bin `animj` |
+| `crates/game/` | 玩法 crate：**主菜单 / 关卡选择 / 设置（音量、全屏）**、**存档读档**、暂停菜单与装饰品装备、**角色帧动画**、双层像素相机、像素吸附、瓦片渲染 + 房间裁剪、关卡加载 + 校验 + 热重载、房间判定（8 px 滞回）、**相机跟随玩家（钳制在地图内）**、**条件求值/拾取/通关/授奖/结算**、HUD（进度 + 提示条 + 结算面板）、调试叠层；bin `animj` |
 | `crates/editor/` | lib `editor`（会话/撤销/相机/投影/Gizmos/工具/面板/试玩）+ bin `animj-editor`、bin `animj-dev`（`validate-levels` / `gen-placeholder-assets`） |
 | `assets/` | 占位资产（图集 + 30 件装饰品 + 7 个音效 WAV + `anim/player.anim.ron`，规格符合 `04`）+ `world_01.level.ron`（10×3 = 30 房间；两处竖井带单向台阶可上行，保存即热重载） |
 
 常用命令（别名见 `.cargo/config.toml`，纪律与判据见 `AGENTS.md` §4）：
 
 ```bash
-cargo game -- --frames 90 --screenshot target/m0   # 跑游戏；导出内层画布与窗口两张截图
+cargo game                                           # 无参数启动：主菜单
+cargo game -- --demo menu --frames 90 --screenshot target/menu       # 主菜单截图（levels/settings 同理）
+cargo game -- --demo menu-start --frames 200         # 主菜单 → 关卡选择 → 进入游戏
+cargo game -- --frames 90 --screenshot target/m0   # 直接进默认关卡；导出内层画布与窗口两张截图
 cargo game -- --demo jump --frames 3000             # 脚本输入跑一段：日志给出每次跳跃的实测峰值
 cargo game -- --demo walk --frames 3000             # 走过房间边界与出口：日志给出房间切换、通关（M4）
 cargo game -- --demo hop --frames 3000              # 连续小跳：检查平台/尖刺/果实几何（不是通关判据）
@@ -28,7 +31,7 @@ cargo dev-cli -- gen-placeholder-assets --check      # 占位资产防漂移（�
 cargo test-all                                       # 全仓测试（当前 162 项：level_format 41（39 集成 + 2 单元）+ game 90 + editor 31）
 ```
 
-进度：**M0–M6 ✅**（编辑器遗留 5 项已补齐；可选细化见 `08` §8.10.5）。M1–M6 的完成判据见 `01` §1.9；各模块「已落地 / 尚未落地」见 `05` §5.2 的进度注记。
+进度：**M0–M7 ✅**（编辑器遗留 5 项已补齐；可选细化见 `08` §8.10.5）。M1–M7 的完成判据见 `01` §1.9；各模块「已落地 / 尚未落地」见 `05` §5.2 的进度注记。
 
 ---
 

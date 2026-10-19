@@ -582,6 +582,35 @@ fn many(list: Res<MyEntityList>, q: Query<&Health>) {
 
 - `hdr` cargo feature **不等于**相机 HDR（它只是 HDR 图片格式解码）；相机 HDR 组件是 `bevy::camera::Hdr`。【已验证】<https://docs.rs/bevy/0.20.0/bevy/camera/struct.Hdr.html>
 
+### 10.2.16 全局音量 / 窗口显示模式（M7 设置界面）
+
+```rust
+use bevy::audio::{GlobalVolume, Volume};
+use bevy::window::{MonitorSelection, PrimaryWindow, WindowMode};
+
+fn apply(
+    settings: Res<GameSettings>,
+    mut global: ResMut<GlobalVolume>,
+    mut window: Single<&mut Window, With<PrimaryWindow>>,
+) {
+    global.volume = Volume::Linear(settings.volume);          // 0.0..=1.0
+    window.mode = if settings.fullscreen {
+        WindowMode::BorderlessFullscreen(MonitorSelection::Current)
+    } else {
+        WindowMode::Windowed
+    };
+}
+```
+
+- `GlobalVolume { volume: Volume }` 是 **Resource**（0.19 起 `Resource: Component`，所以页面同时列出 Component impl）；`GlobalVolume::new(volume)` / `From<Volume>`；**修改只影响之后创建的音源**。【已验证】
+  <https://docs.rs/bevy/0.20.0/bevy/audio/struct.GlobalVolume.html>
+- `Volume::{ Linear(f32), Decibels(f32) }`。【已验证】<https://docs.rs/bevy/0.20.0/bevy/audio/enum.Volume.html>
+- `WindowMode::{ Windowed, BorderlessFullscreen(MonitorSelection), Fullscreen(MonitorSelection, VideoModeSelection) }`；无边框全屏会按显示器分辨率改窗口物理尺寸（scale factor 规则见 `07`）。【已验证】
+  <https://docs.rs/bevy/0.20.0/bevy/window/enum.WindowMode.html>
+- `MonitorSelection::{ Current, Primary, Index(usize), Entity(Entity) }`；`Current` = 窗口当前所在显示器。【已验证】
+  <https://docs.rs/bevy/0.20.0/bevy/window/enum.MonitorSelection.html>
+- 窗口实体用 `Single<&mut Window, With<PrimaryWindow>>` 取得；写 `Window::mode` 即请求 winit 切换。【已验证】（本仓 M7 实机：`全屏：开` → `全屏：关`，窗口尺寸随之变化，`fit_canvas` 重新计算 `k`）
+
 ---
 
 ## 10.3 0.20 破坏性变更 Top 10（含对本项目影响）

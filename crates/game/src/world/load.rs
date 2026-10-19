@@ -19,8 +19,30 @@ use crate::tiles::LevelTiles;
 use crate::world::CurrentRoom;
 use crate::world::progress::LevelProgress;
 
-/// M0 默认关卡 id。真正的关卡选择（多关卡/菜单）不在 M0 范围内。
+/// 默认关卡 id（编辑器直入与冒烟验证用）。玩家入口是主菜单的关卡选择（`05` §5.5）。
 pub const DEFAULT_LEVEL_ID: &str = "world_01";
+
+/// 关卡启动方式（`05` §5.5）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LoadMode {
+    /// 从零开始：忽略存档，进度与装饰品清空。
+    NewGame,
+    /// 读档：存档缺失/版本/地图不符 ⇒ 回主菜单并提示（不静默替换成新游戏）。
+    Continue,
+    /// 有则读档，没有则从零开始。编辑器与冒烟验证沿用旧行为。
+    Auto,
+}
+
+/// 一次启动请求。由菜单写入，`OnEnter(GameState::Loading)` 消费（`05` §5.5）。
+#[derive(Resource, Debug, Clone, PartialEq, Eq)]
+pub struct StartRequest {
+    pub level_id: String,
+    pub mode: LoadMode,
+}
+
+/// 加载失败/菜单操作的可见提示。菜单读它并显示在状态行。
+#[derive(Resource, Debug, Default, Clone)]
+pub struct LoadNotice(pub String);
 
 /// 关卡资产的相对路径（`assets/` 之下）。
 pub fn level_asset_path(id: &str) -> String {
@@ -64,38 +86,53 @@ pub struct LoadedLevel {
 pub struct PendingLevel {
     pub handle: Handle<LevelAsset>,
     pub path: String,
+    pub mode: LoadMode,
+    /// 失败/校验信息是否已经打印过：加载会重复进入本系统，日志只应出现一次。
+    pub reported: bool,
 }
 
 pub(crate) fn request_level(
     mut commands: Commands,
     server: Res<AssetServer>,
+    request: Option<Res<StartRequest>>,
     mut next: ResMut<NextState<GameState>>,
 ) {
-    let path = level_asset_path(DEFAULT_LEVEL_ID);
+    let Some(request) = request else {
+        warn!("进入 Loading 但没有 StartRequest，返回主菜单");
+        next.set(GameState::MainMenu);
+        return;
+    };
+    let path = level_asset_path(&request.level_id);
     info!("加载关卡资产：{path}");
     let handle = server.load::<LevelAsset>(&path);
-    commands.insert_resource(PendingLevel { handle, path });
-    next.set(GameState::Loading);
+    commands.insert_resource(PendingLevel {
+        handle,
+        path,
+        mode: request.mode,
+        reported: false,
+    });
+    commands.remove_resource::<StartRequest>();
 }
 
 pub(crate) fn poll_level(
     mut commands: Commands,
-    pending: Option<Res<PendingLevel>>,
+    mut pending: Option<ResMut<PendingLevel>>,
     assets: Res<Assets<LevelAsset>>,
     server: Res<AssetServer>,
     player_sheet: Res<crate::player::spawn::PlayerSheet>,
     anim: Res<crate::anim_data::ActiveAnim>,
     mut next: ResMut<NextState<GameState>>,
-    mut reported: Local<bool>,
 ) {
-    let Some(pending) = pending else {
+    let Some(pending) = pending.as_mut() else {
         return;
     };
 
     let Some(asset) = assets.get(&pending.handle) else {
-        if !*reported && let Some(LoadState::Failed(err)) = server.get_load_state(&pending.handle) {
+        if !pending.reported
+            && let Some(LoadState::Failed(err)) = server.get_load_state(&pending.handle)
+        {
             error!("关卡加载失败 {}：{err}", pending.path);
-            *reported = true;
+            pending.reported = true;
         }
         return;
     };
@@ -106,7 +143,7 @@ pub(crate) fn poll_level(
         .iter()
         .filter(|issue| issue.severity != Severity::Warning)
         .collect();
-    if !*reported {
+    if !pending.reported {
         for issue in &issues {
             match issue.severity {
                 Severity::Warning => warn!("[{}] {}", issue.path, issue.message),
@@ -117,13 +154,13 @@ pub(crate) fn poll_level(
         }
     }
     if !blocking.is_empty() {
-        if !*reported {
+        if !pending.reported {
             error!(
                 "关卡 {} 校验未通过（{} 条阻断性问题），停留在 Loading",
                 asset.level.name,
                 blocking.len()
             );
-            *reported = true;
+            pending.reported = true;
         }
         return;
     }
@@ -137,29 +174,54 @@ pub(crate) fn poll_level(
     );
 
     let level = asset.level.clone();
+    let mode = pending.mode;
     // 读档必须在决定出生位置**之前**：存档点决定从哪个房间/位置开始（`02` §2.5、`05` §5.11）。
-    let (progress, checkpoint) = match crate::save::load_validated(&level) {
-        Some((progress, decorations, checkpoint)) => {
-            info!(
-                "读档：房间 {}/{} 已通关，装饰品 {} 件{}",
-                progress.cleared_count(),
-                progress.rooms.len(),
-                decorations.len(),
-                if checkpoint.is_some() {
-                    "，存档点已恢复"
-                } else {
-                    ""
-                }
-            );
-            commands.insert_resource(decorations);
-            (progress, checkpoint)
+    let (progress, decorations, checkpoint) = match mode {
+        LoadMode::NewGame => {
+            info!("新游戏：忽略存档（关卡 {}）", level.name);
+            (
+                LevelProgress::from_level(&level),
+                crate::player::decor::Decorations::default(),
+                None,
+            )
         }
-        None => {
-            info!("无可用存档（首次启动或存档不匹配）");
-            (LevelProgress::from_level(&level), None)
-        }
+        LoadMode::Continue | LoadMode::Auto => match crate::save::load_validated(&level) {
+            Some((progress, decorations, checkpoint)) => {
+                info!(
+                    "读档：房间 {}/{} 已通关，装饰品 {} 件{}",
+                    progress.cleared_count(),
+                    progress.rooms.len(),
+                    decorations.len(),
+                    if checkpoint.is_some() {
+                        "，存档点已恢复"
+                    } else {
+                        ""
+                    }
+                );
+                (progress, decorations, checkpoint)
+            }
+            None if mode == LoadMode::Continue => {
+                error!(
+                    "读档失败：存档缺失或与关卡 {} 不匹配，返回主菜单",
+                    level.name
+                );
+                commands.insert_resource(LoadNotice("SAVE LOAD FAILED".to_string()));
+                commands.remove_resource::<PendingLevel>();
+                next.set(GameState::MainMenu);
+                return;
+            }
+            None => {
+                info!("无可用存档（首次启动或存档不匹配）");
+                (
+                    LevelProgress::from_level(&level),
+                    crate::player::decor::Decorations::default(),
+                    None,
+                )
+            }
+        },
     };
     commands.insert_resource(progress);
+    commands.insert_resource(decorations);
     commands.insert_resource(crate::checkpoint::ActiveCheckpoint(checkpoint));
 
     // 出生位置：有存档点 ⇒ 存档点所在房间/位置；否则 player_spawn 所在房间的重生点。

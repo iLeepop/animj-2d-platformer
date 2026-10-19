@@ -952,6 +952,28 @@ fn spawn_world_label(commands: &mut Commands, font: &Handle<Font>, at: Vec2, tex
 > 像素完美约束：`HUD_FONT_PX`、`WORLD_TEXT_FONT_PX` 必须是像素字体设计尺寸的**整数倍**，且不得使用 `Rem`（见 §7.10.3）。
 > 具体 UI 布局（哪个面板放哪、有几行）属于对应玩法文档，本文只拥有尺寸常量与写法。
 
+### 7.10.5 菜单界面（主菜单 / 关卡选择 / 设置）
+
+所有者：`crates/game/src/render/menu.rs`。只由发布 bin 注册（`05` §5.3）。
+
+| 项 | 约定 |
+|---|---|
+| 相机 | 与 HUD 相同：UI 由**内层相机**（`IsDefaultUiCamera`）渲染，坐标系 = `VIEWPORT_W × VIEWPORT_H` |
+| 背景 | 每个界面一个全屏不透明 `Node`（`left/top = 0`，`width/height = px(VIEWPORT_W/H)`），`GlobalZIndex(100)` 盖住 HUD 与暂停面板 |
+| 生命周期 | 根节点带 `DespawnOnExit(对应 GameState)`；设置界面在 `GameSettings` 变化时整块重建 |
+| 文本 | 只能 ASCII（默认字体缺 CJK 字形，`10` §10.3.1 E7） |
+| 尺寸 | 一律 `px(..)` 整数；**禁止** `vw()`/`vh()`/`percent()` |
+
+| 常量 | 值 | 说明 |
+|---|---|---|
+| `MENU_FONT_PX` | `12.0` | 菜单正文/按钮字号 |
+| `MENU_TITLE_FONT_PX` | `24.0` | 界面标题字号（2 × 正文） |
+| `MENU_PADDING_PX` | `12.0` | 面板内边距；实现里取 2 × 作为左上边距 |
+| `MENU_GAP_PX` | `6.0` | 行/按钮间距 |
+
+> 这些常量的职责是「菜单类 UI 的排版网格」；具体有哪些按钮属于 `05` §5.5 的流程。
+> 菜单同样参与「窗口 == 画布 × k」的逐像素验证（截图见 `AGENTS.md` §4）。
+
 ---
 
 ## 7.13 2D 视差背景

@@ -56,6 +56,15 @@ pub const CAMERA_Z: f32 = 0.0;
 /// HUD 提示条（通关/获奖）的显示时长（秒）。见 `07` §7.10.4。
 pub const HUD_TOAST_SECS: f32 = 2.5;
 
+/// 菜单类 UI 的正文字号（逻辑像素；视口坐标系见 `07` §7.10）。见 `07` §7.10.5。
+pub const MENU_FONT_PX: f32 = 12.0;
+/// 菜单/关卡选择/设置的标题字号。见 `07` §7.10.5。
+pub const MENU_TITLE_FONT_PX: f32 = 24.0;
+/// 菜单面板的内边距（视口像素）。见 `07` §7.10.5。
+pub const MENU_PADDING_PX: f32 = 12.0;
+/// 菜单行/按钮之间的间距。见 `07` §7.10.5。
+pub const MENU_GAP_PX: f32 = 6.0;
+
 /// 装饰品槽位数（`04` §6.1）：`layer_index ∈ 0..DECORATION_LAYERS`。
 pub const DECORATION_LAYERS: usize = 7;
 

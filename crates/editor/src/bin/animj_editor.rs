@@ -37,6 +37,8 @@ fn main() {
 
     // 与发布 bin 复用同一批玩法插件（`08` §8.2.2）。
     // 像素完美离屏管线**不**注册：编辑器用单台 `EditorCamera` 直接渲染世界。
+    // 菜单流程也不注册：编辑器启动即请求默认关卡（`05` §5.5 的 `StartupFlow::Direct`）。
+    app.insert_resource(game::state::StartupFlow::Direct);
     game::add_game_plugins(&mut app);
     // 但 AABB→Transform 投影 + 像素吸附必须注册：否则试玩时角色贴图不会跟随物理位置
     //（`07` §7.6.3、`08` §8.6）。它不依赖双层相机，对编辑相机同样成立。

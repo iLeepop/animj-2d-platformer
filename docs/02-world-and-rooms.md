@@ -90,6 +90,9 @@ struct LevelProgress {
 
 ### 关卡加载流程
 
+入口：菜单/关卡选择写入 `StartRequest { level_id, mode }`，`OnEnter(GameState::Loading)` 发起资产请求；
+编辑器用 `StartupFlow::Direct` + `LoadMode::Auto` 直达默认关卡（`05` §5.5）。
+
 ```mermaid
 sequenceDiagram
   participant L as LevelLoader (.level.ron)
@@ -100,9 +103,9 @@ sequenceDiagram
   V-->>L: Ok / Err(字段级错误)
   L->>W: 生成瓦片实体（仅非空瓦片）
   L->>W: 生成实体列表（exit / fruit / ...）
-  L->>W: 放置玩家到 start 房间的 spawn
+  L->>W: 放置玩家到出生点（存档点或 player_spawn 房间）
   L->>P: 按 cols*rows 初始化 RoomProgress
-  L->>P: 从 SaveData 恢复进度（校验一致时）
+  L->>P: 按 LoadMode 恢复进度（Continue/Auto）或清零（NewGame）
 ```
 
 - 任一环节失败 → 进入明确的错误态并**打印可定位的错误**（房间索引 + 字段名），不静默降级。
