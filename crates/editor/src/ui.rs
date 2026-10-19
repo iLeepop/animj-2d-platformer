@@ -10,9 +10,7 @@ use crate::camera::{EditorCamera, room_size};
 use crate::anim_tool::{AnimEdit, SheetTexture, ensure_sheet_texture};
 use crate::tile_tool::{TileTexture, TileTool, ensure_tile_texture};
 use crate::session::{EditorSession, Tool};
-use crate::view::{
-    EditorViewFlags, ERROR_COLOR, GRID_COLOR, HOVER_COLOR, MARQUEE_COLOR, ROOM_BORDER_COLOR,
-};
+use crate::view::{EditorViewFlags, ERROR_COLOR, GRID_COLOR, HOVER_COLOR, ROOM_BORDER_COLOR};
 use crate::tools::PlaytestRequest;
 use crate::EditorMode;
 
@@ -42,7 +40,7 @@ impl Plugin for EditorUiPlugin {
     }
 }
 
-/// 屏幕空间叠加层（网格 / 房间边框 / 当前房间 / 选区）。
+/// 屏幕空间叠加层（网格 / 房间边框 / 当前房间 / 错误格）。
 ///
 /// **为什么不用 Gizmos**：实机反馈 1-px 的 2D gizmo 线在 1×/2× 下逐帧闪烁（`G` 关掉网格即停），
 /// 换 `line_2d` 与像素中心对齐后仍在目标机器上复现。egui 用**整数屏幕坐标**绘制，几何不随帧变化，
@@ -178,15 +176,6 @@ fn paint_overlay(
         stroke(2.0, HOVER_COLOR),
         egui::StrokeKind::Inside,
     );
-    // 选区
-    if let Some((min, max)) = session.selection.world_bounds {
-        painter.rect_stroke(
-            egui::Rect::from_min_max(to_screen(min), to_screen(max)),
-            0.0,
-            stroke(2.0, MARQUEE_COLOR),
-            egui::StrokeKind::Inside,
-        );
-    }
     // 错误常驻描边（`08` §8.8.2）：瓦片级错误在其格子上画红框，错误消失即消失
     let cell_size = level_format::TILE_PX as f32;
     for issue in &session.file_issues {
@@ -208,15 +197,6 @@ fn paint_overlay(
         );
     }
 
-    for (col, row) in &session.selection.rooms {
-        let center = game::coords::room_center(*col, *row, rows);
-        painter.rect_stroke(
-            egui::Rect::from_min_max(to_screen(center - half), to_screen(center + half)),
-            0.0,
-            stroke(2.0, MARQUEE_COLOR),
-            egui::StrokeKind::Inside,
-        );
-    }
     Ok(())
 }
 
@@ -578,38 +558,6 @@ fn right_panel(ui: &mut egui::Ui, session: &mut EditorSession) {
             });
         }
         ui.separator();
-        // 多选（工具 7）：房间集合存在时切"批量"面板（`08` §8.5.3）
-        if !session.selection.rooms.is_empty() {
-            ui.heading(format!("选区 ({} 个房间)", session.selection.rooms.len()));
-            let mut reward = session.room().reward.clone().unwrap_or_default();
-            ui.horizontal(|ui| {
-                ui.label("批量 reward");
-                if ui.text_edit_singleline(&mut reward).changed() {
-                    let trimmed = reward.trim().to_string();
-                    session.batch_set_reward(if trimmed.is_empty() {
-                        None
-                    } else {
-                        Some(trimmed)
-                    });
-                }
-            });
-            ui.horizontal(|ui| {
-                if ui.button("批量 + 出口").clicked() {
-                    let mut goals = session.room().goals.clone();
-                    goals.push(level_format::Goal::ReachExit);
-                    session.batch_set_goals(goals);
-                }
-                if ui.button("批量 + 收集全部").clicked() {
-                    let mut goals = session.room().goals.clone();
-                    goals.push(level_format::Goal::CollectAll);
-                    session.batch_set_goals(goals);
-                }
-                if ui.button("清空选区").clicked() {
-                    session.clear_selection();
-                }
-            });
-            ui.separator();
-        }
         ui.heading(format!(
             "选中房间 ({}, {})",
             session.current_room.0, session.current_room.1
@@ -691,52 +639,36 @@ fn right_panel(ui: &mut egui::Ui, session: &mut EditorSession) {
             }
         }
         ui.separator();
-        let total: usize = session
-            .doc
-            .rooms
-            .iter()
-            .map(|room| room.entities.len())
-            .sum();
-        ui.heading(format!("实体 ({total})"));
+        // 实体按房间管理：只显示**当前房间**的列表；切房间后列表随 `current_room` 切换。
+        let room_index = session.room_index();
+        let entities = session.room().entities.clone();
+        ui.heading(format!(
+            "本房间实体 ({}) — 房间 ({}, {})",
+            entities.len(),
+            session.current_room.0,
+            session.current_room.1
+        ));
         egui::ScrollArea::vertical().max_height(180.0).show(ui, |ui| {
-            let cols = session.doc.grid.cols;
-            let mut pending_delete: Option<(usize, usize)> = None;
-            let rooms: Vec<(usize, u32, u32, Vec<level_format::EntitySpec>)> = session
-                .doc
-                .rooms
-                .iter()
-                .enumerate()
-                .filter(|(_, room)| !room.entities.is_empty())
-                .map(|(index, room)| {
-                    (
-                        index,
-                        index as u32 % cols,
-                        index as u32 / cols,
-                        room.entities.clone(),
-                    )
-                })
-                .collect();
-            for (room_index, col, row, entities) in rooms {
-                ui.label(format!("-- 房间 ({col}, {row}) --"));
-                for (entity_index, spec) in entities.iter().enumerate() {
-                    ui.horizontal(|ui| {
-                        let selected = session.current_room == (col, row)
-                            && session.selected_entity == Some(entity_index);
-                        let label = format!(
-                            "{entity_index} {} @({}, {})",
-                            spec.kind, spec.at.0, spec.at.1
-                        );
-                        if ui.selectable_label(selected, label).clicked() {
-                            session.goto_room(col, row);
-                            session.selected_entity = Some(entity_index);
-                        }
-                        if ui.small_button("删除").clicked() {
-                            pending_delete = Some((room_index, entity_index));
-                        }
-                    });
-                }
+            if entities.is_empty() {
+                ui.label("（空；用工具 5 放置）");
             }
-            if let Some((room_index, entity_index)) = pending_delete {
+            let mut pending_delete: Option<usize> = None;
+            for (entity_index, spec) in entities.iter().enumerate() {
+                ui.horizontal(|ui| {
+                    let selected = session.selected_entity == Some(entity_index);
+                    let label = format!(
+                        "{entity_index} {} @({}, {})",
+                        spec.kind, spec.at.0, spec.at.1
+                    );
+                    if ui.selectable_label(selected, label).clicked() {
+                        session.selected_entity = Some(entity_index);
+                    }
+                    if ui.small_button("删除").clicked() {
+                        pending_delete = Some(entity_index);
+                    }
+                });
+            }
+            if let Some(entity_index) = pending_delete {
                 session.delete_entity(room_index, entity_index);
             }
         });

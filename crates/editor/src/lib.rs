@@ -4,7 +4,7 @@
 
 /// 构建标记：启动时打印，用于确认"跑的是不是最新构建"。
 /// 每次改编辑器 UI/交互都手动递增末尾字母。
-pub const BUILD_TAG: &str = "2026-10-18/n";
+pub const BUILD_TAG: &str = "2026-10-18/o";
 
 /// egui 通行内的执行顺序（`08` §8.5.6）：**先**构成本帧所有面板，**再**处理世界输入。
 /// 顺序反了时 `ctx.egui_wants_pointer_input()` 读到的是上一帧的布局，点按钮会漏到画布。
@@ -110,7 +110,7 @@ fn correct_columns_from_tileset(level: &mut level_format::Level, root: &str) {
 /// 启动横幅：让用户/我都能从控制台确认二进制版本与已启用的编辑器特性。
 fn announce_build() {
     info!(
-        "animj-editor BUILD_TAG={} features=[room-picker, entity-brush(player_spawn), all-rooms-entity-list, screen-space-overlay]",
+        "animj-editor BUILD_TAG={} features=[room-picker, entity-brush(player_spawn), current-room-entity-list, screen-space-overlay]",
         BUILD_TAG
     );
 }

@@ -51,7 +51,6 @@ impl Default for EditorViewFlags {
 pub const GRID_COLOR: Color = Color::srgb_u8(58, 58, 66);
 pub const ROOM_BORDER_COLOR: Color = Color::srgb_u8(120, 120, 140);
 pub const HOVER_COLOR: Color = Color::srgb_u8(255, 240, 130);
-pub const MARQUEE_COLOR: Color = Color::srgb_u8(80, 220, 255);
 pub const ERROR_COLOR: Color = Color::srgb_u8(255, 64, 64);
 
 pub struct EditorViewPlugin;

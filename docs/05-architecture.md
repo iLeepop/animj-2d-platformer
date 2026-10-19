@@ -66,7 +66,7 @@ flowchart LR
 > `player/{mod,input,spawn,death,decor}.rs` / `demo.rs` / `tiles.rs` / `state.rs` / `level_asset.rs` /
 > `world/{mod,load,progress}.rs`（加载 + 校验 + 热重载 + 进度）/ `room/{mod,goals,reward}.rs`（房间判定、
 > 传感器、条件求值、授奖、全通）/ `camera/{mod,rig}.rs`（落点状态机）/ `render/{mod,pixel_camera,snap,tiles,hud,debug}.rs`。
-> **尚未落地**：编辑器侧的 `MoveEntity`/`Marquee` 与热重载消费（`08` §8.10.5）、音效（`04` 尚无音频资产规范）。
+> **尚未落地**：编辑器侧的区域框选（已明确移除，见 `08` §8.10.5）、音效（`04` 尚无音频资产规范）。
 > 不要去找不存在的文件。
 
 ### `crates/editor/src/`
@@ -85,7 +85,7 @@ flowchart LR
 | `src/session.rs` | `EditorSession`（唯一真相）、全量快照撤销/重做、原子保存、校验结果 |
 | `src/camera.rs` | 唯一相机、档位缩放、平移、`Home`、`Tab` 切房间、光标→瓦片 |
 | `src/view.rs` | `doc` 投影（瓦片/实体）+ Gizmos 网格/边界/当前房间 |
-| `src/tools.rs` | 工具编号 1–7、拖拽所有权、线采样、实体放置/拖动、框选 |
+| `src/tools.rs` | 工具编号 1–6、拖拽所有权、线采样、实体放置/拖动 |
 | `src/ui.rs` | egui 四栏面板（顶/左/右/底） |
 | `src/playtest.rs` | 就地试玩：校验闸门 → 注入 `game` → 退出恢复 |
 | `src/tile_tool.rs` | 地块工具：调色板增删改、贴图路径/列数、32×32 网格选格（`03` §3.9） |

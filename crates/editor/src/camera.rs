@@ -103,7 +103,7 @@ fn verify_zoom_anchor(
 
 /// 平移量化到 **`scale` 的整数倍**（= 屏幕像素对齐）。
 ///
-/// 早期按 0.5 量化：在 1× 下仍会落在半像素上，Gizmos（网格/选区边框）逐帧抖动；
+/// 早期按 0.5 量化：在 1× 下仍会落在半像素上，Gizmos（网格/高亮边框）逐帧抖动；
 /// 放大到 2× 时 0.5 世界单位恰好等于 1 像素，抖动才消失——这正是实机现象。见 `08` §8.4.2。
 pub fn quantize_translation(translation: Vec2, scale: f32) -> Vec2 {
     let unit = scale.max(f32::EPSILON);

@@ -14,7 +14,7 @@ pub const UNDO_LIMIT: usize = 128;
 /// 拖拽期间两次全校验的最小间隔（秒，`08` §8.8.1）。
 pub const VALIDATE_MIN_INTERVAL: f32 = 0.1;
 
-/// 编辑工具（`08` §8.5.1 的 1–5；`MoveEntity`/`Marquee` 见 `docs/08` 的顺延说明）。
+/// 编辑工具（`08` §8.5.1 的 1–6）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Tool {
     #[default]
@@ -24,18 +24,16 @@ pub enum Tool {
     Picker,
     PlaceEntity,
     MoveEntity,
-    Marquee,
 }
 
 impl Tool {
-    pub const ALL: [Tool; 7] = [
+    pub const ALL: [Tool; 6] = [
         Tool::TileBrush,
         Tool::Eraser,
         Tool::RectFill,
         Tool::Picker,
         Tool::PlaceEntity,
         Tool::MoveEntity,
-        Tool::Marquee,
     ];
 
     pub fn label(self) -> &'static str {
@@ -46,29 +44,8 @@ impl Tool {
             Tool::Picker => "4 吸管",
             Tool::PlaceEntity => "5 放实体",
             Tool::MoveEntity => "6 移动实体",
-            Tool::Marquee => "7 框选",
         }
     }
-}
-
-/// 瓦片矩形（房间局部、`ty` 自底向上）：`(x0, y0, x1, y1)`，已归一化。
-pub type TileRect = (usize, usize, usize, usize);
-
-/// 选区：房间集合 ∪ 每个房间的瓦片矩形（`08` §8.5.3）。
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct Selection {
-    pub rooms: Vec<(u32, u32)>,
-    /// `(room, rect)`；同一个房间可能有多个矩形（多次框选）。
-    pub tiles: Vec<((u32, u32), TileRect)>,
-    /// 世界像素包围盒（画 Gizmos 用）。
-    pub world_bounds: Option<(Vec2, Vec2)>,
-}
-
-#[derive(Debug, Clone)]
-struct ClipboardGrid {
-    w: usize,
-    h: usize,
-    kinds: Vec<level_format::TileKind>,
 }
 
 /// 编辑会话（唯一真相）。
@@ -94,9 +71,6 @@ pub struct EditorSession {
     pub status: String,
     /// `doc` 的修订号：只有它变化才需要重建投影。
     pub doc_revision: u64,
-    /// 选区（工具 7）。
-    pub selection: Selection,
-    clipboard: Option<ClipboardGrid>,
     /// 另存为/保存路径输入框（`08` §8.7.1）。
     pub save_path_input: String,
     /// 请求相机重新对焦到当前房间（错误列表点击定位用）。
@@ -128,8 +102,6 @@ impl EditorSession {
             selected_entity: None,
             status: String::new(),
             doc_revision: 0,
-            selection: Selection::default(),
-            clipboard: None,
             save_path_input: String::new(),
             focus_camera: false,
             focus_at: None,
@@ -248,6 +220,8 @@ impl EditorSession {
         }
         chars[tx] = ch;
         *row = chars.into_iter().collect();
+        // 拖拽期间每一格都必须推进修订号，否则投影只在按下的那一帧重建（`08` §8.5.3）。
+        self.doc_revision = self.doc_revision.wrapping_add(1);
     }
 
     // ---------- 调色板（v2 新增地块，`03` §3.9）----------
@@ -292,10 +266,6 @@ impl EditorSession {
             entry.cell = cell;
             self.doc.palette = palette;
         }
-    }
-
-    pub fn tile_kind(&self, tx: usize, ty: usize) -> Option<TileKind> {
-        self.tile_char(tx, ty).and_then(TileKind::from_char)
     }
 
     // ---------- 房间属性 ----------
@@ -355,193 +325,13 @@ impl EditorSession {
             Vec2::new(pos.local.x.round(), pos.local.y.round())
         };
         if let Some(spec) = self.room_mut().entities.get_mut(index) {
-            spec.at = (local.x as i32, local.y as i32);
-        }
-    }
-
-    // ---------- 选区 / 剪贴板（工具 7） ----------
-
-    /// 用世界像素矩形设置选区（房间集合 + 每房间瓦片矩形）。
-    pub fn select_world_rect(&mut self, min: Vec2, max: Vec2) {
-        let (cols, rows) = (self.doc.grid.cols, self.doc.grid.rows);
-        let (min, max) = (
-            Vec2::new(min.x.min(max.x), min.y.min(max.y)),
-            Vec2::new(min.x.max(max.x), min.y.max(max.y)),
-        );
-        // 世界边界取整：Gizmos 描边必须落在整像素上，否则逐帧抖动
-        let min = Vec2::new(min.x.round(), min.y.round());
-        let max = Vec2::new(max.x.round(), max.y.round());
-        let mut selection = Selection::default();
-        for row in 0..rows {
-            for col in 0..cols {
-                let center = game::coords::room_center(col, row, rows);
-                let half = level_format::ROOM_PX as f32 / 2.0;
-                let room_min = center - Vec2::splat(half);
-                let room_max = center + Vec2::splat(half);
-                let inter_min = Vec2::new(min.x.max(room_min.x), min.y.max(room_min.y));
-                let inter_max = Vec2::new(max.x.min(room_max.x), max.y.min(room_max.y));
-                if inter_min.x >= inter_max.x || inter_min.y >= inter_max.y {
-                    continue;
-                }
-                selection.rooms.push((col, row));
-                // 世界 Y（+Y 向上）→ 房间局部**自底向上**的瓦片行（与 `set_tile` 的 ty 一致）
-                let tile = level_format::TILE_PX as f32;
-                let max_row = level_format::ROOM_TILES - 1;
-                let tx0 = (((inter_min.x - room_min.x) / tile).floor() as isize).clamp(0, max_row as isize) as usize;
-                let tx1 = ((((inter_max.x - room_min.x) / tile).ceil() as isize) - 1).clamp(tx0 as isize, max_row as isize) as usize;
-                let ty0 = (((inter_min.y - room_min.y) / tile).floor() as isize).clamp(0, max_row as isize) as usize;
-                let ty1 = ((((inter_max.y - room_min.y) / tile).ceil() as isize) - 1).clamp(ty0 as isize, max_row as isize) as usize;
-                selection.tiles.push(((col, row), (tx0, ty0, tx1, ty1)));
+            let at = (local.x as i32, local.y as i32);
+            if spec.at != at {
+                spec.at = at;
+                // 拖动时不经过 `begin_edit`，必须自己推进修订号才能实时重绘投影
+                self.doc_revision = self.doc_revision.wrapping_add(1);
             }
         }
-        selection.world_bounds = Some((min, max));
-        self.selection = selection;
-    }
-
-    pub fn clear_selection(&mut self) {
-        self.selection = Selection::default();
-    }
-
-    /// 删除选区内瓦片（`Delete`，一个 undo 步骤）。
-    pub fn delete_selected_tiles(&mut self) -> usize {
-        self.apply_selection_tiles(|session, (col, row), (x0, y0, x1, y1)| {
-            let _ = (col, row);
-            for ty in y0..=y1 {
-                for tx in x0..=x1 {
-                    session.set_tile(tx, ty, level_format::TileKind::Air);
-                }
-            }
-        })
-    }
-
-    /// 用当前笔刷填充选区（`Ctrl+Backspace`，一个 undo 步骤）。
-    pub fn fill_selected_tiles(&mut self) -> usize {
-        let kind = self.brush_char;
-        self.apply_selection_tiles(move |session, _room, (x0, y0, x1, y1)| {
-            for ty in y0..=y1 {
-                for tx in x0..=x1 {
-                    session.set_tile_char(tx, ty, kind);
-                }
-            }
-        })
-    }
-
-    /// 复制当前房间的选区瓦片（`Ctrl+C`）。
-    pub fn copy_selection(&mut self) -> bool {
-        let room = self.current_room;
-        let Some((_, rect)) = self
-            .selection
-            .tiles
-            .iter()
-            .find(|(candidate, _)| *candidate == room)
-            .cloned()
-        else {
-            return false;
-        };
-        let (x0, y0, x1, y1) = rect;
-        let mut kinds = Vec::new();
-        for ty in y0..=y1 {
-            for tx in x0..=x1 {
-                kinds.push(self.tile_kind(tx, ty).unwrap_or(level_format::TileKind::Air));
-            }
-        }
-        self.clipboard = Some(ClipboardGrid {
-            w: x1 - x0 + 1,
-            h: y1 - y0 + 1,
-            kinds,
-        });
-        true
-    }
-
-    /// 粘贴到当前房间选区的左上角（越界裁掉，`Ctrl+V`，一个 undo 步骤）。
-    pub fn paste_selection(&mut self) -> bool {
-        let Some(clipboard) = self.clipboard.clone() else {
-            return false;
-        };
-        let room = self.current_room;
-        let Some((_, (x0, y0, _, _))) = self
-            .selection
-            .tiles
-            .iter()
-            .find(|(candidate, _)| *candidate == room)
-            .cloned()
-        else {
-            return false;
-        };
-        self.begin_edit();
-        for row in 0..clipboard.h {
-            for col in 0..clipboard.w {
-                let tx = x0 + col;
-                let ty = y0 + row;
-                if tx >= level_format::ROOM_TILES || ty >= level_format::ROOM_TILES {
-                    continue;
-                }
-                let kind = clipboard.kinds[row * clipboard.w + col];
-                self.set_tile(tx, ty, kind);
-            }
-        }
-        true
-    }
-
-    /// 批量设置房间的 `reward`（工具 7 的多选面板，一个 undo 步骤）。
-    pub fn batch_set_reward(&mut self, reward: Option<String>) -> usize {
-        let rooms = self.selection.rooms.clone();
-        if rooms.is_empty() {
-            return 0;
-        }
-        self.begin_edit();
-        let cols = self.doc.grid.cols;
-        for (col, row) in &rooms {
-            if let Some(room) = self
-                .doc
-                .rooms
-                .get_mut(level_format::room_index(*col, *row, cols))
-            {
-                room.reward = reward.clone();
-            }
-        }
-        rooms.len()
-    }
-
-    /// 批量设置房间的 `goals`（覆盖式，一个 undo 步骤）。
-    pub fn batch_set_goals(&mut self, goals: Vec<level_format::Goal>) -> usize {
-        let rooms = self.selection.rooms.clone();
-        if rooms.is_empty() {
-            return 0;
-        }
-        self.begin_edit();
-        let cols = self.doc.grid.cols;
-        for (col, row) in &rooms {
-            if let Some(room) = self
-                .doc
-                .rooms
-                .get_mut(level_format::room_index(*col, *row, cols))
-            {
-                room.goals = goals.clone();
-            }
-        }
-        rooms.len()
-    }
-
-    fn apply_selection_tiles(
-        &mut self,
-        mut apply: impl FnMut(&mut Self, (u32, u32), TileRect),
-    ) -> usize {
-        let target: Vec<((u32, u32), TileRect)> = self
-            .selection
-            .tiles
-            .iter()
-            .filter(|(room, _)| *room == self.current_room)
-            .cloned()
-            .collect();
-        if target.is_empty() {
-            return 0;
-        }
-        self.begin_edit();
-        for (room, rect) in &target {
-            apply(self, *room, *rect);
-        }
-        target.len()
     }
 
     /// 修复「误放多个单例实体」：`player_spawn` 与 `exit` 都只保留第一个（`03` §3.7 V12/V8）。
@@ -576,6 +366,8 @@ impl EditorSession {
     pub fn goto_room(&mut self, col: u32, row: u32) {
         if col < self.doc.grid.cols && row < self.doc.grid.rows {
             self.current_room = (col, row);
+            // 实体下标是房间局部的：切房间后旧下标会指向别的实体
+            self.selected_entity = None;
             info!("编辑器：切换当前房间 → ({col}, {row})");
         }
     }
@@ -816,6 +608,64 @@ mod tests {
         assert_eq!(session.room().tiles[0].chars().next(), Some('*'));
     }
 
+    /// 实体按房间管理：列表/命中只覆盖当前房间，切房间后清空选中下标。
+    #[test]
+    fn entities_are_scoped_to_the_current_room() {
+        let mut level = sample_level();
+        level.grid = Grid { cols: 2, rows: 1 };
+        level.rooms[0].entities.push(level_format::EntitySpec {
+            kind: "fruit".into(),
+            at: (100, 100),
+            size: None,
+            id: None,
+        });
+        let mut second = level.rooms[0].clone();
+        second.entities[0].at = (200, 200);
+        level.rooms.push(second);
+        let mut session = EditorSession::new(level, None);
+
+        assert_eq!(session.entity_boxes().len(), 1);
+        let first_room_center = session.entity_boxes()[0].2;
+        session.selected_entity = Some(0);
+        session.goto_room(1, 0);
+        assert_eq!(session.selected_entity, None, "切房间必须清空局部下标");
+        assert_eq!(session.entity_boxes().len(), 1);
+        assert_ne!(session.entity_boxes()[0].2, first_room_center);
+    }
+
+    /// 长按拖动时每写入一格都必须推进修订号；否则投影只在按下帧重建（实机 bug）。
+    #[test]
+    fn dragging_tiles_bumps_revision_per_cell() {
+        let mut session = EditorSession::new(sample_level(), None);
+        session.begin_edit();
+        let mut revision = session.doc_revision;
+        for ty in 0..3 {
+            session.set_tile(1, ty, TileKind::Solid);
+            assert!(
+                session.doc_revision > revision,
+                "第 {ty} 格写入后修订号必须增长"
+            );
+            revision = session.doc_revision;
+        }
+    }
+
+    #[test]
+    fn dragging_an_entity_bumps_revision_when_it_moves() {
+        let mut level = sample_level();
+        level.rooms[0].entities.push(level_format::EntitySpec {
+            kind: "fruit".into(),
+            at: (100, 100),
+            size: None,
+            id: None,
+        });
+        let mut session = EditorSession::new(level, None);
+        session.begin_edit();
+        let center = session.entity_boxes()[0].2;
+        let revision = session.doc_revision;
+        session.set_entity_at_world(0, center + Vec2::new(20.0, 0.0), true);
+        assert!(session.doc_revision > revision, "实体位置变化必须重建投影");
+    }
+
     #[test]
     fn goals_and_reward_edits_go_through_snapshot() {
         let mut session = EditorSession::new(sample_level(), None);
@@ -827,64 +677,6 @@ mod tests {
         assert!(session.undo());
         assert_eq!(session.room().goals, vec![Goal::ReachExit]);
         assert_eq!(session.room().reward, None);
-    }
-
-    /// 工具 7：框选覆盖整个房间 ⇒ 1 个房间 + 全瓦片矩形。
-    #[test]
-    fn marquee_selects_rooms_and_tile_rects() {
-        let mut session = EditorSession::new(sample_level(), None);
-        session.select_world_rect(Vec2::new(0.0, 0.0), Vec2::new(512.0, 512.0));
-        assert_eq!(session.selection.rooms, vec![(0, 0)]);
-        assert_eq!(session.selection.tiles, vec![((0, 0), (0, 0, 15, 15))]);
-        assert!(session.selection.world_bounds.is_some());
-        session.clear_selection();
-        assert!(session.selection.rooms.is_empty());
-    }
-
-    /// 选区删除 / 填充 / 复制粘贴都是**一个 undo 步骤**，且撤销能整步回退。
-    #[test]
-    fn selection_tile_ops_are_single_undo_steps() {
-        let mut session = EditorSession::new(sample_level(), None);
-        session.brush_char = '#';
-        session.select_world_rect(Vec2::new(0.0, 0.0), Vec2::new(512.0, 512.0));
-        // 先铺满
-        let filled = session.fill_selected_tiles();
-        assert_eq!(filled, 1);
-        assert_eq!(session.tile_kind(0, 0), Some(level_format::TileKind::Solid));
-        // 复制 → 删除
-        assert!(session.copy_selection());
-        let before_delete = session.doc.clone();
-        session.delete_selected_tiles();
-        assert_eq!(session.tile_kind(0, 0), Some(level_format::TileKind::Air));
-        // 粘贴回选区左上角 ⇒ 与删除前一致
-        assert!(session.paste_selection());
-        assert_eq!(session.doc.rooms[0].tiles, before_delete.rooms[0].tiles);
-        // 撤销一次只退一步（粘贴）
-        assert!(session.undo());
-        assert_eq!(session.tile_kind(0, 0), Some(level_format::TileKind::Air));
-    }
-
-    /// 工具 7 的批量设置：选中房间全部被覆盖，且一次 undo 全部回退。
-    #[test]
-    fn batch_room_edits_apply_to_every_selected_room() {
-        let mut level = sample_level();
-        level.grid = level_format::Grid { cols: 2, rows: 1 };
-        level.rooms.push(level.rooms[0].clone());
-        let mut session = EditorSession::new(level, None);
-        session.select_world_rect(Vec2::new(0.0, 0.0), Vec2::new(1024.0, 512.0));
-        assert_eq!(session.selection.rooms.len(), 2);
-        assert_eq!(session.batch_set_reward(Some("item_01".into())), 2);
-        for room in &session.doc.rooms {
-            assert_eq!(room.reward.as_deref(), Some("item_01"));
-        }
-        session.batch_set_goals(vec![level_format::Goal::ReachExit]);
-        for room in &session.doc.rooms {
-            assert_eq!(room.goals, vec![level_format::Goal::ReachExit]);
-        }
-        // 两次批量 = 两个 undo 步骤
-        assert!(session.undo());
-        assert!(session.undo());
-        assert_eq!(session.doc.rooms[0].reward, None);
     }
 
     /// 工具 6：实体的世界 AABB 命中测试与吸附位置。

@@ -24,8 +24,6 @@ struct DragOp {
     pushed_snapshot: bool,
     /// 工具 6：被拖动的实体下标。
     entity: Option<usize>,
-    /// 工具 7：框选起点（世界像素）。
-    marquee_start: Option<Vec2>,
     /// 瓦片工具的按下格（`Shift` 直线/正方形约束的锚点）。
     start: (usize, usize),
 }
@@ -94,7 +92,6 @@ fn shortcuts(
         KeyCode::Digit4,
         KeyCode::Digit5,
         KeyCode::Digit6,
-        KeyCode::Digit7,
     ];
     for (index, key) in digits.iter().enumerate() {
         if keys.just_pressed(*key) {
@@ -145,40 +142,12 @@ fn shortcuts(
         }
     }
 
-    // 选区动作（`08` §8.5.3 工具 7）
-    if keys.just_pressed(KeyCode::Delete) {
-        let count = session.delete_selected_tiles();
-        session.status = format!("清空 {count} 个选区");
-    }
-    if ctrl && keys.just_pressed(KeyCode::KeyC) {
-        session.status = if session.copy_selection() {
-            "已复制选区瓦片".to_string()
-        } else {
-            "当前房间没有选区".to_string()
-        };
-    }
-    if ctrl && keys.just_pressed(KeyCode::KeyV) {
-        session.status = if session.paste_selection() {
-            "已粘贴到选区左上角".to_string()
-        } else {
-            "剪贴板为空或当前房间没有选区".to_string()
-        };
-    }
-    if ctrl && keys.just_pressed(KeyCode::Backspace) {
-        let count = session.fill_selected_tiles();
-        session.status = format!("填充 {count} 个选区");
-    }
-
-    if keys.just_pressed(KeyCode::Escape) {
-        if let Some(op) = drag.active.take() {
-            if op.pushed_snapshot {
-                session.cancel_last_edit();
-                session.status = "已取消本次拖拽".to_string();
-            }
-        } else if !session.selection.rooms.is_empty() {
-            session.clear_selection();
-            session.status = "已清空选区".to_string();
-        }
+    if keys.just_pressed(KeyCode::Escape)
+        && let Some(op) = drag.active.take()
+        && op.pushed_snapshot
+    {
+        session.cancel_last_edit();
+        session.status = "已取消本次拖拽".to_string();
     }
 }
 
@@ -221,12 +190,6 @@ fn world_input(
                     return;
                 }
             }
-        }
-        // 工具 7：实时更新框选
-        if op.tool == Tool::Marquee
-            && let (Some(start), Some(world)) = (op.marquee_start, cursor_world(camera.0, camera.1, &window))
-        {
-            session.select_world_rect(start, world);
         }
         if released {
             if op.tool == Tool::RectFill {
@@ -324,22 +287,6 @@ fn world_input(
                 last: (tx, ty),
                 pushed_snapshot: true,
                 entity: Some(index),
-                marquee_start: None,
-                start: (tx, ty),
-            });
-            return;
-        }
-        Tool::Marquee => {
-            let Some(world) = cursor_world_pos else {
-                return;
-            };
-            drag.active = Some(DragOp {
-                tool,
-                room,
-                last: (tx, ty),
-                pushed_snapshot: false,
-                entity: None,
-                marquee_start: Some(world),
                 start: (tx, ty),
             });
             return;
@@ -364,7 +311,6 @@ fn world_input(
                 last: (tx, ty),
                 pushed_snapshot: true,
                 entity: None,
-                marquee_start: None,
                 start: (tx, ty),
             });
         }
@@ -375,7 +321,6 @@ fn world_input(
                 last: (tx, ty),
                 pushed_snapshot: false,
                 entity: None,
-                marquee_start: None,
                 start: (tx, ty),
             });
         }
