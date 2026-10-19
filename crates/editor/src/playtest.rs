@@ -5,7 +5,7 @@
 
 use bevy::camera::visibility::RenderLayers;
 use bevy::prelude::*;
-use bevy_egui::input::egui_wants_any_keyboard_input;
+use bevy_egui::{EguiContexts, EguiPrimaryContextPass, egui};
 
 use crate::session::EditorSession;
 use crate::tools::PlaytestRequest;
@@ -25,10 +25,16 @@ impl Plugin for EditorPlaytestPlugin {
                 Update,
                 (
                     enter_play.run_if(in_state(EditorMode::Editing)),
-                    exit_play
-                        .run_if(in_state(EditorMode::Playing))
-                        .run_if(not(egui_wants_any_keyboard_input)),
+                    // 退出是全局安全热键：试玩态没有 egui 文本输入，不能被 egui 焦点门控吞掉。
+                    exit_play.run_if(in_state(EditorMode::Playing)),
                 ),
+            )
+            // `08` §8.5.6：试玩态只留一个固定浮层，提供**不依赖键盘**的退出入口。
+            .add_systems(
+                EguiPrimaryContextPass,
+                playtest_overlay
+                    .in_set(crate::EditorUiSet::Panels)
+                    .run_if(in_state(EditorMode::Playing)),
             )
             // 在 AABB→Transform 投影之后读 Transform，诊断才反映本帧真实绘制位置。
             .add_systems(
@@ -111,6 +117,29 @@ fn enter_play(
     session.status = "试玩中（编辑缓冲已冻结）".to_string();
 }
 
+/// 试玩态浮层（`08` §8.5.6）：唯一保留的 UI，提供**不依赖键盘**的退出入口。
+fn playtest_overlay(mut contexts: EguiContexts, mut stop: ResMut<PlaytestExitRequest>) -> Result {
+    let ctx = contexts.ctx_mut()?;
+    egui::Area::new(egui::Id::new("animj_playtest_stop"))
+        .fixed_pos(egui::pos2(12.0, 12.0))
+        .order(egui::Order::Foreground)
+        .show(ctx, |ui| {
+            egui::Frame::new()
+                .fill(egui::Color32::from_black_alpha(210))
+                .inner_margin(egui::Margin::same(8))
+                .corner_radius(egui::CornerRadius::same(4))
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        if ui.button("停止试玩 (F5/F6)").clicked() {
+                            stop.0 = true;
+                        }
+                        ui.label("试玩中：编辑缓冲已冻结");
+                    });
+                });
+        });
+    Ok(())
+}
+
 /// 进入试玩 10 帧后报告：玩家实体 / 变换 / 相机 / 窗口（用于定位"看不见玩家"）。
 fn report_play_state(
     mut frames: Local<u32>,
@@ -184,4 +213,65 @@ fn exit_play(
     info!("退出试玩：回到编辑态（编辑缓冲未改动）");
     next_state.set(game::state::GameState::Paused);
     next_mode.set(EditorMode::Editing);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bevy::input::ButtonState;
+    use bevy::input::InputPlugin;
+    use bevy::input::keyboard::{Key, KeyboardInput};
+    use bevy::prelude::MinimalPlugins;
+    use bevy::state::app::StatesPlugin;
+    use bevy_egui::input::EguiWantsInput;
+
+    fn press(app: &mut App, key: KeyCode) {
+        app.world_mut().write_message(KeyboardInput {
+            key_code: key,
+            logical_key: Key::F5,
+            state: ButtonState::Pressed,
+            text: None,
+            repeat: false,
+            window: Entity::PLACEHOLDER,
+        });
+    }
+
+    /// 试玩态的 `F5` 必须经 winit 同型输入消息真正触发退出（`08` §8.6.2）。
+    #[test]
+    fn f5_exits_playtest_through_input_messages() {
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, StatesPlugin, InputPlugin))
+            .init_state::<crate::EditorMode>()
+            .init_state::<game::state::GameState>()
+            .insert_resource(EguiWantsInput::default())
+            .insert_resource(ProjectionState::default())
+            .init_resource::<crate::tools::PlaytestRequest>()
+            .add_plugins(EditorPlaytestPlugin);
+        app.world_mut()
+            .resource_mut::<NextState<EditorMode>>()
+            .set(EditorMode::Playing);
+        app.update();
+        assert_eq!(
+            *app.world().resource::<State<EditorMode>>().get(),
+            EditorMode::Playing
+        );
+
+        press(&mut app, KeyCode::F5);
+        app.update();
+        // `NextState` 在本帧 `Update` 写入，`StateTransition` 下一帧才生效。
+        app.update();
+
+        assert_eq!(
+            *app.world().resource::<State<EditorMode>>().get(),
+            EditorMode::Editing,
+            "F5 在试玩态必须退出到编辑态"
+        );
+        assert_eq!(
+            *app
+                .world()
+                .resource::<State<game::state::GameState>>()
+                .get(),
+            game::state::GameState::Paused
+        );
+    }
 }

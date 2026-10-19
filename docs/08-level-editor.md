@@ -634,6 +634,9 @@ LevelIssue { severity: Severity /* Fatal | Error | Warning */,
 ## 8.9 快捷键表（完整）
 
 > 全表在 `not(egui_wants_any_keyboard_input)` 下生效；标 `[试玩]` 的在 `EditorMode::Playing` 下生效。
+> **唯一例外**：`F5`/`F6` 的退出分支不加 egui 焦点门控——试玩态没有任何 egui 文本输入，退出是安全热键，
+> 不能被焦点状态吞掉（否则编辑器会卡在试玩态）。试玩态另有固定浮层的「停止试玩」按钮（§8.5.6），
+> 提供不依赖键盘的退出路径。
 
 ### 工具切换
 
