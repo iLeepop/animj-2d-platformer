@@ -70,7 +70,11 @@ impl Plugin for TileRenderPlugin {
                 )
                     .chain(),
             )
-            .add_systems(Update, sync_room_visibility);
+            // 相机每帧都在移动；裁剪必须读同一帧的相机位置，否则边界处会晚一帧。
+            .add_systems(
+                Update,
+                sync_room_visibility.after(crate::state::GameSet::Camera),
+            );
     }
 }
 

@@ -48,7 +48,7 @@ flowchart LR
 | `world/progress.rs` | `LevelProgress` / `RoomProgress`（见 `02` §2.3） |
 | `player/decor.rs` | 装饰品装备与图层渲染（`01` §1.5、`04` §6） |
 | `checkpoint.rs` | 存档点：`E` 激活、`ActiveCheckpoint`、死亡/启动落点（`02` §2.5） |
-| `camera/rig.rs` | 落点与插值状态机（`02` §2.2） |
+| `camera/rig.rs` | 相机跟随：玩家 AABB 中心 + 地图边界钳制（`02` §2.2） |
 | `room/mod.rs` | 当前房间判定（含滞回） |
 | `room/goals.rs` | **纯函数**条件求值 + 通关判定（`01` §1.4） |
 | `room/reward.rs` | 授予装饰品（幂等） |
@@ -65,7 +65,7 @@ flowchart LR
 > **当前进度（2026-10-17，M6 部分）**：：已落地 `lib.rs` / `config/{mod,physics,render,room}.rs` / `coords.rs` / `physics/**` /
 > `player/{mod,input,spawn,death,decor}.rs` / `demo.rs` / `tiles.rs` / `state.rs` / `level_asset.rs` /
 > `world/{mod,load,progress}.rs`（加载 + 校验 + 热重载 + 进度）/ `room/{mod,goals,reward}.rs`（房间判定、
-> 传感器、条件求值、授奖、全通）/ `camera/{mod,rig}.rs`（落点状态机）/ `render/{mod,pixel_camera,snap,tiles,hud,debug}.rs`。
+> 传感器、条件求值、授奖、全通）/ `camera/{mod,rig}.rs`（无状态跟随 + 地图钳制）/ `render/{mod,pixel_camera,snap,tiles,hud,debug}.rs`。
 > **尚未落地**：编辑器侧的区域框选（已明确移除，见 `08` §8.10.5）、音效（`04` 尚无音频资产规范）。
 > 不要去找不存在的文件。
 

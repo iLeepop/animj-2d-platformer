@@ -5,13 +5,20 @@
 
 use bevy::prelude::*;
 use bevy::ui::Pressed;
-use bevy::ui_widgets::Button;
+use bevy::ui_widgets::{Button, ScrollArea};
 
-use crate::config::render::{DECORATION_LAYERS, z};
+use crate::config::render::{DECORATION_LAYERS, VIEWPORT_H, VIEWPORT_W, z};
 use crate::player::decor::{Decorations, spec_of};
 use crate::save;
 use crate::state::GameState;
 use crate::world::progress::LevelProgress;
+
+/// 暂停面板距视口边的留白。视口尺寸见 `07` §7.1.1。
+const PAUSE_MARGIN_X: f32 = 12.0;
+const PAUSE_MARGIN_Y: f32 = 8.0;
+/// 面板铺满视口（减去留白）；内容过高时由内部滚动区处理，不再越出屏幕。
+const PAUSE_WIDTH: f32 = VIEWPORT_W as f32 - 2.0 * PAUSE_MARGIN_X;
+const PAUSE_HEIGHT: f32 = VIEWPORT_H as f32 - 2.0 * PAUSE_MARGIN_Y;
 
 #[derive(Resource, Debug, Default)]
 pub struct PauseMenu {
@@ -88,12 +95,14 @@ fn rebuild_pause_ui(
         .spawn((
             Node {
                 position_type: PositionType::Absolute,
-                left: px(96.0),
-                top: px(64.0),
-                width: px(320.0),
+                left: px(PAUSE_MARGIN_X),
+                top: px(PAUSE_MARGIN_Y),
+                width: px(PAUSE_WIDTH),
+                height: px(PAUSE_HEIGHT),
                 flex_direction: FlexDirection::Column,
                 row_gap: px(6.0),
                 padding: UiRect::all(px(8.0)),
+                overflow: Overflow::clip(),
                 ..default()
             },
             BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.9)),
@@ -106,6 +115,23 @@ fn rebuild_pause_ui(
     button(&mut commands, root, "SAVE (Ctrl+S)", PauseAction::Save);
     button(&mut commands, root, "QUIT & SAVE", PauseAction::Quit);
 
+    // 装饰品行放进滚动区：行数多时不再把面板顶出视口。
+    let scroll = commands
+        .spawn((
+            Node {
+                flex_direction: FlexDirection::Column,
+                row_gap: px(6.0),
+                flex_grow: 1.0,
+                min_height: px(0.0),
+                overflow: Overflow::scroll_y(),
+                ..default()
+            },
+            ScrollPosition::default(),
+            ScrollArea,
+            ChildOf(root),
+        ))
+        .id();
+
     for layer in 0..DECORATION_LAYERS {
         let current = decorations
             .equipped_at(layer)
@@ -115,11 +141,14 @@ fn rebuild_pause_ui(
             .spawn((
                 Node {
                     flex_direction: FlexDirection::Row,
+                    flex_wrap: FlexWrap::Wrap,
+                    flex_shrink: 0.0,
                     column_gap: px(4.0),
+                    row_gap: px(2.0),
                     align_items: AlignItems::Center,
                     ..default()
                 },
-                ChildOf(root),
+                ChildOf(scroll),
             ))
             .id();
         commands.spawn((
@@ -142,17 +171,19 @@ fn rebuild_pause_ui(
 }
 
 fn button(commands: &mut Commands, parent: Entity, label: &str, action: PauseAction) {
-    commands.spawn((
-        Button,
-        Node {
-            padding: UiRect::axes(px(6.0), px(2.0)),
-            ..default()
-        },
-        BackgroundColor(Color::srgb(0.15, 0.15, 0.2)),
-        PauseButton(action),
-        ChildOf(parent),
-    ))
-    .with_child((Text::new(label), TextColor(Color::WHITE)));
+    commands
+        .spawn((
+            Button,
+            Node {
+                padding: UiRect::axes(px(6.0), px(2.0)),
+                flex_shrink: 0.0,
+                ..default()
+            },
+            BackgroundColor(Color::srgb(0.15, 0.15, 0.2)),
+            PauseButton(action),
+            ChildOf(parent),
+        ))
+        .with_child((Text::new(label), TextColor(Color::WHITE)));
 }
 
 fn handle_pause_buttons(

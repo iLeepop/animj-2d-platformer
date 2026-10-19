@@ -209,7 +209,7 @@ fn self_check(
         }
     };
 
-    // ① 离屏渲染目标尺寸 = 一个房间
+    // ① 离屏渲染目标尺寸 = 内层视口
     let canvas_size = canvas
         .as_ref()
         .and_then(|handle| images.get(&handle.0))
