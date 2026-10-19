@@ -808,13 +808,15 @@ fn validate_returns_all_issues_without_short_circuit() {
     level.rooms[0].entities.push(entity("enemy", (96, 464)));
 
     let issues = validate(&level);
-    for rule in ["V2", "V7", "V12", "V14"] {
+    // 空 goals 不再是问题（V7 已移除），只要求其余规则不被短路
+    assert!(issues_of(&level, "V7").is_empty());
+    for rule in ["V2", "V12", "V14"] {
         assert!(
             !issues_of(&level, rule).is_empty(),
             "{rule} 未被报告：{issues:?}"
         );
     }
-    assert!(issues.len() >= 4, "必须一次返回全部问题：{issues:?}");
+    assert!(issues.len() >= 3, "必须一次返回全部问题：{issues:?}");
 }
 
 #[test]
@@ -1005,23 +1007,20 @@ fn v6_chars_must_be_in_legend() {
     assert!(issues_of(&level, "V6").is_empty());
 }
 
+/// 「每房至少一个目标」是**设计约束**，不由代码强制：空 goals 必须能通过校验。
 #[test]
-fn v7_goals_must_not_be_empty() {
-    assert!(issues_of(&valid_level(), "V7").is_empty());
-
+fn empty_goals_are_allowed_by_validation() {
     let mut level = valid_level();
     level.rooms[0].goals.clear();
-    let issues = issues_of(&level, "V7");
-    assert_eq!(issues.len(), 1);
-    assert_eq!(issues[0].severity, Severity::Error);
-    assert_eq!(issues[0].path, "rooms[0].goals");
-    assert!(issues[0].message.contains("至少需要 1 个目标"));
+    let issues = validate(&level);
+    assert!(issues.is_empty(), "空 goals 不应再报错：{issues:?}");
+    assert!(issues_of(&level, "V7").is_empty(), "V7 已移除且不得复用");
 
-    // 正例：非 ReachExit 的单一条件
+    // 正例：单一非 ReachExit 条件仍然合法
     let mut level = valid_level();
     level.rooms[0].goals = vec![Goal::CollectAll];
     level.rooms[0].entities.push(entity("fruit", (96, 464)));
-    assert!(issues_of(&level, "V7").is_empty());
+    assert!(validate(&level).is_empty());
 }
 
 #[test]

@@ -181,7 +181,7 @@ pub struct Room {
     pub name: Option<String>,
     /// 恰好 16 行、每行恰好 16 个 legend 字符；第 0 行 = 房间最上一行。
     pub tiles: Vec<String>,
-    /// 房间目标条件，空列表非法（V7）。
+    /// 房间目标条件。允许为空（设计上要求至少一个，但**不在代码里强制**）；空列表运行时永不满足。
     pub goals: Vec<Goal>,
     /// 装饰品 id；`None` = 本房间不授予装饰品。
     #[serde(default)]

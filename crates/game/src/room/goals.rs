@@ -1,6 +1,6 @@
 //! 条件求值（**纯函数**）。所有者文档：`docs/01-game-design.md` §1.4。
 //!
-//! 条件之间是逻辑与（AND）；空列表不算通关（校验也禁止空列表）。
+//! 条件之间是逻辑与（AND）；空列表不算通关（「至少一个目标」是设计约束，代码只保证空列表永不满足）。
 //! 求值只针对**当前房间**（`01` §1.4）：离屏房间不判定，避免误触发与无谓开销。
 
 use level_format::Goal;
@@ -26,7 +26,7 @@ pub fn condition_met(goal: &Goal, runtime: &RoomRuntime) -> bool {
     }
 }
 
-/// 全部条件是否满足（AND）。空列表返回 `false`（房间必须有目标）。
+/// 全部条件是否满足（AND）。空列表返回 `false`（永不自动通关；是否补齐目标由关卡设计决定）。
 pub fn goals_satisfied(goals: &[Goal], runtime: &RoomRuntime) -> bool {
     !goals.is_empty() && goals.iter().all(|goal| condition_met(goal, runtime))
 }
@@ -41,6 +41,12 @@ mod tests {
             collected_fruit: collected,
             total_fruit: total,
         }
+    }
+
+    #[test]
+    fn empty_goals_never_complete() {
+        // 设计上要求每房至少一个目标；代码不强制，因此空列表必须保持"永不通关"而不是真空真
+        assert!(!goals_satisfied(&[], &runtime(true, 5, 5)));
     }
 
     #[test]

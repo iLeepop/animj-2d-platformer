@@ -17,7 +17,7 @@ const PLAYER_SPAWN_KIND: &str = "player_spawn";
 
 /// 校验关卡，返回**全部**问题（不短路）。
 ///
-/// 规则编号 `V1`…`V18`、严重度与 `path` 格式见 `docs/03-level-format.md` §3.7。
+/// 规则编号 `V1`…`V20`（`V7` 已移除且不再复用）、严重度与 `path` 格式见 `docs/03-level-format.md` §3.7。
 /// 每条问题的 `message` 都带规则编号与字段路径，`path` 是纯字段路径。
 pub fn validate(level: &Level) -> Vec<LevelIssue> {
     let mut issues = Vec::new();
@@ -200,18 +200,11 @@ fn count_kind(room: &Room, kind: &str) -> u32 {
         .count() as u32
 }
 
-/// V7 / V8 / V9 / V10：目标列表与实体的可满足性。
+/// V8 / V9 / V10：目标列表与实体的可满足性。
+///
+/// `goals` 允许为空：**「每个房间至少一个目标」是关卡设计约束，不由代码强制**
+/// （空列表在运行时永不满足，见 `game::room::goals::evaluate`）。
 fn check_goals(i: usize, room: &Room, issues: &mut Vec<LevelIssue>) {
-    if room.goals.is_empty() {
-        push(
-            issues,
-            Severity::Error,
-            &format!("rooms[{i}].goals"),
-            "V7",
-            "目标列表为空，至少需要 1 个目标",
-        );
-    }
-
     let exit_count = count_kind(room, "exit");
     let fruit_count = count_kind(room, "fruit");
 

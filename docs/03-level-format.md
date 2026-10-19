@@ -45,7 +45,7 @@ pub struct RoomCoord { pub col: u32, pub row: u32 }
 pub struct Room {
     pub name: Option<String>,    // 可选，便于编辑器与 diff 阅读；全关卡唯一
     pub tiles: Vec<String>,      // 恰好 16 个字符串，每个恰好 16 个 legend 字符
-    pub goals: Vec<Goal>,        // 非空
+    pub goals: Vec<Goal>,        // 允许为空（设计上要求至少 1 个，但代码不强制；空列表永不通关）
     pub reward: Option<String>,  // 装饰品 id；None = 本房间不授予装饰品
     pub spawn: Option<(i32, i32)>, // 重生点（房间局部坐标，AABB 中心）；None = 用 02 的默认值
     pub entities: Vec<EntitySpec>,
@@ -161,7 +161,8 @@ pub enum Goal {
 }
 ```
 
-语义与首批范围见 `01` §1.4。条件之间是 **AND**；`goals` 为空是非法（V7）。
+语义与首批范围见 `01` §1.4。条件之间是 **AND**。`goals` **允许为空**：
+「每个房间至少一个目标」是关卡设计约束，**不在代码里强制**；空列表在运行时永不满足（不会自动通关）。
 
 ## 3.6 完整示例
 
@@ -281,7 +282,7 @@ pub fn validate(level: &Level) -> Vec<LevelIssue>
 
 - `path` 格式：结构字段用 `rooms[13].goals[1].count`；瓦片类问题用 `rooms[3].tiles[12]`；实体类问题用 `rooms[7].entities[2].at`。
 - 校验必须是**纯函数**：不读文件、不依赖 Bevy，可直接单测。规则实现必须遍历全部房间，**不得**在第一个错误处返回。
-- 规则编号（`V1`…`V18`）是对外契约：错误消息必须带上编号，便于文档、编辑器高亮与 CI 输出互相定位。
+- 规则编号（`V1`…`V20`；`V7` 已移除且不复用）是对外契约：错误消息必须带上编号，便于文档、编辑器高亮与 CI 输出互相定位。
 
 | # | 规则 | 严重度 |
 |---|---|---|
@@ -292,7 +293,6 @@ pub fn validate(level: &Level) -> Vec<LevelIssue>
 | V4 | `rooms.len() == cols * rows` | Error |
 | V5 | 每个房间 `tiles.len() == 16`；每行字符数（**按 `char` 计**）`== 16` | Fatal |
 | V6 | 每个字符都在 legend 中 | Error |
-| V7 | `goals` 非空 | Error |
 | V8 | 含 `ReachExit` ⇒ 该房间 `exit` 实体数 `== 1` | Error |
 | V9 | 含 `CollectAll` ⇒ 该房间 `fruit` 数 `>= 1` | Error |
 | V10 | `Collect { count }` ⇒ `1 <= count <=` 该房间 `fruit` 数 | Error |
@@ -307,6 +307,8 @@ pub fn validate(level: &Level) -> Vec<LevelIssue>
 | V19 | `palette`：`char` 唯一且非 `.`；`name` 非空 | Error |
 | V20 | `background`：`layers.len() <= 3`；每层 `image` 非空；`scroll_x/y <= 100` | Error |
 
+> **V7 已移除**（曾规定 `goals` 非空）：房间目标数量属于关卡设计，不由代码校验；编号不复用，避免与历史错误输出混淆。
+>
 > 上表的严重度语义见本节开头三态表。`V4`（房间数与网格不符）同样属于结构不变式，但可以由编辑器改变 `cols/rows` 而合法地瞬时出现，故定为 `Error` 而非 `Fatal`。
 
 ## 3.8 版本化与迁移
@@ -326,3 +328,4 @@ pub fn validate(level: &Level) -> Vec<LevelIssue>
 | `1` | 2026-10-16 | 初版：2D 房间网格 + legend 瓦片 + 实体列表 + 三种条件 |
 | `2` | 2026-10-18 | 关卡自带贴图 `tileset`/`tileset_columns` + 地块调色板 `palette`（§3.9） |
 | `2`（增补） | 2026-10-19 | 新增可选字段 `background`（§3.10，V20）；**不升版本**，旧文件读取为 `None` |
+| `2`（校验放宽） | 2026-10-19 | **移除 V7**（`goals` 非空）：每房至少一个目标改为纯设计约束；空列表运行时永不通关 |
