@@ -42,6 +42,7 @@ pub struct ClientNet {
     input_seq: u32,
     client_id: u64,
     pending: Option<Snapshot>,
+    bye_sent: bool,
     logged_snapshot: bool,
     logged_join: bool,
 }
@@ -116,6 +117,7 @@ pub fn start_client(mut commands: Commands, mode: Res<SessionMode>) {
                 input_seq: 0,
                 client_id: load_or_create_client_id(),
                 pending: None,
+                bye_sent: false,
                 logged_snapshot: false,
                 logged_join: false,
             });
@@ -382,17 +384,41 @@ pub fn apply_snapshot(
     }
 }
 
-/// 窗口关闭 / 进程正常退出时主动 `Bye`，主机立即移除角色，不等 5 秒超时。
-pub fn bye_on_exit(mut exit: MessageReader<AppExit>, client: Option<Res<ClientNet>>) {
+/// 点击窗口关闭按钮时立刻 `Bye`。
+///
+/// 不能只依赖 `AppExit`：窗口关闭流程是「请求 → 下一帧标记 ClosingWindow → 再下一帧 despawn →
+/// `exit_on_all_closed` 才写 AppExit」，而应用可能在写 AppExit 的同一帧结束；先发 Bye 最稳。
+pub fn bye_on_window_close(
+    mut requested: MessageReader<bevy::window::WindowCloseRequested>,
+    mut client: Option<ResMut<ClientNet>>,
+) {
+    if requested.read().count() == 0 {
+        return;
+    }
+    if let Some(client) = client.as_mut() {
+        send_bye(client, "窗口关闭");
+    }
+}
+
+/// 进程正常退出时兜底再发一次 `Bye`（窗口关闭路径可能已经发过）。
+pub fn bye_on_exit(mut exit: MessageReader<AppExit>, mut client: Option<ResMut<ClientNet>>) {
     if exit.read().count() == 0 {
         return;
     }
-    let Some(client) = client else {
+    if let Some(client) = client.as_mut() {
+        send_bye(client, "退出");
+    }
+}
+
+/// 只发一次 `Bye`：窗口关闭与 AppExit 可能在同一帧先后触发。
+fn send_bye(client: &mut ClientNet, reason: &str) {
+    if client.bye_sent {
         return;
-    };
+    }
+    client.bye_sent = true;
     if let Some(bytes) = protocol::encode(&NetMessage::Bye) {
         let _ = client.socket.send_to(&bytes, client.server);
-        info!("联机：退出，已通知主机断开（{}）", client.server);
+        info!("联机：{reason}，已通知主机断开（{}）", client.server);
     }
 }
 

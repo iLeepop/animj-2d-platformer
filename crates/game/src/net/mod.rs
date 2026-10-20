@@ -56,7 +56,13 @@ impl Plugin for NetPlugin {
                         .run_if(resource_exists::<client::ClientNet>),
                 ),
             )
-            .add_systems(Last, client::bye_on_exit)
+            .add_systems(Update, client::bye_on_window_close)
+            // `OnAppExitSystems` 在 Bevy 的 `ExitSystems` 之后运行；窗口关闭产生的 AppExit
+            // 只有在这个 set 里才能可靠读到。
+            .add_systems(
+                Last,
+                client::bye_on_exit.in_set(bevy::app::OnAppExitSystems),
+            )
             .add_systems(
                 FixedUpdate,
                 (

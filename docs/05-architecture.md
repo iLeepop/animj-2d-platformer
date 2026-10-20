@@ -406,7 +406,7 @@ pub struct GameSettings {
 | 主机 → 客户端 `Snapshot` | 每固定步（60 Hz） | 全部玩家 `(id, x, y, vx, vy, grounded, facing)`、通关房间、果实计数、已拾取 `ZoneId`、当前存档点 |
 | `Join` / `Welcome` / `Reject` | 0.25 s 重试 / 事件 | 加入握手；`Join` 带持久 `client_id`。主机分配最小空闲 `PlayerId(1..MAX_PLAYERS)`，在**关卡出生点**生成角色；出生点被墙/已有玩家占用时就近找空位。**同一 `client_id` 从新端口重连时复用原玩家编号/实体**，不新增角色 |
 | `Discover` / `RoomInfo` | 1 s 查询 + 响应 | 房间搜索（§5.15.4） |
-| `Bye` / 超时 | 离开 / 5 s 静默 | 客户端窗口关闭（`AppExit`）时主动发 `Bye`，主机立即移除；异常退出则 5 s 超时清理 |
+| `Bye` / 超时 | 离开 / 5 s 静默 | 客户端收到 `WindowCloseRequested`（点击关闭按钮）或 `AppExit` 时主动发 `Bye`，主机立即移除；异常退出（崩溃/强杀）则 5 s 超时清理 |
 
 - 主机物理按 `PlayerId` 升序推进；远程输入写入对应槽位，因此远程玩家与本地玩家走**完全相同**的
   `physics::step`（含玩家间碰撞，`06` §6.11）。
