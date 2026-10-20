@@ -8,7 +8,9 @@ use bevy::prelude::*;
 use bevy::sprite::SpriteImageMode;
 
 use crate::config::render::z;
-use crate::render::pixel_camera::PIXEL_PERFECT_LAYERS;
+use bevy::camera::visibility::RenderLayers;
+
+use crate::render::pixel_camera::{MAX_VIEWS, PARALLAX_LAYER_BASE, PlayerView, ViewLayout};
 use crate::world::load::LoadedLevel;
 
 /// 视差背景使用的相机。游戏内层相机与编辑器的 `EditorCamera` 都插这个标记。
@@ -26,18 +28,25 @@ pub struct BackgroundOverride(pub Option<level_format::Background>);
 /// `index` 用于每帧从关卡数据读取最新的滚动百分比（改数值不需要重建贴图）。
 #[derive(Component, Debug, Clone)]
 pub struct ParallaxLayer {
+    /// 该份背景属于哪个玩家视图（本地双人时两套背景的相位不同）。
+    view: u8,
     index: usize,
     period: Vec2,
 }
 
 /// 贴图身份键：路径 + mtime。任一变化 ⇒ 重新解码并重建实体（`04` §5.6）。
-type ImageKey = Vec<(String, Option<std::time::SystemTime>)>;
+type ImageKey = (u8, Vec<(String, Option<std::time::SystemTime>)>);
 
 /// 背景相机查询；`Without<ParallaxLayer>` 与层查询的 `Transform` 访问互斥（B0001）。
 type ParallaxCameraQuery<'w, 's> = Query<
     'w,
     's,
-    (&'static Camera, &'static Projection, &'static Transform),
+    (
+        &'static Camera,
+        &'static Projection,
+        &'static Transform,
+        Option<&'static PlayerView>,
+    ),
     (With<ParallaxCamera>, Without<ParallaxLayer>),
 >;
 
@@ -96,10 +105,12 @@ fn camera_view(
     Some((transform.translation.truncate(), logical * scale))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn update_parallax(
     mut commands: Commands,
     loaded: Option<Res<LoadedLevel>>,
     preview: Option<Res<BackgroundOverride>>,
+    layout: Option<Res<ViewLayout>>,
     mut images: ResMut<Assets<Image>>,
     mut layers: Query<(Entity, &ParallaxLayer, &mut Transform, &mut Sprite)>,
     camera: ParallaxCameraQuery,
@@ -121,72 +132,104 @@ fn update_parallax(
         return;
     };
 
+    let views = layout
+        .as_ref()
+        .map(|layout| layout.views.min(MAX_VIEWS as u8))
+        .unwrap_or(1);
+
     // 贴图身份变化才重建；滚动百分比每帧实时读取，拖 DragValue 不会反复解码 PNG。
-    let key: ImageKey = background
-        .layers
-        .iter()
-        .map(|layer| {
-            let path = level_format::normalize_asset_path(&layer.image).unwrap_or_default();
-            let stamp = crate::assets::texture_stamp(&path);
-            (path, stamp)
-        })
-        .collect();
-    let Some((camera, projection, transform)) = camera.iter().next() else {
+    // 视图数量也是 key 的一部分：进入/退出本地双人时补齐/销毁另一套背景。
+    let mut paths = Vec::with_capacity(background.layers.len());
+    for layer in &background.layers {
+        let path = level_format::normalize_asset_path(&layer.image).unwrap_or_default();
+        let stamp = crate::assets::texture_stamp(&path);
+        paths.push((path, stamp));
+    }
+    let key: ImageKey = (views, paths);
+
+    // 每个视图的相机视图：索引 = `PlayerView`（编辑器相机没有该组件 ⇒ 视图 0）。
+    let mut view_cameras: [Option<(Vec2, Vec2)>; MAX_VIEWS] = [None; MAX_VIEWS];
+    for (camera, projection, transform, player_view) in camera.iter() {
+        if !camera.is_active {
+            continue;
+        }
+        let view = player_view.map(|view| view.0 as usize).unwrap_or(0);
+        if view >= views as usize {
+            continue;
+        }
+        if let Some(found) = camera_view(camera, projection, transform) {
+            view_cameras[view] = Some(found);
+        }
+    }
+    if view_cameras[0].is_none() {
         return;
-    };
-    let Some((view_center, view_size)) = camera_view(camera, projection, transform) else {
-        return;
-    };
+    }
 
     if last_images.as_ref() != Some(&key) {
         *last_images = Some(key);
         for (entity, ..) in &layers {
             commands.entity(entity).despawn();
         }
-        for (index, layer) in background.layers.iter().enumerate() {
-            let Some(path) = level_format::normalize_asset_path(&layer.image) else {
-                warn!("背景图层 {index}：路径为空，已跳过");
+        for view in 0..views {
+            let Some((view_center, view_size)) = view_cameras[view as usize] else {
                 continue;
             };
-            let Some(handle) = crate::render::tiles::load_image(&path, &mut images) else {
-                warn!("背景图层 {index}：贴图 `{path}` 加载失败，已跳过");
-                continue;
-            };
-            let Some(image) = images.get(&handle) else {
-                continue;
-            };
-            let period = image.size_f32();
-            if period.min_element() <= 0.0 {
-                warn!("背景图层 {index}：贴图 `{path}` 尺寸为 0，已跳过");
-                continue;
-            }
-            let scroll = scroll_of(layer);
-            let (center, size) = parallax_placement(view_center, view_size, scroll, period);
-            commands.spawn((
-                ParallaxLayer { index, period },
-                Sprite {
-                    image: handle,
-                    image_mode: SpriteImageMode::Tiled {
-                        tile_x: true,
-                        tile_y: true,
-                        stretch_value: 1.0,
+            for (index, layer) in background.layers.iter().enumerate() {
+                let Some(path) = level_format::normalize_asset_path(&layer.image) else {
+                    warn!("背景图层 {index}：路径为空，已跳过");
+                    continue;
+                };
+                let Some(handle) = crate::render::tiles::load_image(&path, &mut images) else {
+                    warn!("背景图层 {index}：贴图 `{path}` 加载失败，已跳过");
+                    continue;
+                };
+                let Some(image) = images.get(&handle) else {
+                    continue;
+                };
+                let period = image.size_f32();
+                if period.min_element() <= 0.0 {
+                    warn!("背景图层 {index}：贴图 `{path}` 尺寸为 0，已跳过");
+                    continue;
+                }
+                let (center, size) =
+                    parallax_placement(view_center, view_size, scroll_of(layer), period);
+                commands.spawn((
+                    ParallaxLayer {
+                        view,
+                        index,
+                        period,
                     },
-                    custom_size: Some(size),
-                    ..default()
-                },
-                Transform::from_xyz(center.x, center.y, z::PARALLAX + index as f32),
-                PIXEL_PERFECT_LAYERS,
-            ));
+                    Sprite {
+                        image: handle,
+                        image_mode: SpriteImageMode::Tiled {
+                            tile_x: true,
+                            tile_y: true,
+                            stretch_value: 1.0,
+                        },
+                        custom_size: Some(size),
+                        ..default()
+                    },
+                    Transform::from_xyz(center.x, center.y, z::PARALLAX + index as f32),
+                    RenderLayers::layer(PARALLAX_LAYER_BASE + view as usize),
+                ));
+            }
         }
     }
 
     // 每帧写位置：相机移动与滚动百分比变化都即时生效。
     for (_, layer, mut transform, mut sprite) in layers.iter_mut() {
+        let Some(view_camera) = view_cameras[layer.view as usize] else {
+            continue;
+        };
         let Some(definition) = background.layers.get(layer.index) else {
             continue;
         };
-        let (center, size) =
-            parallax_placement(view_center, view_size, scroll_of(definition), layer.period);
+        let (center, size) = parallax_placement(
+            view_camera.0,
+            view_camera.1,
+            scroll_of(definition),
+            layer.period,
+        );
         transform.translation.x = center.x;
         transform.translation.y = center.y;
         sprite.custom_size = Some(size);

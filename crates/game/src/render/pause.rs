@@ -7,9 +7,10 @@ use bevy::prelude::*;
 use bevy::ui::Pressed;
 use bevy::ui_widgets::{Button, ScrollArea};
 
-use crate::config::render::{DECORATION_LAYERS, MENU_FONT_PX, VIEWPORT_H, VIEWPORT_W, z};
+use crate::config::render::{DECORATION_LAYERS, MENU_FONT_PX, VIEWPORT_H, z};
 use crate::fonts::UiFont;
 use crate::player::decor::{Decorations, spec_of};
+use crate::render::pixel_camera::ViewLayout;
 use crate::save;
 use crate::settings::GameSettings;
 use crate::state::GameState;
@@ -19,7 +20,6 @@ use crate::world::progress::LevelProgress;
 const PAUSE_MARGIN_X: f32 = 12.0;
 const PAUSE_MARGIN_Y: f32 = 8.0;
 /// 面板铺满视口（减去留白）；内容过高时由内部滚动区处理，不再越出屏幕。
-const PAUSE_WIDTH: f32 = VIEWPORT_W as f32 - 2.0 * PAUSE_MARGIN_X;
 const PAUSE_HEIGHT: f32 = VIEWPORT_H as f32 - 2.0 * PAUSE_MARGIN_Y;
 
 #[derive(Resource, Debug, Default)]
@@ -83,6 +83,7 @@ fn rebuild_pause_ui(
     mut commands: Commands,
     menu: Res<PauseMenu>,
     decorations: Res<Decorations>,
+    layout: Res<ViewLayout>,
     settings: Option<Res<GameSettings>>,
     font: Res<UiFont>,
     roots: Query<Entity, With<PauseRoot>>,
@@ -90,6 +91,7 @@ fn rebuild_pause_ui(
     let settings_changed = settings
         .as_ref()
         .is_some_and(|settings| settings.is_changed());
+    let settings_changed = settings_changed || layout.is_changed();
     if !menu.is_changed() && !decorations.is_changed() && !settings_changed {
         return;
     }
@@ -106,7 +108,7 @@ fn rebuild_pause_ui(
                 position_type: PositionType::Absolute,
                 left: px(PAUSE_MARGIN_X),
                 top: px(PAUSE_MARGIN_Y),
-                width: px(PAUSE_WIDTH),
+                width: px(layout.width() - 2.0 * PAUSE_MARGIN_X),
                 height: px(PAUSE_HEIGHT),
                 flex_direction: FlexDirection::Column,
                 row_gap: px(6.0),

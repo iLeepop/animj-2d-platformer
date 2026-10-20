@@ -56,7 +56,7 @@ flowchart LR
 | `room/mod.rs` | 当前房间判定（含滞回） |
 | `room/goals.rs` | **纯函数**条件求值 + 通关判定（`01` §1.4） |
 | `room/reward.rs` | 授予装饰品（幂等） |
-| `render/pixel_camera.rs` | 三相机（内层世界 / 外层整数缩放 / UI 窗口）+ `UiScale = k`（`07` §7.1.2、§7.10.1） |
+| `render/pixel_camera.rs` | 多视图相机（1–2 台内层世界 / 外层整数缩放 / UI 窗口）+ `ViewLayout` + `UiScale = k`（`07` §7.1.2、§7.2.2、§7.10.1） |
 | `render/snap.rs` | 像素吸附 + `Aabb → Transform` 投影（`06` §6.8.2） |
 | `render/tiles.rs` | 瓦片 sprite 批量生成 + 房间可见性裁剪 |
 | `render/parallax.rs` | 2D 视差背景（`03` §3.10 / `07` §7.13）：贴图平铺、相位与滚动、编辑器预览覆盖、mtime 重载 |
@@ -117,7 +117,7 @@ flowchart LR
 | `RoomPlugin` | 当前房间、条件求值、奖励 | `WorldPlugin` |
 | `CameraRigPlugin` | 相机跟随玩家 AABB 中心并钳制在关卡 AABB 内（`GameSet::Camera`） | `WorldPlugin` |
 | `ParallaxPlugin` | `Level.background` → 平铺 sprite；`ParallaxCamera` 视图换算；`BackgroundOverride` 预览；`PostUpdate` 早于 `Propagate` | `TileRenderPlugin`（`load_image`）、`WorldPlugin` |
-| `PixelRenderPlugin` | 三相机（内层/外层/UI）、整数缩放、`UiScale` 同步、像素吸附 | 无 |
+| `PixelRenderPlugin` | 1–2 台内层 + 外层 + UI 相机、视图布局、窗口自适应、整数缩放、`UiScale` 同步 | 无 |
 | `TileRenderPlugin` | 瓦片 sprite 生成与可见性 | `WorldPlugin` |
 | `SpriteAnimPlugin` | 帧动画 + 按朝向水平翻转 sprite（装饰品同步镜像，`04` §4.5） | 无 |
 | `SavePlugin` | 读档（版本/地图/存档点校验）+ 通关/授奖/设置存档点/退出即存。**客户端 `run_if(not_client)` 全部跳过** | `WorldPlugin`、`RoomPlugin` |
@@ -378,7 +378,7 @@ pub struct GameSettings {
 | `Solo` | 1 | 本进程 | 默认；旧行为不变 |
 | `LocalCoop` | 2 | 本进程 | 同屏共享键盘；相机跟随两人中点 |
 | `Host` | 1 | 本进程 | 绑定 UDP `NET_PORT`，接受最多 3 个远程玩家 |
-| `Client` | 0 | 远端主机 | 只发送输入、应用快照；**不跑物理、不写存档** |
+| `Client` | 0 | 远端主机 | 只发送输入、应用快照；**不跑物理、不写存档**；相机跟随主机分配的 `PlayerId` |
 
 `SessionMode` 由菜单或 CLI 写入；`OnEnter(MainMenu)` 会关闭 socket 并复位为 `Solo`。
 玩家实体带 `PlayerId(u8)`，输入按编号放在 `PlayerInputs.slots`（`06` §6.1.5、§6.11）。
@@ -416,6 +416,8 @@ pub struct GameSettings {
   快照在 `Update` 的 `GameSet::PostPhysics`（早于 `Camera`）写入 `PlayerMotion`。
 - 快照是**完整状态**而非增量：丢包在下一帧自愈。
 - 客户端不生成玩家：玩家实体由第一份快照创建；离开的玩家由快照差集销毁。
+- 相机按视图绑定玩家（`camera::rig::view_players`）：本地双人 2 个视图；主机/客户端各 1 个视图，
+  客户端在收到 `Welcome` 之前相机不动。平滑与分屏细节见 `02` §2.2 / `07` §7.2.2。
 
 ### 5.15.4 局域网房间搜索
 
@@ -429,6 +431,7 @@ pub struct GameSettings {
 
 - 不做公网穿透/NAT、账号、匹配、反作弊、房间密码。
 - 不做客户端预测/回滚：LAN 下输入→画面为一个 RTT + 快照间隔；高延迟网络会明显滞后。
-- 不做分屏：多人共享一个相机视野，玩家可以跑到彼此看不见的位置（相机取中点）。
+- 本地双人**做**左右分屏（每个视图 320×320）；联机不做同机分屏——每个进程只有自己的视图。
+  相机平滑带来最多约 `速度 × τ` 的跟随滞后（`02` §2.2）。
 - 客户端热重载被禁用；主机热重载不会同步房间实体编号（联机时建议不编辑关卡）。
 - 装饰品/存档进度：主机负责写入；客户端只读快照，不写本地存档。

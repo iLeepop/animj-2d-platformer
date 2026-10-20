@@ -19,6 +19,11 @@ pub const WINDOW_W: u32 = 2 * VIEWPORT_W;
 /// 窗口初始高。同上。
 pub const WINDOW_H: u32 = 2 * VIEWPORT_H;
 
+/// 本地双人进入游戏时的窗口宽：两个视图并排、每个视图 2× 视口。见 `07` §7.1.1。
+pub const WINDOW_W_SPLIT: u32 = 2 * WINDOW_W;
+/// 本地双人窗口高（与单视图相同）。同上。
+pub const WINDOW_H_SPLIT: u32 = WINDOW_H;
+
 /// 整数放大倍数 `k` 的下限。见 `07` §7.1.1。
 pub const MIN_CANVAS_SCALE: u32 = 1;
 

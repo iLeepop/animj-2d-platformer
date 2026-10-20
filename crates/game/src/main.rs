@@ -21,11 +21,12 @@
 //! **入口规则**：带任何验证开关或 `--demo`（菜单类除外）时用 `StartupFlow::Direct`
 //! （`LoadMode::Auto`，与旧验证命令语义一致）；无参数启动才走主菜单。
 
+use bevy::ecs::system::SystemParam;
 use bevy::image::{ImageFilterMode, ImageSampler};
 use bevy::prelude::*;
 use bevy::render::view::window::screenshot::{Screenshot, save_to_disk};
 use game::config::render::{VIEWPORT_H, VIEWPORT_W};
-use game::render::pixel_camera::{CanvasImage, CanvasScale, InGameCamera, OuterCamera};
+use game::render::pixel_camera::{CanvasImage, CanvasScale, InGameCamera, OuterCamera, ViewLayout};
 use game::render::snap::PixelSnap;
 use game::render::tiles::Tileset;
 use game::tiles::LevelTiles;
@@ -484,11 +485,13 @@ fn tick_frames(mut tick: ResMut<FrameTick>) {
     tick.0 = tick.0.saturating_add(1);
 }
 
+#[allow(clippy::too_many_arguments)]
 fn capture_screenshots(
     mut commands: Commands,
     cli: Res<Cli>,
     tick: Res<FrameTick>,
     canvas: Option<Res<CanvasImage>>,
+    layout: Res<ViewLayout>,
     debug_draw: Option<ResMut<game::render::debug::DebugDrawEnabled>>,
     ui_camera: Option<Single<&mut Camera, With<game::render::pixel_camera::UiCamera>>>,
     mut done: Local<bool>,
@@ -521,15 +524,34 @@ fn capture_screenshots(
         return;
     }
     if let Some(canvas) = canvas {
-        commands
-            .spawn(Screenshot::image(canvas.0.clone()))
-            .observe(save_to_disk(format!("{prefix}-canvas.png")));
+        for (index, handle) in canvas.views.iter().take(layout.views as usize).enumerate() {
+            let name = if index == 0 {
+                format!("{prefix}-canvas.png")
+            } else {
+                format!("{prefix}-canvas{}.png", index + 1)
+            };
+            commands
+                .spawn(Screenshot::image(handle.clone()))
+                .observe(save_to_disk(name));
+        }
     }
     commands
         .spawn(Screenshot::primary_window())
         .observe(save_to_disk(format!("{prefix}-window.png")));
     *done = true;
-    println!("已请求截图：{prefix}-canvas.png / {prefix}-window.png");
+    if layout.views > 1 {
+        println!("已请求截图：{prefix}-canvas*.png / {prefix}-window.png");
+    } else {
+        println!("已请求截图：{prefix}-canvas.png / {prefix}-window.png");
+    }
+}
+
+/// 自检需要的视图上下文（合并三个参数，避免超过 Bevy 的 16 参数上限）。
+#[derive(SystemParam)]
+struct ViewContext<'w> {
+    layout: Res<'w, ViewLayout>,
+    mode: Res<'w, game::state::SessionMode>,
+    client: Option<Res<'w, game::net::client::ClientNet>>,
 }
 
 /// 自检用的相机查询类型别名（避免系统签名里出现过长的元组类型）。
@@ -537,14 +559,19 @@ type CameraQuery<'w, 's> = Query<
     'w,
     's,
     (
+        &'static Camera,
         &'static Msaa,
         &'static Transform,
         &'static Projection,
         Has<InGameCamera>,
         Has<OuterCamera>,
         Has<game::render::pixel_camera::UiCamera>,
+        Option<&'static game::render::pixel_camera::PlayerView>,
     ),
 >;
+
+/// 自检允许的相机平滑滞后（px）：移动中相机不会精确等于目标（`02` §2.2）。
+const CAMERA_LAG_TOLERANCE_PX: f32 = 64.0;
 
 /// 像素完美管线的不变量自检。
 ///
@@ -558,6 +585,7 @@ fn self_check(
     canvas: Option<Res<CanvasImage>>,
     images: Res<Assets<Image>>,
     canvas_scale: Res<CanvasScale>,
+    view: ViewContext,
     tileset: Option<Res<Tileset>>,
     cameras: CameraQuery,
     snap_targets: Query<&Transform, With<PixelSnap>>,
@@ -565,9 +593,38 @@ fn self_check(
     tiles: Option<Res<LevelTiles>>,
     loaded: Option<Res<LoadedLevel>>,
     current: Option<Res<CurrentRoom>>,
-    player_q: Query<(&game::player::PlayerMotion, Option<&Transform>)>,
+    player_q: Query<(
+        &game::player::PlayerId,
+        &game::player::PlayerMotion,
+        Option<&Transform>,
+    )>,
 ) {
     if *done || tick.0 < cli.check_frame() {
+        return;
+    }
+    // 加载/联机握手未完成时不做自检（否则会把「还没加载完」误报成管线失败）。
+    if loaded.is_none() {
+        return;
+    }
+    if matches!(*view.mode, game::state::SessionMode::Client { .. })
+        && view
+            .client
+            .as_ref()
+            .and_then(|client| client.player_id)
+            .is_none()
+    {
+        return;
+    }
+    // 每个视图的目标玩家都还没出现（客户端刚握手、快照未到）⇒ 继续等。
+    let preview_targets = game::camera::rig::view_players(
+        &view.mode,
+        view.client.as_ref().and_then(|client| client.player_id),
+    );
+    let players_ready = (0..view.layout.views as usize).all(|index| {
+        preview_targets[index]
+            .is_some_and(|id| player_q.iter().any(|(player_id, _, _)| *player_id == id))
+    });
+    if !players_ready {
         return;
     }
     *done = true;
@@ -580,36 +637,43 @@ fn self_check(
         }
     };
 
-    // ① 离屏渲染目标尺寸 = 内层视口
-    let canvas_size = canvas
-        .as_ref()
-        .and_then(|handle| images.get(&handle.0))
-        .map(|image| {
-            (
-                image.texture_descriptor.size.width,
-                image.texture_descriptor.size.height,
-            )
-        });
-    check(
-        "canvas size == viewport",
-        canvas_size == Some((VIEWPORT_W, VIEWPORT_H)),
-    );
+    // ① 每个激活视图的离屏渲染目标尺寸 = 内层视口
+    let canvas_ok = canvas.as_ref().is_some_and(|canvas| {
+        canvas
+            .views
+            .iter()
+            .take(view.layout.views as usize)
+            .all(|handle| {
+                images.get(handle).is_some_and(|image| {
+                    image.texture_descriptor.size.width == VIEWPORT_W
+                        && image.texture_descriptor.size.height == VIEWPORT_H
+                })
+            })
+    });
+    check("canvas size == viewport", canvas_ok);
 
-    // ② 三台相机（内层/外层/UI）都显式关了 MSAA（Camera 默认带 Msaa::Sample4）
+    // ② 全部相机都显式关了 MSAA；激活的内层相机数 = 视图数
     let camera_count = cameras.iter().count();
+    let active_inner = cameras
+        .iter()
+        .filter(|(camera, _, _, _, is_inner, ..)| *is_inner && camera.is_active)
+        .count();
     let msaa_off = cameras
         .iter()
-        .filter(|(msaa, ..)| **msaa == Msaa::Off)
+        .filter(|(_, msaa, ..)| **msaa == Msaa::Off)
         .count();
-    let ui_cameras = cameras.iter().filter(|(.., is_ui)| *is_ui).count();
+    let ui_cameras = cameras.iter().filter(|(.., is_ui, _)| *is_ui).count();
     check(
-        "3 cameras (inner/outer/ui) Msaa::Off",
-        camera_count == 3 && msaa_off == 3 && ui_cameras == 1,
+        "cameras Msaa::Off",
+        camera_count == game::render::pixel_camera::MAX_VIEWS + 2
+            && msaa_off == camera_count
+            && ui_cameras == 1
+            && active_inner == view.layout.views as usize,
     );
 
     // ③ 外层缩放严格等于 1 / k
     let k = canvas_scale.0;
-    let outer_scale_ok = cameras.iter().any(|(_, _, projection, _, is_outer, ..)| {
+    let outer_scale_ok = cameras.iter().any(|(_, _, _, projection, _, is_outer, ..)| {
         is_outer
             && k >= 1
             && matches!(projection, Projection::Orthographic(p) if (p.scale - 1.0 / k as f32).abs() < 1e-6)
@@ -619,11 +683,17 @@ fn self_check(
     // ④ 内层相机落在整像素上（相机抖 1 像素会让整屏内容抖）
     let inner_integral = cameras
         .iter()
-        .filter(|(_, t, _, is_inner, ..)| {
-            *is_inner && t.translation.x.fract() == 0.0 && t.translation.y.fract() == 0.0
+        .filter(|(camera, _, t, _, is_inner, ..)| {
+            *is_inner
+                && camera.is_active
+                && t.translation.x.fract() == 0.0
+                && t.translation.y.fract() == 0.0
         })
         .count();
-    check("inner camera at integer px", inner_integral == 1);
+    check(
+        "inner cameras at integer px",
+        inner_integral == view.layout.views as usize,
+    );
 
     // ⑤ 所有需吸附的实体都在整像素上
     let non_integral = snap_targets
@@ -692,7 +762,7 @@ fn self_check(
     // ⑨ 角色存在，且渲染投影 == `Aabb` 的单向投影（`06` §6.8.2）
     let players: Vec<_> = player_q.iter().collect();
     let projection_ok = !players.is_empty()
-        && players.iter().all(|(motion, transform)| {
+        && players.iter().all(|(_, motion, transform)| {
             transform.is_some_and(|transform| {
                 let aabb = motion.0.aabb;
                 (transform.translation.x - aabb.center().x.round()).abs() < 0.001
@@ -701,32 +771,44 @@ fn self_check(
         });
     check("player transform == aabb", projection_ok);
 
-    // ⑩ 内层相机跟随**所有玩家 AABB 中心的中点**，并被钳制在地图内（`02` §2.2）
-    let midpoint = if players.is_empty() {
-        None
-    } else {
-        let sum = players
-            .iter()
-            .fold(Vec2::ZERO, |sum, (motion, _)| sum + motion.0.aabb.center());
-        Some(sum / players.len() as f32)
-    };
-    let expected_camera = midpoint.and_then(|center| {
-        loaded.as_ref().map(|loaded| {
-            game::camera::rig::follow_target(center, loaded.level.grid.cols, loaded.level.grid.rows)
-        })
-    });
-    let camera_follows = expected_camera.is_some_and(|expected| {
-        cameras.iter().any(|(_, transform, _, is_inner, ..)| {
-            is_inner
-                && transform.translation.x == game::render::snap::snap_px(expected.x)
-                && transform.translation.y == game::render::snap::snap_px(expected.y)
-        })
-    });
+    // ⑩ 每个内层相机跟随**自己的玩家**；平滑允许有限滞后（`02` §2.2）
+    let client_id = view.client.as_ref().and_then(|client| client.player_id);
+    let targets = game::camera::rig::view_players(&view.mode, client_id);
+    let mut follows = 0usize;
+    let mut follow_ok = loaded.is_some() && !players.is_empty();
+    if let Some(loaded) = loaded.as_ref() {
+        for (camera, _, transform, _, is_inner, _, _, view) in cameras.iter() {
+            if !is_inner || !camera.is_active {
+                continue;
+            }
+            let index = view.map(|view| view.0 as usize).unwrap_or(0);
+            let Some(Some(player_id)) = targets.get(index).copied() else {
+                follow_ok = false;
+                break;
+            };
+            let Some((_, motion, _)) = players.iter().find(|(id, _, _)| **id == player_id) else {
+                follow_ok = false;
+                break;
+            };
+            let target = game::camera::rig::follow_target(
+                motion.0.aabb.center(),
+                loaded.level.grid.cols,
+                loaded.level.grid.rows,
+            );
+            let lag = transform.translation.truncate().distance(target);
+            if lag > CAMERA_LAG_TOLERANCE_PX {
+                follow_ok = false;
+                break;
+            }
+            follows += 1;
+        }
+    }
+    let camera_follows = follow_ok && follows == view.layout.views as usize;
     check("camera follows player", camera_follows);
 
     // ⑪ 角色碰撞盒尺寸不变形（R1–R5：反向/压扁的 AABB 会静默关闭全部碰撞）
     let box_ok = !players.is_empty()
-        && players.iter().all(|(motion, _)| {
+        && players.iter().all(|(_, motion, _)| {
             (motion.0.aabb.size() - game::config::physics::PLAYER_SIZE).length() <= 1e-3
         });
     check("player collider size", box_ok);

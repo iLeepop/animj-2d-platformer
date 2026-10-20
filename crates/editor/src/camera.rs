@@ -2,6 +2,7 @@
 //! 所有者文档：`docs/08-level-editor.md` §8.4。
 
 use bevy::camera::ScalingMode;
+use bevy::camera::visibility::RenderLayers;
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
 use bevy_egui::PrimaryEguiContext;
@@ -70,6 +71,8 @@ fn spawn_editor_camera(mut commands: Commands) {
         PrimaryEguiContext,
         EditorCamera,
         game::render::parallax::ParallaxCamera,
+        // 世界在 layer 0；视差副本在 PARALLAX_LAYER_BASE（8）。编辑器没有离屏管线，直接用 layer 0 + 8。
+        RenderLayers::from_layers(&[0, game::render::pixel_camera::PARALLAX_LAYER_BASE]),
         Projection::Orthographic(OrthographicProjection {
             scaling_mode: ScalingMode::WindowSize,
             scale: 1.0,

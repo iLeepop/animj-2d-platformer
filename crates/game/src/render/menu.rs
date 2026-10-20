@@ -2,7 +2,7 @@
 //! `docs/07-rendering.md` §7.10.5；文案与语言见 `docs/05-architecture.md` §5.14。
 //!
 //! 只有发布 bin 注册本插件：编辑器不经过菜单流程（`StartupFlow::Direct`，`05` §5.5）。
-//! UI 由窗口相机渲染，`UiScale = k` 让逻辑坐标仍是 `VIEWPORT_W × VIEWPORT_H`（`07` §7.10.1），
+//! UI 由窗口相机渲染，`UiScale = k` 让逻辑坐标仍是 `ViewLayout` 的尺寸（单人 320×320，本地双人 640×320；`07` §7.10.1），
 //! 因此尺寸一律用 `px()`；同时窗口目标保证 `bevy_picking` 能命中按钮。
 
 use bevy::prelude::*;
@@ -10,11 +10,10 @@ use bevy::ui::Pressed;
 use bevy::ui_widgets::Button;
 
 use crate::assets;
-use crate::config::render::{
-    MENU_FONT_PX, MENU_GAP_PX, MENU_PADDING_PX, MENU_TITLE_FONT_PX, VIEWPORT_H, VIEWPORT_W,
-};
+use crate::config::render::{MENU_FONT_PX, MENU_GAP_PX, MENU_PADDING_PX, MENU_TITLE_FONT_PX};
 use crate::fonts::UiFont;
 use crate::net::discovery::LanBrowser;
+use crate::render::pixel_camera::ViewLayout;
 use crate::save;
 use crate::settings::GameSettings;
 use crate::state::{GameState, SessionMode, SettingsReturn};
@@ -100,6 +99,7 @@ fn spawn_main_menu(
     notice: Res<LoadNotice>,
     settings: Res<GameSettings>,
     font: Res<UiFont>,
+    layout: Res<ViewLayout>,
 ) {
     let s = settings.language.strings();
     let root = commands
@@ -108,8 +108,8 @@ fn spawn_main_menu(
                 position_type: PositionType::Absolute,
                 left: px(0.0),
                 top: px(0.0),
-                width: px(VIEWPORT_W as f32),
-                height: px(VIEWPORT_H as f32),
+                width: px(layout.width()),
+                height: px(layout.height()),
                 flex_direction: FlexDirection::Column,
                 padding: UiRect::all(px(MENU_PADDING_PX * 2.0)),
                 row_gap: px(MENU_GAP_PX),
@@ -167,6 +167,7 @@ fn spawn_level_select(
     catalog: Res<LevelCatalog>,
     settings: Res<GameSettings>,
     font: Res<UiFont>,
+    layout: Res<ViewLayout>,
 ) {
     let s = settings.language.strings();
     let root = commands
@@ -175,8 +176,8 @@ fn spawn_level_select(
                 position_type: PositionType::Absolute,
                 left: px(0.0),
                 top: px(0.0),
-                width: px(VIEWPORT_W as f32),
-                height: px(VIEWPORT_H as f32),
+                width: px(layout.width()),
+                height: px(layout.height()),
                 flex_direction: FlexDirection::Column,
                 padding: UiRect::all(px(MENU_PADDING_PX * 2.0)),
                 row_gap: px(MENU_GAP_PX),
@@ -225,7 +226,12 @@ fn spawn_level_select(
 }
 
 /// 联机页：搜索结果列表 + 创建房间 + 返回。
-fn spawn_online_menu(mut commands: Commands, settings: Res<GameSettings>, font: Res<UiFont>) {
+fn spawn_online_menu(
+    mut commands: Commands,
+    settings: Res<GameSettings>,
+    font: Res<UiFont>,
+    layout: Res<ViewLayout>,
+) {
     let s = settings.language.strings();
     let root = commands
         .spawn((
@@ -233,8 +239,8 @@ fn spawn_online_menu(mut commands: Commands, settings: Res<GameSettings>, font: 
                 position_type: PositionType::Absolute,
                 left: px(0.0),
                 top: px(0.0),
-                width: px(VIEWPORT_W as f32),
-                height: px(VIEWPORT_H as f32),
+                width: px(layout.width()),
+                height: px(layout.height()),
                 flex_direction: FlexDirection::Column,
                 padding: UiRect::all(px(MENU_PADDING_PX * 2.0)),
                 row_gap: px(MENU_GAP_PX),
@@ -526,6 +532,7 @@ fn ensure_settings_ui(
     mut commands: Commands,
     settings: Res<GameSettings>,
     font: Res<UiFont>,
+    layout: Res<ViewLayout>,
     roots: Query<Entity, With<SettingsRoot>>,
 ) {
     if !roots.is_empty() && !settings.is_changed() {
@@ -542,8 +549,8 @@ fn ensure_settings_ui(
                 position_type: PositionType::Absolute,
                 left: px(0.0),
                 top: px(0.0),
-                width: px(VIEWPORT_W as f32),
-                height: px(VIEWPORT_H as f32),
+                width: px(layout.width()),
+                height: px(layout.height()),
                 flex_direction: FlexDirection::Column,
                 padding: UiRect::all(px(MENU_PADDING_PX * 2.0)),
                 row_gap: px(MENU_GAP_PX),

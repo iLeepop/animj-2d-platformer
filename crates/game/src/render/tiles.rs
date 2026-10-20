@@ -328,7 +328,7 @@ fn spawn_level_tiles(
 fn sync_room_visibility(
     culling: Res<RoomCulling>,
     loaded: Option<Res<LoadedLevel>>,
-    camera: Option<Single<&Transform, With<InGameCamera>>>,
+    cameras: Query<(&Camera, &Transform), With<InGameCamera>>,
     mut roots: Query<(&RoomRoot, &mut Visibility)>,
 ) {
     // 编辑器：`RoomCulling(false)` ⇒ 整张地图可见
@@ -341,27 +341,32 @@ fn sync_room_visibility(
         return;
     }
 
-    let (Some(loaded), Some(camera)) = (loaded, camera) else {
+    let Some(loaded) = loaded else {
         return;
     };
     let half_view = Vec2::new(VIEWPORT_W as f32 / 2.0, VIEWPORT_H as f32 / 2.0);
     let half_room = ROOM_PX as f32 / 2.0;
-    let view_min = Vec2::new(
-        camera.translation.x - half_view.x,
-        camera.translation.y - half_view.y,
-    );
-    let view_max = Vec2::new(
-        camera.translation.x + half_view.x,
-        camera.translation.y + half_view.y,
-    );
+    let active: Vec<Vec2> = cameras
+        .iter()
+        .filter(|(camera, _)| camera.is_active)
+        .map(|(_, transform)| transform.translation.truncate())
+        .collect();
+    if active.is_empty() {
+        return;
+    }
     let rows = loaded.level.grid.rows;
 
     for (root, mut visibility) in &mut roots {
         let center = room_center(root.col, root.row, rows);
-        let visible = view_min.x < center.x + half_room
-            && center.x - half_room < view_max.x
-            && view_min.y < center.y + half_room
-            && center.y - half_room < view_max.y;
+        // 任一激活视图能看到这个房间就显示（分屏时两个玩家可能在不同房间）。
+        let visible = active.iter().any(|camera| {
+            let view_min = *camera - half_view;
+            let view_max = *camera + half_view;
+            view_min.x < center.x + half_room
+                && center.x - half_room < view_max.x
+                && view_min.y < center.y + half_room
+                && center.y - half_room < view_max.y
+        });
         let want = if visible {
             Visibility::Visible
         } else {

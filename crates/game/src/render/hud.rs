@@ -1,7 +1,7 @@
 //! 屏幕空间 HUD。所有者文档：`docs/07-rendering.md` §7.10。
 //!
 //! HUD 走 **UI 窗口相机**（`IsDefaultUiCamera` 挂在它上面），`UiScale = k` 让逻辑坐标仍然是
-//! `VIEWPORT_W × VIEWPORT_H`（`07` §7.10.1）。因此所有尺寸与字号都用 `px()` 的整数值，
+//! `ViewLayout` 的尺寸（单人 320×320，本地双人 640×320；`07` §7.10.1）。因此所有尺寸与字号都用 `px()` 的整数值，
 //! 禁止 `vw()` / `vh()` / `percent()`。
 
 use crate::assets::AssetRoot;

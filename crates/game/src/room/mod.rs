@@ -176,15 +176,26 @@ impl Plugin for RoomPlugin {
 /// 用玩家 AABB 中心判定当前房间（带滞回），只在真正切换时写资源。
 pub fn track_current_room(
     loaded: Option<Res<LoadedLevel>>,
+    client: Option<Res<crate::net::client::ClientNet>>,
     players: Query<(&PlayerId, &PlayerMotion)>,
     mut current: ResMut<CurrentRoom>,
 ) {
     let Some(loaded) = loaded else {
         return;
     };
-    // 焦点玩家 = 编号最小者（主机/单人）。目标判定按**每个玩家各自的房间**做，
-    // 这里只维护 HUD/裁剪/调试用的焦点房间（`02` §2.2）。
-    let Some((_, motion)) = players.iter().min_by_key(|(id, _)| *id) else {
+    // 焦点玩家 = 客户端自己的编号；其它模式 = 编号最小者（主机/单人/P1）。
+    // 目标判定按**每个玩家各自的房间**做，这里只维护 HUD/调试用的焦点房间（`02` §2.2）。
+    let focus = client
+        .as_ref()
+        .and_then(|client| client.player_id)
+        .map(PlayerId)
+        .unwrap_or(PlayerId(0));
+    let motion = players
+        .iter()
+        .find(|(id, _)| **id == focus)
+        .or_else(|| players.iter().min_by_key(|(id, _)| *id))
+        .map(|(_, motion)| motion);
+    let Some(motion) = motion else {
         return;
     };
     let now = (current.col, current.row);

@@ -336,6 +336,7 @@ fn input_system(
 - 本项目输入收敛策略见 `00` D16（直接用 `ButtonInput<KeyCode>`，在 `input` 模块内转成 `PlayerInput` 动作结构）。
 - **无窗口测试输入链路**（本项目已在用）：`KeyboardInput` 的字段是 `{ key_code: KeyCode, logical_key: Key, state: ButtonState, text: Option<SmolStr>, repeat: bool, window: Entity }`，并实现 **`Message`** ⇒ 可直接 `world.write_message(...)` 注入；`InputPlugin`（unit struct）负责把它写进 `ButtonInput<KeyCode>`（`PreUpdate`）；`MinimalPlugins` 可搭无头 App（无需窗口/GPU）。【已验证】<https://docs.rs/bevy/0.20.0/bevy/input/keyboard/struct.KeyboardInput.html>（字段表 + `impl Message for KeyboardInput`）、<https://docs.rs/bevy/0.20.0/bevy/input/struct.InputPlugin.html> —— 用法见 `crates/game/src/render/debug.rs` 的 `keyboard_message_reaches_the_toggle`
 - 时间族：`Time`（默认时钟）/ `Time<Real>` / `Time<Virtual>` / `Time<Fixed>`；`ResMut<Time<Virtual>>` 上有 `pause()` / `unpause()`。【已验证】
+- 多相机/多视图：`Camera::is_active` 可运行时启停；`RenderLayers::from_layers(&[…])` / `with(layer)` 组合多层；`Layer = usize`。【已验证：<https://docs.rs/bevy/0.20.0/bevy/camera/struct.Camera.html>、<https://docs.rs/bevy/0.20.0/bevy/camera/visibility/struct.RenderLayers.html>】
 - 墙钟累计：`Time::elapsed_secs() -> f32`（没有 `elapsed_secs_f32`）。`--seconds` 验证开关用它。【已验证：<https://docs.rs/bevy_time/0.20.0/bevy_time/struct.Time.html#method.elapsed_secs>】
   <https://docs.rs/bevy/0.20.0/bevy/prelude/struct.Time.html>
 

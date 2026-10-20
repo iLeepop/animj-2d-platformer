@@ -33,6 +33,8 @@ pub struct NetPlugin;
 impl Plugin for NetPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<SessionMode>()
+            // 编辑器也注册 NetPlugin：`camera::rig` 依赖该资源（编辑器没有像素管线）。
+            .init_resource::<crate::render::pixel_camera::ViewLayout>()
             // 客户端：进入 Loading 时建 socket；进入 Playing 后开始上行输入。
             .add_systems(OnEnter(GameState::Loading), client::start_client)
             .add_systems(OnEnter(GameState::Playing), host::start_host)

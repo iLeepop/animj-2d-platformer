@@ -24,9 +24,14 @@
 | `VIEWPORT_H` | `VIEWPORT_TILES × TILE_PX` | 内层离屏渲染目标高。同上 |
 | `WINDOW_W` | `2 × VIEWPORT_W` | 窗口初始宽（物理像素）⇒ 启动即 2 倍整数缩放、无黑边 |
 | `WINDOW_H` | `2 × VIEWPORT_H` | 窗口初始高。同上 |
-| `MIN_CANVAS_SCALE` | `1` | 整数放大倍数 `k` 的下限。`k = max(1, floor(min(w/VIEWPORT_W, h/VIEWPORT_H)))` |
+| `WINDOW_W_SPLIT` | `2 × WINDOW_W` | 本地双人进入游戏时的窗口宽（两屏并排、各 2×） |
+| `WINDOW_H_SPLIT` | `WINDOW_H` | 本地双人窗口高 |
+| `MIN_CANVAS_SCALE` | `1` | 整数放大倍数 `k` 的下限。`k = max(1, floor(min(w / (N×VIEWPORT_W), h / VIEWPORT_H)))`，`N` = 视图数 |
 | `WINDOW_TITLE` | `"animj"` | 窗口标题 |
 
+- **视图数 `N`**：单人/主机/客户端 = 1；本地双人 = 2（左右分屏）。布局宽 = `N × VIEWPORT_W`，高 = `VIEWPORT_H`。
+  每个视图有**自己的** 320×320 离屏纹理与内层相机；`MAX_VIEWS = 2` 定义在 `render::pixel_camera`。
+  
 > **关于 `320` 这个数字**：它只会在本文里作为 `VIEWPORT_W`/`VIEWPORT_H` 的**展示值**出现（10 × 32 = 320，用于读者对照与图形示意图）。
 > 它的唯一权威来源是 `VIEWPORT_TILES` 与 `00` §0.3 的 `TILE_PX`；本文不另立数字。
 
@@ -43,11 +48,12 @@
 |---|---|---|---|
 | `PIXEL_PERFECT_LAYERS` | `RenderLayers::layer(0)` | 所有游戏内 `Sprite` / `Text2d` 所在层；内层相机只看这一层 | 【已验证】官方 `pixel_grid_snap` 同名常量 <https://docs.rs/bevy/0.20.0/src/pixel_grid_snap/pixel_grid_snap.rs.html> ；`RenderLayers::layer` 是 `const fn`（同源常量定义） |
 | `HIGH_RES_LAYERS` | `RenderLayers::layer(1)` | 只放「承载离屏纹理的 canvas sprite」；外层相机只看这一层 | 同上 |
-| `INNER_CAMERA_ORDER` | `-1` | 内层相机先渲染（必须先填满离屏纹理，外层才有的可采样） | 【已验证】<https://docs.rs/bevy/0.20.0/bevy/camera/struct.Camera.html>（`order`：高值后渲染、覆盖在上）+ 官方 example 注释 `order: -1 // Render before the "main pass" camera` |
+| `PARALLAX_LAYER_BASE` | `8` | 视差背景层基准；视图 `i` 的背景在 `8+i`，该视图的内层相机 = `[layer(0), layer(8+i)]`（两屏各自相位，见 §7.13.5） | 【已验证】`RenderLayers::from_layers` / `with`：<https://docs.rs/bevy/0.20.0/bevy/camera/visibility/struct.RenderLayers.html> |
+| `INNER_CAMERA_ORDER` | `-1` | 每个内层相机先渲染（各自填满自己的离屏纹理） | 【已验证】<https://docs.rs/bevy/0.20.0/bevy/camera/struct.Camera.html>（`order`：高值后渲染、覆盖在上）+ 官方 example 注释 `order: -1 // Render before the "main pass" camera` |
 | `OUTER_CAMERA_ORDER` | `0` | 外层相机（默认值，**不要**改成别的） | 同上 |
 | `UI_CAMERA_ORDER` | `OUTER_CAMERA_ORDER + 1` | UI 相机：目标 = 主窗口，`clear_color = None`、`RenderLayers::none()`；必须在 canvas 之后渲染 | 同上 |
 
-- UI 用**独立窗口相机**渲染（`IsDefaultUiCamera` 挂在它上面），`UiScale = k` 把逻辑坐标钉在 `VIEWPORT_W × VIEWPORT_H`（详见 §7.10.1）。
+- UI 用**独立窗口相机**渲染（`IsDefaultUiCamera` 挂在它上面），`UiScale = k` 把逻辑坐标钉在 `N × VIEWPORT_W` 宽、`VIEWPORT_H` 高（详见 §7.10.1）。
   这不是可选优化：`bevy_picking` 的 UI 后端只把「与指针同渲染目标」的相机纳入命中测试，内层相机目标是离屏纹理，按钮会永远点不动。
 
 - **未插 `RenderLayers` 的相机只渲染 layer 0**。【已验证】<https://docs.rs/bevy/0.20.0/bevy/camera/visibility/struct.RenderLayers.html>（example 注释原文：“This camera has no `RenderLayers` component, so it only renders entities belonging to render layer `0`.”）
@@ -63,7 +69,7 @@
 | `z::TILE` | **实体瓦片** | 见 `00` §0.4 |
 | `z::PICKUP` | 可拾取物（果实） | 见 `00` §0.4 |
 | `z::ENEMY` | 敌人 | 见 `00` §0.4 |
-| `z::PLAYER` / `z::player_z(id)` | **角色本体**：`40.0 + 0.1 × 玩家编号` | 见 `00` §0.4；多人会互相重叠，必须不同 Z。相机跟随全部玩家中心的中点（`02` §2.2）；视野仍小于一个房间 |
+| `z::PLAYER` / `z::player_z(id)` | **角色本体**：`40.0 + 0.1 × 玩家编号` | 见 `00` §0.4；多人会互相重叠，必须不同 Z。每个视图的相机跟随自己的玩家（`02` §2.2）；视野仍小于一个房间 |
 | `z::DECORATION_BASE` | 装饰品图层基准；实际 Z = `DECORATION_BASE + layer_index as f32`（槽位语义与上限见 `04` §6.1） | 见 `00` §0.4 |
 | `z::PARTICLE` | 粒子 / 特效 | 见 `00` §0.4 |
 | `z::TILE_FOREGROUND` | 前景瓦片 | 见 `00` §0.4 |
@@ -127,172 +133,30 @@
                                 窗口
 ```
 
-- 内层视野固定为 `VIEWPORT_W × VIEWPORT_H`（`VIEWPORT_TILES` × `VIEWPORT_TILES` 瓦片，**小于一个房间**，见 `00` §0.1 **D5/D13** 与 `02`）。相机跟随玩家，因此视野通常落在一个房间内，靠近边界时可同时覆盖 2–4 个相邻房间。
+- 每个内层视野固定为 `VIEWPORT_W × VIEWPORT_H`（`VIEWPORT_TILES` × `VIEWPORT_TILES` 瓦片，**小于一个房间**，见 `00` §0.1 **D5/D13** 与 `02`）。每个视图的相机跟随自己的玩家，因此视野通常落在一个房间内，靠近边界时可同时覆盖 2–4 个相邻房间。
+- `N = 2` 时：两张离屏纹理、两台内层相机、两个 canvas sprite 在窗口里左右并排；外层相机仍只有 `scale = 1/k` 这一条缩放规则，`k` 按**总布局尺寸**计算。
+  从单视图进入本地双人时，窗口默认从 `WINDOW_W × WINDOW_H` 调到 `WINDOW_W_SPLIT × WINDOW_H_SPLIT`（仅窗口模式；全屏或用户改过尺寸则不动），退出时恢复。
 - 外层视图里只有 canvas sprite ⇒ 黑边 = 外层相机的清屏色 = `ClearColor` 资源。因此把 `ClearColor` 设为纯黑，
   这样「视口外区域」与「房间外区域」都是同一种黑，不存在两种黑的接缝。
 - **参考分辨率固定**：本项目不做「多分辨率适配」。改 `VIEWPORT_TILES` / `VIEWPORT_W/H` 等于改契约，必须同步 `00` §0.1 与 `02`/`04`/`05`。
 
-### 7.2.2 完整代码（可直接抄写）
+### 7.2.2 结构要点（源码为准）
 
-文件：`crates/game/src/render/pixel_camera.rs`（模块划分见 `05` §5.x 的目录表）。
+文件：`crates/game/src/render/pixel_camera.rs`。
 
-```rust
-use bevy::camera::visibility::RenderLayers;
-use bevy::camera::{RenderTarget, ScalingMode};
-use bevy::prelude::*;
-use bevy::render::render_resource::TextureFormat;
-use bevy::window::WindowResized; // 窗口配置（WindowPlugin/PresentMode/WindowResolution）见 §7.4
-
-use crate::config::render::{
-    INNER_CAMERA_ORDER, MIN_CANVAS_SCALE, OUTER_CAMERA_ORDER, VIEWPORT_H, VIEWPORT_W, z,
-};
-
-/// 内层相机：只渲染游戏内容（layer 0）。
-pub const PIXEL_PERFECT_LAYERS: RenderLayers = RenderLayers::layer(0);
-/// 外层相机：只渲染承载离屏纹理的 canvas sprite（layer 1）。
-pub const HIGH_RES_LAYERS: RenderLayers = RenderLayers::layer(1);
-
-#[derive(Component)]
-pub struct InGameCamera;
-
-#[derive(Component)]
-pub struct OuterCamera;
-
-/// 承载离屏纹理的 sprite。
-#[derive(Component)]
-pub struct Canvas;
-
-/// 当前整数放大倍数 k（HUD 缩放、编辑器、dev 覆盖层可读）。
-#[derive(Resource, Default, Deref, DerefMut)]
-pub struct CanvasScale(pub u32);
-
-pub struct PixelCameraPlugin;
-
-impl Plugin for PixelCameraPlugin {
-    fn build(&self, app: &mut App) {
-        app.init_resource::<CanvasScale>()
-            // 黑边颜色 = 清屏色；视口外区域与房间外区域统一为黑
-            .insert_resource(ClearColor(Color::BLACK))
-            .add_systems(Startup, setup_pixel_camera)
-            .add_systems(Update, fit_canvas);
-    }
-}
-
-fn setup_pixel_camera(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
-    // ① 离屏渲染目标：一屏视野（VIEWPORT_W × VIEWPORT_H，小于一个房间）
-    let canvas_image = images.add(Image::new_target_texture(
-        VIEWPORT_W,
-        VIEWPORT_H,
-        TextureFormat::Bgra8UnormSrgb,
-        None,
-    ));
-
-    // ② 内层相机：世界（VIEWPORT_W × VIEWPORT_H 世界单位）→ 离屏纹理，1 世界单位 = 1 texel
-    commands.spawn((
-        Camera2d,
-        Camera {
-            order: INNER_CAMERA_ORDER,
-            ..default()
-        },
-        Projection::Orthographic(OrthographicProjection {
-            scaling_mode: ScalingMode::Fixed {
-                width: VIEWPORT_W as f32,
-                height: VIEWPORT_H as f32,
-            },
-            scale: 1.0,
-            ..OrthographicProjection::default_2d()
-        }),
-        RenderTarget::Image(canvas_image.clone().into()),
-        Msaa::Off,
-        InGameCamera,
-        PIXEL_PERFECT_LAYERS,
-        PixelSnap,
-        // ★ 不写 Transform：相机用默认单位变换（Z 无意义，00 §0.4 要求保持 Camera2d 默认）。
-        //   相机位置（跟随玩家、钳制在地图内，整像素）由 02 的相机系统**只写 translation.x/y**，z 保持默认。
-    ));
-
-    // ③ 把离屏纹理铺到「高分辨率世界」里（外层视图 = 只有这一个 sprite）
-    commands.spawn((
-        Sprite::from_image(canvas_image),
-        Canvas,
-        HIGH_RES_LAYERS,
-        Transform::from_xyz(0.0, 0.0, z::CANVAS),
-    ));
-
-    // ④ 外层相机：离屏纹理 → 窗口（整数倍放大 + 黑边）
-    commands.spawn((
-        Camera2d,
-        Camera {
-            order: OUTER_CAMERA_ORDER,
-            ..default() // clear_color 默认走 ClearColor 资源 = 黑
-        },
-        Projection::Orthographic(OrthographicProjection {
-            scaling_mode: ScalingMode::WindowSize,
-            scale: 1.0, // 由 fit_canvas 写入 1/k
-            ..OrthographicProjection::default_2d()
-        }),
-        Msaa::Off,
-        OuterCamera,
-        HIGH_RES_LAYERS,
-        // 外层相机恒在原点：canvas sprite 在原点 ⇒ 画面居中、四边等宽黑边
-    ));
-
-    // ⑤ UI 相机：目标 = 主窗口（拾取要求相机与指针同目标）；不渲染世界、不清屏。
-    commands.spawn((
-        Camera2d,
-        Camera {
-            order: UI_CAMERA_ORDER,
-            clear_color: ClearColorConfig::None,
-            ..default()
-        },
-        Msaa::Off,
-        RenderLayers::none(),
-        IsDefaultUiCamera,
-        UiCamera,
-    ));
-}
-
-/// 保持 UI 逻辑坐标 = VIEWPORT：`UiScale = k`（见 §7.10.1）。
-fn sync_ui_scale(canvas_scale: Res<CanvasScale>, mut ui_scale: ResMut<UiScale>) {
-    let target = canvas_scale.0 as f32;
-    if ui_scale.0 != target {
-        ui_scale.0 = target;
-    }
-}
-
-/// 计算整数放大倍数 k 并写入外层相机的 `scale`。
-/// k = max(MIN_CANVAS_SCALE, floor(min(w / VIEWPORT_W, h / VIEWPORT_H)))
-fn fit_canvas(
-    mut resized: MessageReader<WindowResized>,
-    window: Single<&Window, With<PrimaryWindow>>,
-    mut outer: Single<&mut Projection, With<OuterCamera>>,
-    mut canvas_scale: ResMut<CanvasScale>,
-) {
-    // 最近一次窗口尺寸：优先用 resize 消息（快路径），否则回落到当前窗口尺寸。
-    // ★ 官方 example 只在 WindowResized 里算 ⇒ 启动首帧（无 resize 消息时）scale 仍是 1.0，
-    //   画面会以 1:1 显示；这里的回落分支补上了这个洞。
-    let mut size = window.size();
-    for ev in resized.read() {
-        size = Vec2::new(ev.width, ev.height);
-    }
-
-    let k = (size.x / VIEWPORT_W as f32)
-        .min(size.y / VIEWPORT_H as f32)
-        .floor()
-        .max(MIN_CANVAS_SCALE as f32) as u32;
-
-    // 只在 k 变化时写 Projection：避免每帧触发相机投影重算 / change detection 噪声
-    if **canvas_scale == k {
-        return;
-    }
-    canvas_scale.0 = k;
-
-    let Projection::Orthographic(p) = &mut **outer else {
-        return; // 外层相机必须是正交 2D 投影，否则本项目管线不成立
-    };
-    p.scale = 1.0 / k as f32;
-}
-```
+- 启动时创建 `MAX_VIEWS = 2` 张 320×320 的 `Image::new_target_texture`（`Bgra8UnormSrgb` + `COPY_SRC`），
+  每张对应一台 `InGameCamera`（`ScalingMode::Fixed{VIEWPORT_W,VIEWPORT_H}`、`Msaa::Off`、`PlayerView(i)`、`CameraRig`）
+  和一个 `Canvas { view: i }` sprite。
+- `ViewLayout { views }` 由 `SessionMode` 决定：`LocalCoop = 2`，其它 = 1。
+  `apply_view_activation` 把 `view >= views` 的内层相机 `is_active = false`；`fit_canvas` 隐藏多余 canvas。
+- 内层相机 i 的 `RenderLayers = [layer(0), layer(PARALLAX_LAYER_BASE + i)]`：世界实体在 layer 0，
+  视差背景按视图分到 8/9，因此两屏背景相位互不干扰（§7.13.5）。
+- canvas sprite i 的世界 x = `(i - (views-1)/2) × VIEWPORT_W`，整体居中；外层相机仍在原点。
+- `fit_canvas` 计算 `k = max(1, floor(min(window_w / (views×VIEWPORT_W), window_h / VIEWPORT_H)))`，
+  写外层 `scale = 1/k`，并把 UI 相机视口设为居中的 `(views×VIEWPORT_W×k, VIEWPORT_H×k)`。
+- 相机位置由 `camera::rig` 写：先 `follow_target` 钳制，再指数平滑（时间常数见 `02` §2.2），
+  最后由 `render::snap` 统一取整。
+- UI 逻辑尺寸 = 视口物理尺寸 / `UiScale` = `views×VIEWPORT_W × VIEWPORT_H`；单人仍是 320×320。
 
 **数学推导（为什么 `scale = 1 / k`）**
 `ScalingMode::WindowSize` + `scale = s` 时，视图覆盖的世界范围 = 窗口逻辑尺寸 × `s`（【已验证】`ScalingMode` 文档：“The effect of these scaling modes are combined with the `OrthographicProjection::scale` property… if the scaling mode is `Fixed { width: 100, height: 300 }` and the scale is `2.0`, the projection will be 200 world units wide and 600 world units tall.”）。
@@ -303,9 +167,9 @@ fn fit_canvas(
 
 | 情况 | 行为 |
 |---|---|
-| 窗口 = `VIEWPORT` 或更小 | `k = 1`，画面 1:1，**不做**缩小、不裁切（窗口内容即完整视野） |
+| 窗口 = 总布局或更小 | `k = 1`，画面 1:1，**不做**缩小、不裁切 |
 | 窗口 < `VIEWPORT` 的某一轴 | `k = 1`，窗口裁掉超出的部分（保像素完美，不引入分数缩放） |
-| 非整数倍窗口（如 500×500） | `k = floor(min(500/320, 500/320)) = 1`（500/320 = 1.56）⇒ 1 倍 + 大黑边。这是**故意**的取舍：任何分数缩放都会破坏像素格 |
+| 非整数倍窗口 | `k = floor(min(w / (views×VIEWPORT_W), h / VIEWPORT_H))` ⇒ 整数倍 + 黑边。这是**故意**的取舍：任何分数缩放都会破坏像素格 |
 | 窗口内容按 `k` 居中 | 由「canvas sprite 在原点 + 外层相机在原点 + 默认 `viewport_origin = (0.5, 0.5)`」保证，无需额外计算 |
 
 ### 7.2.3 四处易于踩错的 0.20 写法
@@ -696,10 +560,11 @@ RoomRoot { col, row }          // 父实体：Transform = 房间中心（世界�
 
 | 粒度 | 现役 | 理由 |
 |---|---|---|
-| 房间粒度（视野相交） | ✅ **做** | 把不可见的 `RoomRoot` 设为 `Visibility::Hidden` ⇒ 其全部 `Inherited` 子实体一并隐藏。判定：房间 AABB 与「相机中心 ± `VIEWPORT_W/2`（Y 为 `VIEWPORT_H/2`）」的视野做**严格重叠**（共边不算）。玩家靠近房间边界时视野会同时覆盖相邻房间（最多四个），此时相关房间全部可见，不会露出黑块。 |
+| 房间粒度（视野相交） | ✅ **做** | 把不可见的 `RoomRoot` 设为 `Visibility::Hidden` ⇒ 其全部 `Inherited` 子实体一并隐藏。判定：房间 AABB 与**任一激活视图**的「相机中心 ± `VIEWPORT_W/2`（Y 为 `VIEWPORT_H/2`）」做**严格重叠**（共边不算）。玩家靠近房间边界时视野会同时覆盖相邻房间（最多四个）；本地双人两个视图分别判定后取并集，不会露出黑块。 |
 | 逐瓦片 / 分块 | ❌ **不做** | 同房间内所有瓦片都在视口内（或部分在视口外时由 Bevy 的视锥剔除处理），逐瓦片裁剪**收益恒为 0**。 |
 
 - 早期结论（"只显示当前房间"）在 M1 时成立，因为相机尚未移动；相机跟随玩家后必须改为视野判定，否则边界处会有一半画面是黑的。
+- `N = 2` 时两个玩家可能在不同房间：任一视图能看到就显示；两个 `RoomRoot` 的可见性是统一集合，不按视图拆子树。
 - 逻辑层**不做**房间激活/卸载（`02` §2.4 的决定），视觉层的裁剪与之完全解耦。
 - 写入必须**幂等**（只在值变化时改 `Visibility`），避免每帧触发 change detection。
 
@@ -899,16 +764,18 @@ pub fn add_debug_visualization(app: &mut App) {
   内层相机的目标是离屏纹理，指针永远匹配不上 ⇒ `PointerPress` 不会发给任何 UI 节点 ⇒ 按钮点不动。
 - **字体精细度**：内层目标只有 320×320，12 px 字形先在该分辨率光栅化、再最近邻放大 `k` 倍，看起来就是「低像素文本放大」。
   UI 相机直接渲染到窗口，同一字号按 `k` 倍物理像素光栅化，边缘由 `FontSmoothing::AntiAliased`（默认）平滑。
-- **布局不变**：`UiScale = k` 时 `ComputedUiRenderTargetInfo.logical_size = 窗口物理尺寸 / k = 320×320`，
-  且 `Val::Px` / `FontSize::Px` 都乘以 `k` ⇒ 所有 `px(..)` 常量与 320 坐标系完全不用改。
+- **布局不变**：`UiScale = k` 时 `logical_size = 视口物理尺寸 / k = (N×VIEWPORT_W) × VIEWPORT_H`。
+  单人仍是 320×320；本地双人是 640×320（左右两屏）。菜单/暂停面板按 `ViewLayout` 的宽高排版，
+  `Val::Px` / `FontSize::Px` 仍乘以 `k`。
 - **代价**：HUD 不再与游戏画面共享像素网格（无整数 texel 对齐）。这是明确的取舍：可点击、可读优先。
 - UI 相机：`Camera { order: UI_CAMERA_ORDER, clear_color: ClearColorConfig::None }`、`RenderLayers::none()`、`Msaa::Off`。
   `clear_color = None` 保证它不擦掉外层相机画好的 canvas；`RenderLayers::none()` 保证它不重复渲染世界。
-- **UI 相机的 `Viewport` 必须等于游戏区域在窗口中的居中矩形**（尺寸 `k × VIEWPORT`，位置 `(窗口 - 画布)/2`，整数像素）。
-  否则全屏 2560×1440、`k=4` 时 UI 逻辑尺寸会是 640×360，菜单按 320×320 写就只占左上角。
-  限定视口后逻辑尺寸恒为 320×320，菜单/HUD 与画布严格重合，黑边只留在窗口两侧。
+- **UI 相机的 `Viewport` 必须等于游戏区域在窗口中的居中矩形**
+  （尺寸 `(N×VIEWPORT_W×k) × (VIEWPORT_H×k)`，位置 `(窗口 - 画布)/2`，整数像素）。
+  否则全屏时逻辑尺寸会随窗口比例变化，菜单按固定坐标写就会偏。
+  限定视口后逻辑尺寸恒为 `(N×VIEWPORT_W) × VIEWPORT_H`，菜单/HUD 与画布严格重合，黑边只留在窗口两侧。
 - UI 节点不受 `RenderLayers` 影响，只能被一个相机渲染。【已验证】<https://docs.rs/bevy/0.20.0/bevy/camera/visibility/struct.RenderLayers.html>
-- **所有 UI 尺寸/字号都按 `VIEWPORT_W` 宽的坐标系写**（例如 12 px 字号 ≈ 视口高度的 1/32），且**一律用 `px(..)` 的整数值**。
+- **所有 UI 尺寸/字号都按 `ViewLayout` 的逻辑尺寸写**（单人 `VIEWPORT_W` 宽，本地双人 `2×VIEWPORT_W` 宽），且**一律用 `px(..)` 的整数值**。
   **禁止**用「窗口/视口比例」单位（`vw()` / `vh()` / `percent()`）做 HUD 的定位与尺寸：它们会解析出小数像素。
   唯一例外是「铺满视口」这类不关心像素对齐的容器。
 
@@ -1013,7 +880,7 @@ fn spawn_world_label(commands: &mut Commands, font: &Handle<Font>, at: Vec2, tex
 
 | 项 | 取值 |
 |---|---|
-| 实体 | 一个 `Sprite` + `ParallaxLayer { index, period }` + `PIXEL_PERFECT_LAYERS` |
+| 实体 | 每个视图每层一个 `Sprite` + `ParallaxLayer { view, index, period }` + `RenderLayers::layer(8 + view)` |
 | 平铺 | `SpriteImageMode::Tiled { tile_x: true, tile_y: true, stretch_value: 1.0 }`【已验证】<https://docs.rs/bevy/0.20.0/bevy/sprite/enum.SpriteImageMode.html>；`stretch_value = 1.0` ⇒ 一个 texel = 一个世界像素 |
 | 尺寸 | `custom_size = 视口世界尺寸 + 2 × 贴图尺寸`（保证任意相位都盖满视口） |
 | Z | `z::PARALLAX + index`，`index` 越大越靠近镜头；见 `00` §0.4 |
@@ -1037,7 +904,8 @@ size   = v + 2 * p
 
 - 系统在 `PostUpdate`、`.before(TransformSystems::Propagate)` 执行；**读相机的 `Transform` 而不是 `GlobalTransform`**（后者在本帧尚未传播，会晚一帧、平移时产生拖影）。
 - 视口世界尺寸 = `Camera::logical_viewport_size() * OrthographicProjection::scale`；相机中心 = `Transform::translation.truncate()`。
-- 需要背景的相机插 `ParallaxCamera`：发布 bin 是内层 `InGameCamera`；编辑器是 `EditorCamera`（编辑器没有离屏管线，见 `08` §8.1.4）。
+- 需要背景的相机插 `ParallaxCamera`：发布 bin 是每个内层 `InGameCamera`（带 `PlayerView`）；编辑器是 `EditorCamera`（没有 `PlayerView` ⇒ 视图 0）。
+- 每个视图的背景用**自己的相机**算相位（`parallax.rs` 按 `PlayerView` 分组）；编辑器没有像素管线，`ViewLayout` 缺省为 1。
 
 ### 7.13.4 与房间背景板的关系
 
@@ -1051,6 +919,12 @@ size   = v + 2 * p
   因此改图层/滚动百分比**无需保存、无需试玩**即可在画布看到。
 - 贴图身份键 = `(路径, mtime)`：美术软件重画背景 PNG 后自动重新解码（`04` §5.6）。
 - 滚动百分比变化只更新 `Transform`/`custom_size`，**不重新解码贴图**。
+
+### 7.13.6 本地双人分屏
+
+- `ViewLayout.views = 2` 时，每个背景图层生成两套 sprite：视图 0 在 layer 8、视图 1 在 layer 9。
+- 内层相机 0 只渲染 `[0, 8]`，相机 1 只渲染 `[0, 9]` ⇒ 两屏各自使用自己的相机中心计算相位，互不串扰。
+- 视图数量变化会进入贴图身份键 `(views, paths)`，从而销毁旧副本并按新布局重建。
 
 ---
 
