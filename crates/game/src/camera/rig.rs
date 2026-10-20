@@ -46,10 +46,13 @@ pub struct CameraRigPlugin;
 impl Plugin for CameraRigPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(OnEnter(GameState::Playing), reset_camera_rigs)
+            // ★ 必须在 FixedUpdate（与物理同频）推进相机平滑。
+            // 若每渲染帧平滑一次，而玩家 AABB 只有 60 Hz 变化，角色会在屏幕上
+            // 「先向前跳、再被相机追回来」——高刷新率下表现为持续抖动/闪烁。
             .add_systems(
-                Update,
+                FixedUpdate,
                 drive_cameras
-                    .in_set(GameSet::Camera)
+                    .after(GameSet::Physics)
                     .run_if(resource_exists::<LoadedLevel>),
             );
     }
@@ -101,6 +104,15 @@ fn clamp_axis(value: f32, extent: f32, view: f32) -> f32 {
     }
 }
 
+/// 把平滑结果放到「相对目标的整像素落后量」上，再做地图钳制。
+///
+/// 相机与角色都会在 `PostUpdate` 取整；若落后量是小数，两者取整边界不同步，
+/// 屏幕坐标会 ±1 px 抖动。量化后匀速移动时 `round(target) - round(camera)` 恒定。
+pub fn place_camera(target: Vec2, smoothed: Vec2, grid_cols: u32, grid_rows: u32) -> Vec2 {
+    let lag = (target - smoothed).round();
+    follow_target(target - lag, grid_cols, grid_rows)
+}
+
 /// 每个激活视图跟着自己的玩家；平滑后再由 `render::snap` 取整。
 fn drive_cameras(
     loaded: Res<LoadedLevel>,
@@ -135,9 +147,15 @@ fn drive_cameras(
             Some(current) if current.distance(target) > VIEWPORT_W as f32 => target,
             Some(current) => smooth_towards(current, target, dt, CAMERA_SMOOTH_TAU_SECS),
         };
-        rig.last = Some(next);
-        transform.translation.x = next.x;
-        transform.translation.y = next.y;
+        // 把「落后量」量化到整像素，再做钳制。
+        // 相机与角色都会在 PostUpdate 被取整；若落后量是小数，两者的取整边界不同步，
+        // 屏幕坐标会以 ±1 px 来回跳（高刷新率下就是"角色闪烁"）。落后量取整后，
+        // 匀速移动时 `round(角色) - round(相机)` 恒定，角色在屏幕上稳定。
+        let lag = (target - next).round();
+        let placed = follow_target(target - lag, loaded.level.grid.cols, loaded.level.grid.rows);
+        rig.last = Some(placed);
+        transform.translation.x = placed.x;
+        transform.translation.y = placed.y;
     }
 }
 
@@ -250,6 +268,22 @@ mod tests {
         }
         assert!((target - current).length() < 0.01);
         assert_eq!(smooth_towards(current, target, 0.0, 0.10), target);
+    }
+
+    /// 落后量量化后，匀速移动时角色在屏幕上的位置恒定（不再 ±1 px 抖动）。
+    #[test]
+    fn quantized_lag_keeps_screen_position_stable() {
+        let grid = (10, 3);
+        for step in 0..120 {
+            let target = Vec2::new(1000.0 + step as f32 * 3.333, 700.0);
+            let smoothed = target - Vec2::new(18.4, 3.6);
+            let camera = place_camera(target, smoothed, grid.0, grid.1);
+            let screen = Vec2::new(
+                target.x.round() - camera.x.round(),
+                target.y.round() - camera.y.round(),
+            );
+            assert_eq!(screen, Vec2::new(18.0, 4.0), "step={step}");
+        }
     }
 
     /// 视角映射：本地双人两路；客户端用主机分配的编号；主机/单人只有 0。

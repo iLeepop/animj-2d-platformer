@@ -148,6 +148,40 @@ pub fn player_spawn_centers(base: Vec2, count: usize, tiles: &LevelTiles) -> Vec
     centers
 }
 
+/// 联机加入点：优先**精确出生点**；被实心瓦片或已有玩家占用时，向四周找最近空位。
+///
+/// 主机已离开出生点时，远程玩家就出现在出生点本身；主机还站在那儿时才偏移。
+pub fn nearest_free_spawn(base: Vec2, tiles: &LevelTiles, occupied: &[Aabb]) -> Vec2 {
+    let free = |center: Vec2| {
+        let aabb = Aabb::from_center_size(center, PLAYER_SIZE);
+        let blocked_by_tile = overlaps_tile_kind(tiles, aabb, 0.0, TileKind::Solid);
+        let blocked_by_player = occupied.iter().any(|other| {
+            aabb.min.x < other.max.x
+                && other.min.x < aabb.max.x
+                && aabb.min.y < other.max.y
+                && other.min.y < aabb.max.y
+        });
+        !blocked_by_tile && !blocked_by_player
+    };
+    if free(base) {
+        return base;
+    }
+    for step in 1..=SPAWN_PLACEMENT_TRIES {
+        let offset = step as f32 * PLAYER_SPAWN_GAP_PX;
+        for candidate in [
+            base + Vec2::new(offset, 0.0),
+            base - Vec2::new(offset, 0.0),
+            base + Vec2::new(0.0, offset),
+            base - Vec2::new(0.0, offset),
+        ] {
+            if free(candidate) {
+                return candidate;
+            }
+        }
+    }
+    base
+}
+
 /// 在 `center`（世界像素，AABB 中心）生成角色实体。
 pub fn spawn_player(
     commands: &mut Commands,

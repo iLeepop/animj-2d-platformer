@@ -15,7 +15,7 @@ use crate::config::net::{
     CLIENT_TIMEOUT_SECS, DEFAULT_ROOM_NAME, MAX_PACKET_BYTES, MAX_PACKETS_PER_FRAME, MAX_PLAYERS,
     NET_PORT, PROTOCOL_VERSION, REMOTE_INPUT_STALE_SECS,
 };
-use crate::player::spawn::{PlayerSheet, player_spawn_centers, spawn_player};
+use crate::player::spawn::{PlayerSheet, nearest_free_spawn, spawn_player};
 use crate::player::{PlayerFacing, PlayerId, PlayerInput, PlayerInputs, PlayerMotion};
 use crate::room::PickedZones;
 use crate::state::SessionMode;
@@ -80,7 +80,7 @@ pub fn poll_host(
     tiles: Option<Res<LevelTiles>>,
     sheet: Option<Res<PlayerSheet>>,
     anim: Option<Res<ActiveAnim>>,
-    players: Query<(&PlayerId, &PlayerMotion)>,
+    players: Query<&PlayerMotion>,
 ) {
     let Some(host) = host.as_mut() else {
         return;
@@ -191,14 +191,12 @@ pub fn poll_host(
                 else {
                     continue;
                 };
-                // 加入点：主机玩家当前位置（更符合"加入正在进行的游戏"）；主机不在场时退回关卡出生点。
-                let base = players
-                    .iter()
-                    .find(|(id, _)| id.0 == 0)
-                    .map(|(_, motion)| motion.0.aabb.center())
-                    .unwrap_or_else(|| crate::world::initial_spawn(&loaded.level).2);
-                let centers = player_spawn_centers(base, player_id as usize + 1, tiles);
-                let center = centers.get(player_id as usize).copied().unwrap_or(base);
+                // 加入点：**关卡出生点**（`player_spawn` 所在房间的重生点），不是主机当前位置。
+                // 出生点被实心瓦片/已有玩家占用时，就近找空位。
+                let (_, _, base) = crate::world::initial_spawn(&loaded.level);
+                let occupied: Vec<crate::physics::Aabb> =
+                    players.iter().map(|motion| motion.0.aabb).collect();
+                let center = nearest_free_spawn(base, tiles, &occupied);
                 let entity =
                     spawn_player(&mut commands, sheet, &anim.set, PlayerId(player_id), center);
                 host.clients.push(ClientConn {
@@ -217,7 +215,10 @@ pub fn poll_host(
                 if let Some(bytes) = protocol::encode(&welcome) {
                     let _ = host.socket.send_to(&bytes, addr);
                 }
-                info!("联机：客户端已加入 —— 玩家 {player_id}（{addr}）");
+                info!(
+                    "联机：客户端已加入 —— 玩家 {player_id}（{addr}），出生点 ({:.0}, {:.0})",
+                    center.x, center.y
+                );
             }
             NetMessage::Input {
                 seq,

@@ -52,7 +52,7 @@ flowchart LR
 | `world/progress.rs` | `LevelProgress` / `RoomProgress`（见 `02` §2.3） |
 | `player/decor.rs` | 装饰品装备与图层渲染（`01` §1.5、`04` §6） |
 | `checkpoint.rs` | 存档点：`E` 激活、`ActiveCheckpoint`、死亡/启动落点（`02` §2.5） |
-| `camera/rig.rs` | 相机跟随：玩家 AABB 中心 + 地图边界钳制（`02` §2.2） |
+| `camera/rig.rs` | 每个视图的相机跟随：自己的玩家 AABB 中心 + 地图钳制 + 固定步指数平滑（`02` §2.2） |
 | `room/mod.rs` | 当前房间判定（含滞回） |
 | `room/goals.rs` | **纯函数**条件求值 + 通关判定（`01` §1.4） |
 | `room/reward.rs` | 授予装饰品（幂等） |
@@ -115,7 +115,7 @@ flowchart LR
 | `PlayerSpawnPlugin` | 角色图集句柄（`04` §3.2） | 无 |
 | `DemoPlugin` | 验证用脚本输入 + 物理度量（仅 `--demo` 时由 bin 添加） | 无 |
 | `RoomPlugin` | 当前房间、条件求值、奖励 | `WorldPlugin` |
-| `CameraRigPlugin` | 相机跟随玩家 AABB 中心并钳制在关卡 AABB 内（`GameSet::Camera`） | `WorldPlugin` |
+| `CameraRigPlugin` | 每个视图的相机跟随自己的玩家并钳制在关卡 AABB 内（`GameSet::Camera`，FixedUpdate） | `WorldPlugin` |
 | `ParallaxPlugin` | `Level.background` → 平铺 sprite；`ParallaxCamera` 视图换算；`BackgroundOverride` 预览；`PostUpdate` 早于 `Propagate` | `TileRenderPlugin`（`load_image`）、`WorldPlugin` |
 | `PixelRenderPlugin` | 1–2 台内层 + 外层 + UI 相机、视图布局、窗口自适应、整数缩放、`UiScale` 同步 | 无 |
 | `TileRenderPlugin` | 瓦片 sprite 生成与可见性 | `WorldPlugin` |
@@ -144,7 +144,7 @@ pub enum GameSet { Input, Physics, PostPhysics, Room, Camera, Fx, Snap }
 | `FixedUpdate` | `GameSet::Physics`：`apply_player_physics → activate_checkpoint → check_hazards → respawn_on_death`（依次排序） | 固定 60 Hz。**所有位移与碰撞只在这里发生**；存档点先于死亡判定，因此同一固定步里按 E 设置的点会立即生效 |
 | `Update` | `GameSet::PostPhysics` | 把 `FixedUpdate` 结果同步到 `Transform`，触发一次性消息 |
 | `Update` | `GameSet::Room` | 当前房间判定、条件求值、通关与奖励 |
-| `Update` | `GameSet::Camera` | 相机跟随玩家（钳制在地图内） |
+| `FixedUpdate` | `GameSet::Camera`（`.after(GameSet::Physics)`） | 每个视图的相机跟随自己的玩家：钳制 + 指数平滑。**与物理同频**，避免渲染帧间的来回追帧 |
 | `Update` | `GameSet::Fx` | 动画、粒子、音效触发 |
 | `PostUpdate` | `GameSet::Snap`：`.before(TransformSystems::Propagate)`（`.after` 会延迟一帧，见 `07` §7.6.3） | 像素吸附（`07`） |
 
@@ -195,7 +195,7 @@ pub enum SessionMode {
   客户端只保留输入采样、网络上行/下行、相机与渲染。统一用 `net::not_client` / `net::is_client` 两个 run condition。
 - **联机调度**：`PreUpdate`/`Update` 轮询 UDP（主机 `poll_host`、客户端 `poll_client`/`send_join`）；
   `FixedUpdate` 的 `GameSet::Input` 发送客户端输入，`.after(GameSet::Physics)` 广播主机快照；
-  `Update` 的 `GameSet::PostPhysics`（早于 `GameSet::Camera`）应用客户端快照。
+  `Update` 的 `GameSet::PostPhysics` 应用客户端快照；相机在下一个 `FixedUpdate` 使用它。
 - 编辑器因此**零侵入**地复用同一套插件：编辑态把 `GameState` 停在 `Paused`，试玩时置 `Playing`（见 `08` §8.3 / §8.6）。编辑器**不得**给任何 `game` 系统追加 `run_if`，`game` 也**不得**知道编辑器的存在。
 - **游戏不用状态机表达"房间是否通关"**：房间无缝，通关是进度数据（`02` §2.3），不是状态。
 
@@ -376,7 +376,7 @@ pub struct GameSettings {
 | 模式 | 本地玩家 | 权威 | 说明 |
 |---|---|---|---|
 | `Solo` | 1 | 本进程 | 默认；旧行为不变 |
-| `LocalCoop` | 2 | 本进程 | 同屏共享键盘；相机跟随两人中点 |
+| `LocalCoop` | 2 | 本进程 | 同屏共享键盘；左右分屏，相机各跟各的玩家 |
 | `Host` | 1 | 本进程 | 绑定 UDP `NET_PORT`，接受最多 3 个远程玩家 |
 | `Client` | 0 | 远端主机 | 只发送输入、应用快照；**不跑物理、不写存档**；相机跟随主机分配的 `PlayerId` |
 
@@ -404,7 +404,7 @@ pub struct GameSettings {
 |---|---|---|
 | 客户端 → 主机 `Input` | 每固定步（60 Hz） | 序号 + `PlayerInput` 四个字段；主机按序号丢弃乱序/重复包 |
 | 主机 → 客户端 `Snapshot` | 每固定步（60 Hz） | 全部玩家 `(id, x, y, vx, vy, grounded, facing)`、通关房间、果实计数、已拾取 `ZoneId`、当前存档点 |
-| `Join` / `Welcome` / `Reject` | 0.25 s 重试 / 事件 | 加入握手；主机分配最小空闲 `PlayerId(1..MAX_PLAYERS)` |
+| `Join` / `Welcome` / `Reject` | 0.25 s 重试 / 事件 | 加入握手；主机分配最小空闲 `PlayerId(1..MAX_PLAYERS)`，在**关卡出生点**生成角色；出生点被墙/已有玩家占用时就近找空位 |
 | `Discover` / `RoomInfo` | 1 s 查询 + 响应 | 房间搜索（§5.15.4） |
 | `Bye` / 超时 | 离开 / 5 s 静默 | 移除玩家实体并清空输入槽 |
 
