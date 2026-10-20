@@ -40,6 +40,7 @@ pub struct ClientNet {
     last_join: Instant,
     started: Instant,
     input_seq: u32,
+    client_id: u64,
     pending: Option<Snapshot>,
     logged_snapshot: bool,
     logged_join: bool,
@@ -55,6 +56,40 @@ pub struct NetVisual {
     to: Vec2,
     current: Vec2,
     elapsed: f32,
+}
+
+/// 本安装的稳定客户端标识（写在与存档同目录的 `client_id`）。
+///
+/// 主机靠它把「关掉窗口后重新加入」识别为同一玩家的重连，而不是新玩家。
+/// `ANIMJ_CLIENT_ID` 可覆盖（同机多开测试时给每个实例不同值）。
+fn client_id_path() -> std::path::PathBuf {
+    crate::save::save_path().with_file_name("client_id")
+}
+
+fn load_or_create_client_id() -> u64 {
+    if let Ok(raw) = std::env::var("ANIMJ_CLIENT_ID")
+        && let Ok(id) = raw.trim().parse::<u64>()
+        && id != 0
+    {
+        return id;
+    }
+    let path = client_id_path();
+    if let Ok(text) = std::fs::read_to_string(&path)
+        && let Ok(id) = text.trim().parse::<u64>()
+        && id != 0
+    {
+        return id;
+    }
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos() as u64)
+        .unwrap_or(1);
+    let id = (nanos ^ ((std::process::id() as u64) << 32)).max(1);
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = std::fs::write(&path, id.to_string());
+    id
 }
 
 pub fn start_client(mut commands: Commands, mode: Res<SessionMode>) {
@@ -79,6 +114,7 @@ pub fn start_client(mut commands: Commands, mode: Res<SessionMode>) {
                 last_join: now - std::time::Duration::from_secs(60),
                 started: now,
                 input_seq: 0,
+                client_id: load_or_create_client_id(),
                 pending: None,
                 logged_snapshot: false,
                 logged_join: false,
@@ -115,6 +151,7 @@ pub fn send_join(
         name: "player".to_string(),
         // 空串 = 不校验关卡：客户端已经按房间列表里的 level_id 加载。
         level_id: String::new(),
+        client_id: client.client_id,
     };
     if let Some(bytes) = protocol::encode(&join) {
         let _ = client.socket.send_to(&bytes, client.server);
@@ -342,6 +379,20 @@ pub fn apply_snapshot(
             snapshot.seq,
             snapshot.players.len()
         );
+    }
+}
+
+/// 窗口关闭 / 进程正常退出时主动 `Bye`，主机立即移除角色，不等 5 秒超时。
+pub fn bye_on_exit(mut exit: MessageReader<AppExit>, client: Option<Res<ClientNet>>) {
+    if exit.read().count() == 0 {
+        return;
+    }
+    let Some(client) = client else {
+        return;
+    };
+    if let Some(bytes) = protocol::encode(&NetMessage::Bye) {
+        let _ = client.socket.send_to(&bytes, client.server);
+        info!("联机：退出，已通知主机断开（{}）", client.server);
     }
 }
 

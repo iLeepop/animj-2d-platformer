@@ -57,8 +57,12 @@ pub enum NetMessage {
         max_players: u8,
         port: u16,
     },
-    /// 客户端请求加入。
-    Join { name: String, level_id: String },
+    /// 客户端请求加入。`client_id` 在同一安装内持久，主机用它识别「重连」而不是新玩家。
+    Join {
+        name: String,
+        level_id: String,
+        client_id: u64,
+    },
     /// 主机接受加入并分配玩家编号。
     Welcome {
         player_id: u8,
@@ -328,6 +332,7 @@ mod tests {
             NetMessage::Join {
                 name: "player".into(),
                 level_id: "world_01".into(),
+                client_id: 0x1234_5678_9abc_def0,
             },
             NetMessage::Welcome {
                 player_id: 1,

@@ -56,6 +56,7 @@ impl Plugin for NetPlugin {
                         .run_if(resource_exists::<client::ClientNet>),
                 ),
             )
+            .add_systems(Last, client::bye_on_exit)
             .add_systems(
                 FixedUpdate,
                 (

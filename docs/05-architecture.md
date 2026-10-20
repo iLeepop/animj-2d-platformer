@@ -392,7 +392,7 @@ pub struct GameSettings {
   - 发现/加入/输入等低频消息：`TAG_RON` + RON 文本（与关卡/存档同一套 `serde`）。
   - 每固定步快照：`TAG_SNAPSHOT` + 定长小端二进制。布局见源码头注释；单包 ≤ `MAX_PACKET_BYTES = 1200`，
     超限直接丢弃（避免 IP 分片）。房间上限 64 ⇒ 通关集合用 `u64` 位图。
-- 协议版本 `PROTOCOL_VERSION = 1`；发现响应带版本，不匹配不显示。
+- 协议版本 `PROTOCOL_VERSION = 2`；发现响应带版本，不匹配不显示。
 - 其余常量（`config/net.rs`，本文拥有）：`MAX_PLAYERS = 4`、`MAX_PACKETS_PER_FRAME = 64`、
   `CONNECT_TIMEOUT_SECS = 10`、`CLIENT_TIMEOUT_SECS = 5`、`REMOTE_INPUT_STALE_SECS = 0.25`、
   `DISCOVERY_INTERVAL_SECS = 1`、`ROOM_TTL_SECS = 3.5`、`JOIN_RETRY_SECS = 0.25`、`PLAYER_SPAWN_GAP_PX = 24`、
@@ -404,9 +404,9 @@ pub struct GameSettings {
 |---|---|---|
 | 客户端 → 主机 `Input` | 每固定步（60 Hz） | 序号 + `PlayerInput` 四个字段；主机按序号丢弃乱序/重复包 |
 | 主机 → 客户端 `Snapshot` | 每固定步（60 Hz） | 全部玩家 `(id, x, y, vx, vy, grounded, facing)`、通关房间、果实计数、已拾取 `ZoneId`、当前存档点 |
-| `Join` / `Welcome` / `Reject` | 0.25 s 重试 / 事件 | 加入握手；主机分配最小空闲 `PlayerId(1..MAX_PLAYERS)`，在**关卡出生点**生成角色；出生点被墙/已有玩家占用时就近找空位 |
+| `Join` / `Welcome` / `Reject` | 0.25 s 重试 / 事件 | 加入握手；`Join` 带持久 `client_id`。主机分配最小空闲 `PlayerId(1..MAX_PLAYERS)`，在**关卡出生点**生成角色；出生点被墙/已有玩家占用时就近找空位。**同一 `client_id` 从新端口重连时复用原玩家编号/实体**，不新增角色 |
 | `Discover` / `RoomInfo` | 1 s 查询 + 响应 | 房间搜索（§5.15.4） |
-| `Bye` / 超时 | 离开 / 5 s 静默 | 移除玩家实体并清空输入槽 |
+| `Bye` / 超时 | 离开 / 5 s 静默 | 客户端窗口关闭（`AppExit`）时主动发 `Bye`，主机立即移除；异常退出则 5 s 超时清理 |
 
 - 主机物理按 `PlayerId` 升序推进；远程输入写入对应槽位，因此远程玩家与本地玩家走**完全相同**的
   `physics::step`（含玩家间碰撞，`06` §6.11）。
@@ -415,6 +415,7 @@ pub struct GameSettings {
 - 客户端**不跑** `apply_player_physics` / Hazard / 存档点 / 条件求值 / 存档 / 热重载；
   快照在 `Update` 的 `GameSet::PostPhysics`（早于 `Camera`）写入 `PlayerMotion`。
 - 快照是**完整状态**而非增量：丢包在下一帧自愈。
+- 客户端标识：`client_id` 持久化在存档目录的 `client_id` 文件；`ANIMJ_CLIENT_ID` 可覆盖（同机多开测试）。
 - 客户端不生成玩家：玩家实体由第一份快照创建；离开的玩家由快照差集销毁。
 - 客户端对**非本地玩家**在两次快照之间做渲染插值（`RenderCenter`，只影响 `Transform`）；
   `PlayerMotion` 仍是权威值。这样 60 Hz 快照在高刷新率屏幕上不会表现为「停几帧再跳」的拖影。

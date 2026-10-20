@@ -26,6 +26,8 @@ use crate::world::progress::LevelProgress;
 /// 一条已加入的客户端连接。
 pub struct ClientConn {
     pub addr: SocketAddr,
+    /// 客户端持久标识：同一安装重启后用同一个 id 重连，不新增角色。
+    pub client_id: u64,
     pub player_id: u8,
     pub entity: Option<Entity>,
     pub last_seen: Instant,
@@ -137,10 +139,12 @@ pub fn poll_host(
             }
             NetMessage::Join {
                 level_id: requested,
+                client_id,
                 ..
             } => {
                 if let Some(existing) = host.clients.iter_mut().find(|conn| conn.addr == addr) {
                     existing.last_seen = now;
+                    existing.client_id = client_id;
                     let welcome = NetMessage::Welcome {
                         player_id: existing.player_id,
                         level_id: level_id.clone(),
@@ -152,6 +156,33 @@ pub fn poll_host(
                     if let Some(bytes) = protocol::encode(&welcome) {
                         let _ = host.socket.send_to(&bytes, addr);
                     }
+                    continue;
+                }
+                // 同一客户端从新端口重连（关窗口后立即重开）：复用原玩家编号与实体。
+                if client_id != 0
+                    && let Some(index) = host
+                        .clients
+                        .iter()
+                        .position(|conn| conn.client_id == client_id)
+                {
+                    let player_id = host.clients[index].player_id;
+                    host.clients[index].addr = addr;
+                    host.clients[index].last_seen = now;
+                    host.clients[index].last_input = now;
+                    host.clients[index].last_input_seq = 0;
+                    *inputs.get_mut(PlayerId(player_id)) = PlayerInput::default();
+                    let welcome = NetMessage::Welcome {
+                        player_id,
+                        level_id: level_id.clone(),
+                        grid: loaded
+                            .as_ref()
+                            .map(|loaded| (loaded.level.grid.cols, loaded.level.grid.rows))
+                            .unwrap_or((0, 0)),
+                    };
+                    if let Some(bytes) = protocol::encode(&welcome) {
+                        let _ = host.socket.send_to(&bytes, addr);
+                    }
+                    info!("联机：客户端重连 —— 玩家 {player_id}（{addr}）");
                     continue;
                 }
                 if !requested.is_empty() && requested != level_id {
@@ -201,6 +232,7 @@ pub fn poll_host(
                     spawn_player(&mut commands, sheet, &anim.set, PlayerId(player_id), center);
                 host.clients.push(ClientConn {
                     addr,
+                    client_id,
                     player_id,
                     entity: Some(entity),
                     last_seen: now,

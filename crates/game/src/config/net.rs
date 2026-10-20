@@ -3,7 +3,7 @@
 //! 联机层只用 `std::net::UdpSocket`（`09` §9.0 R1：不引入新的网络 crate）。
 
 /// 协议版本。客户端与主机不一致时拒绝加入（`05` §5.15.2）。
-pub const PROTOCOL_VERSION: u16 = 1;
+pub const PROTOCOL_VERSION: u16 = 2;
 
 /// 局域网发现与游戏共用的 UDP 端口（`05` §5.15.2）。
 pub const NET_PORT: u16 = 42345;
