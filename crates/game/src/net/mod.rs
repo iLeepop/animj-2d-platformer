@@ -49,6 +49,11 @@ impl Plugin for NetPlugin {
                     host::poll_host.run_if(resource_exists::<host::HostNet>),
                     client::poll_client.run_if(resource_exists::<client::ClientNet>),
                     client::send_join.run_if(resource_exists::<client::ClientNet>),
+                    // 远端玩家的渲染插值必须晚于本帧快照应用、早于 PostUpdate 的 Transform 投影。
+                    client::advance_net_visuals
+                        .after(client::apply_snapshot)
+                        .run_if(in_state(GameState::Playing))
+                        .run_if(resource_exists::<client::ClientNet>),
                 ),
             )
             .add_systems(

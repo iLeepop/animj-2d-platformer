@@ -15,12 +15,14 @@ use crate::config::net::{
     CLIENT_TIMEOUT_SECS, CONNECT_TIMEOUT_SECS, JOIN_RETRY_SECS, MAX_PACKET_BYTES,
     MAX_PACKETS_PER_FRAME,
 };
-use crate::config::physics::COYOTE_STEPS;
+use crate::config::physics::{COYOTE_STEPS, FIXED_DT};
+use crate::config::render::VIEWPORT_W;
 use crate::physics::Body;
 use crate::player::spawn::{PlayerSheet, spawn_player};
 use crate::player::{
     PlayerFacing, PlayerId, PlayerInput, PlayerInputs, PlayerMotion, PlayerStepOutcome,
 };
+use crate::render::snap::RenderCenter;
 use crate::room::{PickedZones, ZoneId};
 use crate::state::{GameState, SessionMode};
 use crate::world::load::{LoadNotice, LoadedLevel, Notice};
@@ -41,6 +43,18 @@ pub struct ClientNet {
     pending: Option<Snapshot>,
     logged_snapshot: bool,
     logged_join: bool,
+}
+
+/// 远端玩家的渲染插值状态（只影响 `Transform`，不影响权威 `Aabb`）。
+///
+/// 客户端每 60 Hz 收到一次快照；渲染帧可能远高于 60 Hz。若直接跳位置，远端角色会
+/// 「停几帧 → 跳一段」，在移动相机下看起来像拖影/残影。这里在两个快照之间线性插值。
+#[derive(Component, Debug)]
+pub struct NetVisual {
+    from: Vec2,
+    to: Vec2,
+    current: Vec2,
+    elapsed: f32,
 }
 
 pub fn start_client(mut commands: Commands, mode: Res<SessionMode>) {
@@ -203,7 +217,7 @@ pub fn poll_client(
 }
 
 /// 应用最新快照（`Update`，早于相机；客户端不跑物理）。
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub fn apply_snapshot(
     mut commands: Commands,
     mut client: Option<ResMut<ClientNet>>,
@@ -219,6 +233,7 @@ pub fn apply_snapshot(
         &mut PlayerMotion,
         &mut PlayerStepOutcome,
         &mut PlayerFacing,
+        Option<&mut NetVisual>,
     )>,
     zones: Query<(Entity, &ZoneId)>,
 ) {
@@ -238,7 +253,7 @@ pub fn apply_snapshot(
     let alive: BTreeSet<u8> = snapshot.players.iter().map(|player| player.id).collect();
     let existing: Vec<(u8, Entity)> = players
         .iter()
-        .map(|(entity, id, _, _, _)| (id.0, entity))
+        .map(|(entity, id, _, _, _, _)| (id.0, entity))
         .collect();
 
     for snap in &snapshot.players {
@@ -248,22 +263,47 @@ pub fn apply_snapshot(
         body.airborne_since = if snap.grounded { 0 } else { COYOTE_STEPS + 1 };
         body.buffer_age = u32::MAX;
         if let Some((_, entity)) = existing.iter().find(|(id, _)| *id == snap.id)
-            && let Ok((_, _, mut motion, mut outcome, mut facing)) = players.get_mut(*entity)
+            && let Ok((_, _, mut motion, mut outcome, mut facing, visual)) =
+                players.get_mut(*entity)
         {
             motion.0 = body;
             outcome.0 = crate::physics::StepOutcome::default();
             facing.0 = snap.facing_right;
+            // 本地玩家不插值（相机跟随它，屏幕位置本来就稳定）；远端玩家做渲染插值。
+            let is_local = client.player_id == Some(snap.id);
+            if !is_local && let Some(mut visual) = visual {
+                let target = Vec2::new(snap.x, snap.y);
+                visual.from = visual.current;
+                visual.to = target;
+                visual.elapsed = 0.0;
+                if visual.from.distance(target) > VIEWPORT_W as f32 {
+                    visual.from = target;
+                    visual.current = target;
+                }
+            }
             continue;
         }
         // 新加入的玩家：生成实体；速度在下一份快照补齐（位置已经正确）。
         if let (Some(sheet), Some(anim)) = (sheet.as_ref(), anim.as_ref()) {
-            spawn_player(
+            let entity = spawn_player(
                 &mut commands,
                 sheet,
                 &anim.set,
                 PlayerId(snap.id),
                 Vec2::new(snap.x, snap.y),
             );
+            if client.player_id != Some(snap.id) {
+                let center = Vec2::new(snap.x, snap.y);
+                commands.entity(entity).insert((
+                    NetVisual {
+                        from: center,
+                        to: center,
+                        current: center,
+                        elapsed: FIXED_DT,
+                    },
+                    RenderCenter(center),
+                ));
+            }
         }
     }
 
@@ -302,6 +342,20 @@ pub fn apply_snapshot(
             snapshot.seq,
             snapshot.players.len()
         );
+    }
+}
+
+/// 把远端玩家从一个快照位置平滑推进到下一个快照位置。
+pub fn advance_net_visuals(
+    time: Res<Time>,
+    mut visuals: Query<(&mut NetVisual, &mut RenderCenter)>,
+) {
+    let dt = time.delta_secs();
+    for (mut visual, mut center) in &mut visuals {
+        visual.elapsed += dt;
+        let t = (visual.elapsed / FIXED_DT).clamp(0.0, 1.0);
+        visual.current = visual.from.lerp(visual.to, t);
+        center.0 = visual.current;
     }
 }
 

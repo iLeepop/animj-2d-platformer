@@ -416,6 +416,8 @@ pub struct GameSettings {
   快照在 `Update` 的 `GameSet::PostPhysics`（早于 `Camera`）写入 `PlayerMotion`。
 - 快照是**完整状态**而非增量：丢包在下一帧自愈。
 - 客户端不生成玩家：玩家实体由第一份快照创建；离开的玩家由快照差集销毁。
+- 客户端对**非本地玩家**在两次快照之间做渲染插值（`RenderCenter`，只影响 `Transform`）；
+  `PlayerMotion` 仍是权威值。这样 60 Hz 快照在高刷新率屏幕上不会表现为「停几帧再跳」的拖影。
 - 相机按视图绑定玩家（`camera::rig::view_players`）：本地双人 2 个视图；主机/客户端各 1 个视图，
   客户端在收到 `Welcome` 之前相机不动。平滑与分屏细节见 `02` §2.2 / `07` §7.2.2。
 

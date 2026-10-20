@@ -761,8 +761,17 @@ fn self_check(
 
     // ⑨ 角色存在，且渲染投影 == `Aabb` 的单向投影（`06` §6.8.2）
     let players: Vec<_> = player_q.iter().collect();
+    let local_player = view
+        .client
+        .as_ref()
+        .and_then(|client| client.player_id)
+        .map(game::player::PlayerId);
     let projection_ok = !players.is_empty()
-        && players.iter().all(|(_, motion, transform)| {
+        && players.iter().all(|(id, motion, transform)| {
+            // 客户端远端玩家使用快照插值（`RenderCenter`），不要求与 AABB 逐像素一致。
+            if local_player.is_some_and(|local| **id != local) {
+                return true;
+            }
             transform.is_some_and(|transform| {
                 let aabb = motion.0.aabb;
                 (transform.translation.x - aabb.center().x.round()).abs() < 0.001
