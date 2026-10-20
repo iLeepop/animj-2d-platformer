@@ -364,7 +364,7 @@ pub struct GameSettings {
 | 默认语言 | **中文（`Language::Zh`）**；设置界面可切换 `En`（产品要求） |
 | 唯一文案源 | `crates/game/src/i18n.rs` 的 `ZH` / `EN` 两张 `Strings` 表；UI 系统禁止硬编码某一种语言的玩家可见文本 |
 | 数据例外 | 关卡 id、装饰品 id、资源路径、FPS/调试行等数据或开发信息不翻译 |
-| 状态名 | `Language::state_name(GameState)`（HUD 顶部用；日志继续用 `Debug`） |
+| 状态名 | 开发信息：F3 调试叠层与日志都用 `GameState` 的 `Debug` 名（不翻译） |
 | 字体 | `UiFontPlugin` 在 `PreStartup` 加载唯一字体（优先级见 `04` §9）；所有 UI `Text` 用 `UiFont::text_font(px)` |
 | 切换时机 | 设置界面按钮 `ToggleLanguage` 改 `GameSettings.language` ⇒ 设置页重建；返回主菜单/关卡选择时 `OnEnter` 重建；暂停菜单在 settings 变化时重建；HUD 每帧读取 |
 | 持久化 | 与音量/全屏同一个 `settings.ron`，旧文件缺字段按中文加载 |

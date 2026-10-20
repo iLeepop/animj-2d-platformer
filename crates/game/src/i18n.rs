@@ -8,8 +8,6 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::state::GameState;
-
 /// 游戏语言。默认中文（产品要求）。
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -36,30 +34,6 @@ impl Language {
         match self {
             Language::Zh => Language::En,
             Language::En => Language::Zh,
-        }
-    }
-
-    /// HUD 顶部的状态名。只用于人读；日志仍用 `GameState` 的 `Debug`。
-    pub fn state_name(self, state: GameState) -> &'static str {
-        match (self, state) {
-            (Language::Zh, GameState::Boot) => "启动",
-            (Language::Zh, GameState::MainMenu) => "主菜单",
-            (Language::Zh, GameState::LevelSelect) => "选择关卡",
-            (Language::Zh, GameState::OnlineMenu) => "联机",
-            (Language::Zh, GameState::Settings) => "设置",
-            (Language::Zh, GameState::Loading) => "加载中",
-            (Language::Zh, GameState::Playing) => "游戏中",
-            (Language::Zh, GameState::Paused) => "已暂停",
-            (Language::Zh, GameState::GameComplete) => "全部通关",
-            (Language::En, GameState::Boot) => "Boot",
-            (Language::En, GameState::MainMenu) => "MainMenu",
-            (Language::En, GameState::LevelSelect) => "LevelSelect",
-            (Language::En, GameState::OnlineMenu) => "OnlineMenu",
-            (Language::En, GameState::Settings) => "Settings",
-            (Language::En, GameState::Loading) => "Loading",
-            (Language::En, GameState::Playing) => "Playing",
-            (Language::En, GameState::Paused) => "Paused",
-            (Language::En, GameState::GameComplete) => "GameComplete",
         }
     }
 }
@@ -105,18 +79,14 @@ pub struct Strings {
     pub save_level_not_found: &'static str,
     pub save_load_failed: &'static str,
     // HUD / 结算
-    pub room: &'static str,
-    pub cleared_count: &'static str,
     pub decorations: &'static str,
     pub goals: &'static str,
     pub exit_goal: &'static str,
     pub fruit: &'static str,
     pub all_fruits: &'static str,
-    pub cleared: &'static str,
     pub room_cleared: &'static str,
     pub decoration_gained: &'static str,
     pub all_rooms_cleared: &'static str,
-    pub assets: &'static str,
 }
 
 pub static ZH: Strings = Strings {
@@ -153,18 +123,14 @@ pub static ZH: Strings = Strings {
     save_version_mismatch: "存档版本不匹配",
     save_level_not_found: "存档关卡不存在",
     save_load_failed: "读档失败",
-    room: "房间",
-    cleared_count: "通关",
     decorations: "装饰",
     goals: "目标",
     exit_goal: "出口",
     fruit: "果实",
     all_fruits: "全部果实",
-    cleared: "已通关",
     room_cleared: "房间通关",
     decoration_gained: "获得装饰品",
     all_rooms_cleared: "全部房间通关",
-    assets: "资产",
 };
 
 pub static EN: Strings = Strings {
@@ -201,18 +167,14 @@ pub static EN: Strings = Strings {
     save_version_mismatch: "SAVE VERSION MISMATCH",
     save_level_not_found: "SAVE LEVEL NOT FOUND",
     save_load_failed: "SAVE LOAD FAILED",
-    room: "room",
-    cleared_count: "clear",
     decorations: "decor",
     goals: "goals",
     exit_goal: "EXIT",
     fruit: "FRUIT",
     all_fruits: "ALL FRUITS",
-    cleared: "CLEARED",
     room_cleared: "ROOM CLEARED",
     decoration_gained: "DECORATION",
     all_rooms_cleared: "ALL ROOMS CLEARED",
-    assets: "assets",
 };
 
 #[cfg(test)]
@@ -229,23 +191,5 @@ mod tests {
     fn toggle_cycles_between_the_two_languages() {
         assert_eq!(Language::Zh.toggle(), Language::En);
         assert_eq!(Language::En.toggle(), Language::Zh);
-    }
-
-    #[test]
-    fn every_state_has_a_localized_name() {
-        for state in [
-            GameState::Boot,
-            GameState::MainMenu,
-            GameState::LevelSelect,
-            GameState::OnlineMenu,
-            GameState::Settings,
-            GameState::Loading,
-            GameState::Playing,
-            GameState::Paused,
-            GameState::GameComplete,
-        ] {
-            assert!(!Language::Zh.state_name(state).is_empty());
-            assert!(!Language::En.state_name(state).is_empty());
-        }
     }
 }

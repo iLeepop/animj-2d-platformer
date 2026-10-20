@@ -63,9 +63,14 @@ mod dev {
     use bevy::diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin};
     use level_format::{ROOM_PX, TILE_PX};
 
+    use crate::assets::AssetRoot;
     use crate::coords::room_local_to_world;
+    use crate::player::decor::Decorations;
+    use crate::render::pixel_camera::CanvasScale;
+    use crate::state::GameState;
     use crate::world::CurrentRoom;
     use crate::world::load::LoadedLevel;
+    use crate::world::progress::LevelProgress;
 
     pub(crate) fn add(app: &mut App) {
         app.add_plugins(FrameTimeDiagnosticsPlugin::default())
@@ -92,12 +97,22 @@ mod dev {
         ));
     }
 
-    /// 自建诊断行：FPS + 实体数。走 HUD 的同一套 `Node` + `Text`（UI 窗口相机），
-    /// 逻辑坐标仍按 `VIEWPORT`（`UiScale = k`，`07` §7.10.1）。
+    /// 自建诊断行：FPS/实体数 + 关卡、房间、进度、资产根路径。
+    ///
+    /// 这些字段**只属于开发信息**，不进常驻 HUD（`07` §7.10.1）。走 HUD 的同一套 `Node` + `Text`
+    /// （UI 窗口相机），逻辑坐标仍按 `VIEWPORT`（`UiScale = k`）。
+    #[allow(clippy::too_many_arguments)]
     fn update_debug_text(
         enabled: Res<DebugDrawEnabled>,
         diagnostics: Res<DiagnosticsStore>,
         entities: Query<Entity>,
+        state: Option<Res<State<GameState>>>,
+        canvas_scale: Option<Res<CanvasScale>>,
+        asset_root: Option<Res<AssetRoot>>,
+        current: Option<Res<CurrentRoom>>,
+        loaded: Option<Res<LoadedLevel>>,
+        progress: Option<Res<LevelProgress>>,
+        decorations: Option<Res<Decorations>>,
         text: Single<(&mut Text, &mut Visibility), With<DebugText>>,
     ) {
         let (mut text, mut visibility) = text.into_inner();
@@ -110,9 +125,57 @@ mod dev {
             .get_measurement(&FrameTimeDiagnosticsPlugin::FPS)
             .map(|measurement| measurement.value)
             .unwrap_or(0.0);
+
+        let state_name = state
+            .as_ref()
+            .map(|state| format!("{:?}", state.get()))
+            .unwrap_or_else(|| "-".to_string());
+        let scale = canvas_scale
+            .as_ref()
+            .map(|scale| scale.0.to_string())
+            .unwrap_or_else(|| "-".to_string());
+        let (level, size) = loaded
+            .as_ref()
+            .map(|loaded| {
+                (
+                    loaded.level.name.clone(),
+                    format!("{}x{}", loaded.level.grid.cols, loaded.level.grid.rows),
+                )
+            })
+            .unwrap_or_else(|| ("-".to_string(), "-".to_string()));
+        let room = current
+            .as_ref()
+            .map(|current| format!("({}, {})", current.col, current.row))
+            .unwrap_or_else(|| "-".to_string());
+        let cleared = progress
+            .as_ref()
+            .map(|progress| format!("{}/{}", progress.cleared_count(), progress.rooms.len()))
+            .unwrap_or_else(|| "-".to_string());
+        let room_cleared = current
+            .as_ref()
+            .and_then(|current| {
+                progress
+                    .as_ref()
+                    .and_then(|progress| progress.room(current.col, current.row))
+            })
+            .is_some_and(|room| room.cleared);
+        let decor = decorations
+            .as_ref()
+            .map(|decorations| decorations.len().to_string())
+            .unwrap_or_else(|| "-".to_string());
+        let assets = asset_root
+            .as_ref()
+            .map(|root| root.0.as_str())
+            .unwrap_or("-");
+
         text.0 = format!(
-            "FPS {fps:.0}  entities {}\nF3: toggle debug draw",
-            entities.iter().count()
+            "FPS {fps:.0}  entities {entities}  state {state_name}  scale x{scale}\n\
+             level {level}  size {size}\n\
+             room {room}{cleared_flag}  cleared {cleared}  decor {decor}\n\
+             assets {assets}\n\
+             F3: toggle debug draw",
+            entities = entities.iter().count(),
+            cleared_flag = if room_cleared { " (cleared)" } else { "" },
         );
     }
 

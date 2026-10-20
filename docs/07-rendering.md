@@ -730,6 +730,9 @@ pub fn add_debug_visualization(app: &mut App) {
 
 - 生产构建调用的是 `#[cfg(not(feature = "dev"))] pub fn add_debug_visualization(app: &mut App) { app.init_resource::<DebugDrawEnabled>(); }`（同一函数名、空实现）—— 这样调用点不必写 `cfg`。
 - `Aabb`（`06`）的 `center()` / `size()` 是 `06` 提供的读取方法；渲染侧只读不写。
+- F3 文本行（`render/debug.rs::update_debug_text`）包含：FPS/实体数、`GameState`（`Debug` 名）、像素缩放倍率、
+  关卡名与网格尺寸、当前房间坐标、通关数与装饰品数、当前房间是否已通关、资产根路径。
+  这些都是**开发信息**，不进入常驻 HUD（§7.10.1）；缺失关卡/进度资源时对应字段显示 `-`。
 
 - `FpsOverlayPlugin { config: FpsOverlayConfig }`，实现 `Default`；运行期改配置走 `ResMut<FpsOverlayConfig>`。【已验证】<https://docs.rs/bevy/0.20.0/bevy/dev_tools/fps_overlay/struct.FpsOverlayPlugin.html>（`config` 字段；“this can be later be changed through `FpsOverlayConfig` resource”）
 - 覆盖层内部用 `GlobalZIndex(FPS_OVERLAY_ZINDEX)` 定位（`bevy_ui` 的 Z，不参与 sprite 排序）。【已验证】模块页常量 `FPS_OVERLAY_ZINDEX` <https://docs.rs/bevy/0.20.0/bevy/dev_tools/fps_overlay/index.html>
@@ -756,7 +759,7 @@ pub fn add_debug_visualization(app: &mut App) {
 
 | 用途 | 用什么 | 坐标空间 | 由哪个相机渲染 |
 |---|---|---|---|
-| **游戏 HUD**：房间目标进度、收集计数、暂停菜单、提示 | `Node` + `Text`（`bevy_ui`） | 屏幕空间，逻辑像素 = **`VIEWPORT` 坐标系**（320 宽，靠 `UiScale = k` 保持） | **UI 相机**（窗口目标，`IsDefaultUiCamera`） |
+| **游戏 HUD**：房间目标进度（含收集计数）、提示条 | `Node` + `Text`（`bevy_ui`） | 屏幕空间，逻辑像素 = **`VIEWPORT` 坐标系**（320 宽，靠 `UiScale = k` 保持） | **UI 相机**（窗口目标，`IsDefaultUiCamera`） |
 | **提示条**（通关 / 获得装饰品） | 同上，单行文本 + `HUD_TOAST_SECS` 计时 | 同上 | 同上 |
 | **结算面板**（`GameComplete`） | 固定 px 几何的 `Node` + 居中 `Text` | 同上 | 同上 |
 | **世界内文字**：告示牌、道具名、飘字 | `Text2d` | 世界像素（Z = `z::TEXT2D`，数值见 `00` §0.4） | 内层相机（走 `PIXEL_PERFECT_LAYERS`，与 sprite 一起被放大 `k` 倍） |

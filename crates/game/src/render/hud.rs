@@ -4,15 +4,12 @@
 //! `ViewLayout` 的尺寸（单人 320×320，本地双人 640×320；`07` §7.10.1）。因此所有尺寸与字号都用 `px()` 的整数值，
 //! 禁止 `vw()` / `vh()` / `percent()`。
 
-use crate::assets::AssetRoot;
 use crate::config::render::HUD_TOAST_SECS;
 use crate::fonts::UiFont;
 use crate::player::decor::Decorations;
-use crate::render::pixel_camera::CanvasScale;
 use crate::room::{DecorationGranted, RoomCleared, fruit_count};
 use crate::settings::GameSettings;
 use crate::state::GameState;
-use crate::tiles::LevelTiles;
 use crate::world::CurrentRoom;
 use crate::world::load::LoadedLevel;
 use crate::world::progress::LevelProgress;
@@ -30,7 +27,6 @@ const PANEL_TOP: f32 = 112.0;
 
 // HUD 文案由 `i18n` 提供（默认中文）。字体来自 `fonts::UiFont`；缺 CJK 字形时 Bevy 会把整行
 // 后续文本一起丢掉（`10` §10.3.1 E7），所以字体加载失败只保证英文可见。
-const HUD_LABEL: &str = "animj";
 
 /// HUD 文本节点标记。
 ///
@@ -76,7 +72,7 @@ fn spawn_hud(mut commands: Commands, font: Res<UiFont>) {
             top: px(HUD_MARGIN_PX),
             ..default()
         },
-        Text::new(HUD_LABEL),
+        Text::new(""),
         font.text_font(HUD_FONT_PX),
         TextColor(Color::WHITE),
         HudText,
@@ -129,45 +125,22 @@ fn goals_summary(
         .join("  ")
 }
 
-#[allow(clippy::too_many_arguments)]
+/// 只显示**玩法信息**：当前房间的目标进度与提示条。
+///
+/// 关卡名/网格尺寸/房间坐标/通关计数/装饰品数/资产根路径属于开发诊断信息，
+/// 归 F3 调试叠层（`render::debug`）——不要放回常驻 HUD。
 fn update_hud(
-    state: Res<State<GameState>>,
-    canvas_scale: Res<CanvasScale>,
-    asset_root: Res<AssetRoot>,
     current: Option<Res<CurrentRoom>>,
     loaded: Option<Res<LoadedLevel>>,
-    tiles: Option<Res<LevelTiles>>,
     progress: Option<Res<LevelProgress>>,
-    decorations: Option<Res<Decorations>>,
     toast: Option<Res<HudToast>>,
     settings: Res<GameSettings>,
     mut text: Single<&mut Text, With<HudText>>,
 ) {
-    let language = settings.language;
-    let s = language.strings();
-    let mut room = String::from("-");
-    if let Some(current) = current.as_ref() {
-        room = format!("({}, {})", current.col, current.row);
-    }
-    let mut size = String::from("-");
-    if let Some(tiles) = tiles.as_ref() {
-        let (cols, rows) = tiles.grid();
-        size = format!("{cols}x{rows}");
-    }
-    let mut level = String::from("-");
-    if let Some(loaded) = loaded.as_ref() {
-        level = loaded.level.name.clone();
-    }
+    let s = settings.language.strings();
+    let mut lines: Vec<String> = Vec::new();
 
-    // 清关进度与装饰品
-    let (cleared, total_rooms) = progress
-        .as_ref()
-        .map(|p| (p.cleared_count(), p.rooms.len()))
-        .unwrap_or((0, 0));
-    let decor = decorations.as_ref().map(|d| d.len()).unwrap_or(0);
-
-    // 当前房间的目标进度
-    let mut goals = String::from("-");
+    // 当前房间的目标进度（收集计数已包含在 `goals_summary` 里，例如 `果实 2/3`）
     if let (Some(loaded), Some(current), Some(progress)) =
         (loaded.as_ref(), current.as_ref(), progress.as_ref())
     {
@@ -177,41 +150,25 @@ fn update_hud(
             loaded.level.rooms.get(index),
             progress.room(current.col, current.row),
         ) {
-            goals = goals_summary(
+            let goals = goals_summary(
                 &room_data.goals,
                 room_progress.collected_fruit,
                 fruit_count(room_data),
                 s,
             );
+            if !goals.is_empty() {
+                lines.push(format!("{} {goals}", s.goals));
+            }
         }
     }
 
-    let toast_line = toast.as_ref().map(|t| t.text.as_str()).unwrap_or("");
-    let flags = if let Some(room_progress) = progress
-        .as_ref()
-        .zip(current.as_ref())
-        .and_then(|(p, c)| p.room(c.col, c.row))
+    if let Some(toast) = toast.as_ref()
+        && !toast.text.is_empty()
     {
-        if room_progress.cleared { s.cleared } else { "" }
-    } else {
-        ""
-    };
+        lines.push(toast.text.clone());
+    }
 
-    let next = format!(
-        "{HUD_LABEL}  {state} x{scale}  {level} {size}\n\
-         {room_label} {room} {flags}  {clear_label} {cleared}/{total_rooms}  {decor_label} {decor}\n\
-         {goals_label} {goals}\n\
-         {toast_line}\n\
-         {assets_label} {root}",
-        state = language.state_name(*state.get()),
-        scale = canvas_scale.0,
-        root = asset_root.0,
-        room_label = s.room,
-        clear_label = s.cleared_count,
-        decor_label = s.decorations,
-        goals_label = s.goals,
-        assets_label = s.assets,
-    );
+    let next = lines.join("\n");
     // 只在内容变化时写回：避免每帧触发 CJK 文本的重新断行/排版（ICU4X 的开销与日志噪声）。
     if text.0 != next {
         text.0 = next;
