@@ -116,8 +116,8 @@ flowchart LR
 | `PlayerSpawnPlugin` | 角色图集句柄（`04` §3.2） | 无 |
 | `DemoPlugin` | 验证用脚本输入 + 物理度量（仅 `--demo` 时由 bin 添加） | 无 |
 | `RoomPlugin` | 当前房间、条件求值、奖励 | `WorldPlugin` |
-| `CameraRigPlugin` | 每个视图的相机跟随自己的玩家并钳制在关卡 AABB 内（`GameSet::Camera`，Update） | `WorldPlugin` |
-| `ParallaxPlugin` | `Level.background` → 平铺 sprite；`ParallaxCamera` 视图换算；`BackgroundOverride` 预览；`PostUpdate` 早于 `Propagate` | `TileRenderPlugin`（`load_image`）、`WorldPlugin` |
+| `CameraRigPlugin` | 每个视图的相机跟随自己的玩家并钳制在关卡 AABB 内（`GameSet::Camera`，Update）；连续目标写入 `CameraAnchor` 供视差相位使用 | `WorldPlugin` |
+| `ParallaxPlugin` | `Level.background` → 平铺 sprite；`ParallaxCamera` 视图换算；`BackgroundOverride` 预览；`PostUpdate` 在 `GameSet::Snap` 之后、`Propagate` 之前（连续相位 + 整像素落点） | `TileRenderPlugin`（`load_image`）、`WorldPlugin` |
 | `PixelRenderPlugin` | 1–2 台内层 + 外层 + UI 相机、视图布局、窗口自适应、整数缩放、`UiScale` 同步 | 无 |
 | `TileRenderPlugin` | 瓦片 sprite 生成与可见性 | `WorldPlugin` |
 | `SpriteAnimPlugin` | 帧动画 + 按朝向水平翻转 sprite（装饰品同步镜像，`04` §4.5） | 无 |

@@ -64,6 +64,14 @@ impl ViewLayout {
 #[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PlayerView(pub u8);
 
+/// 本帧相机跟随的**连续**中心（未像素吸附）。
+///
+/// 相机 `Transform` 会在 `GameSet::Snap` 里被取整；视差背景的相位必须用这个连续值
+/// （取模后再取整），不能再用已取整的 `Transform` 二次取整——否则相机的整数步进
+/// 会让背景偶发 2 px 跳步（`07` §7.13.2）。
+#[derive(Component, Debug, Clone, Copy, Default)]
+pub struct CameraAnchor(pub Vec2);
+
 /// 渲染一屏内容的游戏内层相机（每个视图一台）。
 #[derive(Component)]
 pub struct InGameCamera;
@@ -221,6 +229,7 @@ fn setup_pixel_camera(mut commands: Commands, mut images: ResMut<Assets<Image>>)
             Transform::from_xyz(0.0, 0.0, CAMERA_Z),
             InGameCamera,
             PlayerView(view as u8),
+            CameraAnchor::default(),
             RenderLayers::from_layers(&[0, PARALLAX_LAYER_BASE + view]),
             crate::render::parallax::ParallaxCamera,
             PixelSnap,

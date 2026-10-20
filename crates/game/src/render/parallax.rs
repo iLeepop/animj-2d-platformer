@@ -10,7 +10,10 @@ use bevy::sprite::SpriteImageMode;
 use crate::config::render::z;
 use bevy::camera::visibility::RenderLayers;
 
-use crate::render::pixel_camera::{MAX_VIEWS, PARALLAX_LAYER_BASE, PlayerView, ViewLayout};
+use crate::render::pixel_camera::{
+    CameraAnchor, MAX_VIEWS, PARALLAX_LAYER_BASE, PlayerView, ViewLayout,
+};
+use crate::render::snap::snap_px;
 use crate::world::load::LoadedLevel;
 
 /// 视差背景使用的相机。游戏内层相机与编辑器的 `EditorCamera` 都插这个标记。
@@ -46,6 +49,7 @@ type ParallaxCameraQuery<'w, 's> = Query<
         &'static Projection,
         &'static Transform,
         Option<&'static PlayerView>,
+        Option<&'static CameraAnchor>,
     ),
     (With<ParallaxCamera>, Without<ParallaxLayer>),
 >;
@@ -56,28 +60,37 @@ impl Plugin for ParallaxPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(
             PostUpdate,
-            update_parallax.before(bevy::transform::TransformSystems::Propagate),
+            update_parallax
+                .after(crate::state::GameSet::Snap)
+                .before(bevy::transform::TransformSystems::Propagate),
         );
     }
 }
 
 /// 纯函数：给出一层的 sprite 中心与所需尺寸（覆盖视口 + 两个周期）。
 ///
-/// 推导（`07` §7.13.2）：贴图原点在屏幕上的偏移 = `(-camera * scroll) mod period`，
-/// sprite 的贴图原点在其左上角，所以中心 = `view_center + offset`，
-/// 尺寸取 `view_size + 2 * period` 保证任意相位都能盖满视口。
+/// `phase_center` = 相机的**连续**中心（未像素吸附）；`placement_center` = 相机的
+/// **渲染**中心（已吸附到整像素）。推导（`07` §7.13.2）：
+/// 贴图原点在屏幕上的偏移 = `(-camera * scroll) mod period`，取整后再落到渲染相机上，
+/// 即 `center = placement_center + round(offset)`。
+///
+/// **相位必须用连续相机**：若先取整相机、再拿它算相位，等于对同一运动做两次量化。
+/// 相机每帧走 3–4 px 时，`round(offset)` 会偶发 0/±2 px 的跳步（背景抖动），
+/// 而连续相位只会产生 0/−1 px 的均匀步进。
 pub fn parallax_placement(
-    view_center: Vec2,
+    phase_center: Vec2,
+    placement_center: Vec2,
     view_size: Vec2,
     scroll: Vec2,
     period: Vec2,
 ) -> (Vec2, Vec2) {
     let offset = Vec2::new(
-        wrap_offset(period.x, -view_center.x * scroll.x),
-        wrap_offset(period.y, -view_center.y * scroll.y),
-    );
+        wrap_offset(period.x, -phase_center.x * scroll.x),
+        wrap_offset(period.y, -phase_center.y * scroll.y),
+    )
+    .round();
     let size = (view_size + period * 2.0).round().max(Vec2::ONE);
-    ((view_center + offset).round(), size)
+    (placement_center + offset, size)
 }
 
 /// `value mod period`，`period <= 0` 时视为 0（贴图为空时上层会跳过该层）。
@@ -89,20 +102,47 @@ fn wrap_offset(period: f32, value: f32) -> f32 {
     }
 }
 
+/// 一个视图的相机参数：连续相位中心、渲染落点中心、视口世界尺寸。
+#[derive(Clone, Copy)]
+struct CameraView {
+    /// 未像素吸附的相机中心（`CameraAnchor`；编辑器回落到 `Transform`）。
+    phase: Vec2,
+    /// 已吸附到整像素的渲染中心（与相机的 `Transform` 一致）。
+    placed: Vec2,
+    size: Vec2,
+}
+
 /// 相机视图：中心 = 相机 `Transform` 的 xy（游戏内没有相机旋转），
 /// 世界尺寸 = 逻辑视口 × 正交 `scale`。直接读 `Transform` 而不是 `GlobalTransform`：
 /// 后者在 `PostUpdate` 才传播，晚一帧会让背景在平移时拖影。
+///
+/// 相位优先用 [`CameraAnchor`]（`Update` 写入的连续目标）；编辑器没有它，
+/// 就把当前 `Transform` 当作连续值，落点仍取整（保持编辑器原来的行为）。
 fn camera_view(
     camera: &Camera,
     projection: &Projection,
     transform: &Transform,
-) -> Option<(Vec2, Vec2)> {
+    anchor: Option<&CameraAnchor>,
+) -> Option<CameraView> {
     let logical = camera.logical_viewport_size()?;
     let scale = match projection {
         Projection::Orthographic(ortho) => ortho.scale,
         _ => return None,
     };
-    Some((transform.translation.truncate(), logical * scale))
+    let current = transform.translation.truncate();
+    let (phase, placed) = match anchor {
+        Some(anchor) => (anchor.0, snap_vec(anchor.0)),
+        None => (current, snap_vec(current)),
+    };
+    Some(CameraView {
+        phase,
+        placed,
+        size: logical * scale,
+    })
+}
+
+fn snap_vec(value: Vec2) -> Vec2 {
+    Vec2::new(snap_px(value.x), snap_px(value.y))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -148,8 +188,8 @@ fn update_parallax(
     let key: ImageKey = (views, paths);
 
     // 每个视图的相机视图：索引 = `PlayerView`（编辑器相机没有该组件 ⇒ 视图 0）。
-    let mut view_cameras: [Option<(Vec2, Vec2)>; MAX_VIEWS] = [None; MAX_VIEWS];
-    for (camera, projection, transform, player_view) in camera.iter() {
+    let mut view_cameras: [Option<CameraView>; MAX_VIEWS] = [None; MAX_VIEWS];
+    for (camera, projection, transform, player_view, anchor) in camera.iter() {
         if !camera.is_active {
             continue;
         }
@@ -157,7 +197,7 @@ fn update_parallax(
         if view >= views as usize {
             continue;
         }
-        if let Some(found) = camera_view(camera, projection, transform) {
+        if let Some(found) = camera_view(camera, projection, transform, anchor) {
             view_cameras[view] = Some(found);
         }
     }
@@ -171,7 +211,7 @@ fn update_parallax(
             commands.entity(entity).despawn();
         }
         for view in 0..views {
-            let Some((view_center, view_size)) = view_cameras[view as usize] else {
+            let Some(view_params) = view_cameras[view as usize] else {
                 continue;
             };
             for (index, layer) in background.layers.iter().enumerate() {
@@ -191,8 +231,13 @@ fn update_parallax(
                     warn!("背景图层 {index}：贴图 `{path}` 尺寸为 0，已跳过");
                     continue;
                 }
-                let (center, size) =
-                    parallax_placement(view_center, view_size, scroll_of(layer), period);
+                let (center, size) = parallax_placement(
+                    view_params.phase,
+                    view_params.placed,
+                    view_params.size,
+                    scroll_of(layer),
+                    period,
+                );
                 commands.spawn((
                     ParallaxLayer {
                         view,
@@ -225,14 +270,19 @@ fn update_parallax(
             continue;
         };
         let (center, size) = parallax_placement(
-            view_camera.0,
-            view_camera.1,
+            view_camera.phase,
+            view_camera.placed,
+            view_camera.size,
             scroll_of(definition),
             layer.period,
         );
-        transform.translation.x = center.x;
-        transform.translation.y = center.y;
-        sprite.custom_size = Some(size);
+        if transform.translation.truncate() != center {
+            transform.translation.x = center.x;
+            transform.translation.y = center.y;
+        }
+        if sprite.custom_size != Some(size) {
+            sprite.custom_size = Some(size);
+        }
     }
 }
 
@@ -247,44 +297,49 @@ mod tests {
     const PERIOD: Vec2 = Vec2::new(64.0, 32.0);
     const VIEW: Vec2 = Vec2::new(512.0, 512.0);
 
-    /// 任意滚动百分比/相机位置下，平铺 sprite 必须覆盖整个视口。
+    fn placed(phase: Vec2) -> Vec2 {
+        Vec2::new(snap_px(phase.x), snap_px(phase.y))
+    }
+
+    /// 任意滚动百分比/连续相机位置下，平铺 sprite 必须覆盖整个视口。
     #[test]
     fn placement_always_covers_view() {
-        for camera in [
+        for phase in [
             Vec2::ZERO,
             Vec2::new(123.4, -77.0),
             Vec2::new(2000.0, 3000.0),
             Vec2::new(-4000.5, 900.25),
         ] {
             for scroll in [Vec2::ZERO, Vec2::splat(0.3), Vec2::splat(0.5), Vec2::ONE] {
-                let (center, size) = parallax_placement(camera, VIEW, scroll, PERIOD);
+                let center_camera = placed(phase);
+                let (center, size) = parallax_placement(phase, center_camera, VIEW, scroll, PERIOD);
                 let min = center - size / 2.0;
                 let max = center + size / 2.0;
-                let view_min = camera - VIEW / 2.0;
-                let view_max = camera + VIEW / 2.0;
+                let view_min = center_camera - VIEW / 2.0;
+                let view_max = center_camera + VIEW / 2.0;
                 assert!(
                     min.x <= view_min.x
                         && min.y <= view_min.y
                         && max.x >= view_max.x
                         && max.y >= view_max.y,
-                    "camera={camera:?} scroll={scroll:?} center={center:?} size={size:?}"
+                    "phase={phase:?} scroll={scroll:?} center={center:?} size={size:?}"
                 );
             }
         }
     }
 
-    /// `0%` = 屏幕固定：sprite 中心跟随相机（相对屏幕不动）。
+    /// `0%` = 屏幕固定：sprite 相对渲染相机不动。
     /// `100%` = 与世界同速：相位相对世界固定。
     #[test]
     fn scroll_extremes_are_screen_locked_and_world_locked() {
         let camera = Vec2::new(300.0, 200.0);
-        let (screen, _) = parallax_placement(camera, VIEW, Vec2::ZERO, PERIOD);
-        assert_eq!(screen, camera);
+        let (center, _) = parallax_placement(camera, camera, VIEW, Vec2::ZERO, PERIOD);
+        assert_eq!(center, camera);
 
-        // 世界固定：向右移动恰好一个周期，相位必须回到同一屏幕位置。
-        let (a, _) = parallax_placement(camera, VIEW, Vec2::ONE, PERIOD);
-        let moved = camera + Vec2::new(PERIOD.x, PERIOD.y);
-        let (b, _) = parallax_placement(moved, VIEW, Vec2::ONE, PERIOD);
+        // 世界固定：向右移动恰好一个周期，屏幕相位必须回到同一位置。
+        let (a, _) = parallax_placement(camera, camera, VIEW, Vec2::ONE, PERIOD);
+        let moved = camera + PERIOD;
+        let (b, _) = parallax_placement(moved, moved, VIEW, Vec2::ONE, PERIOD);
         let wrap = |value: f32, period: f32| value.rem_euclid(period);
         assert_eq!(
             wrap(a.x - camera.x, PERIOD.x),
@@ -299,9 +354,43 @@ mod tests {
     /// 零尺寸贴图不能让相位计算产生 NaN。
     #[test]
     fn zero_period_is_finite() {
-        let (center, size) = parallax_placement(Vec2::new(10.0, 10.0), VIEW, Vec2::ONE, Vec2::ZERO);
+        let (center, size) = parallax_placement(
+            Vec2::new(10.0, 10.0),
+            Vec2::new(10.0, 10.0),
+            VIEW,
+            Vec2::ONE,
+            Vec2::ZERO,
+        );
         assert!(center.is_finite());
         assert!(size.is_finite());
         assert_eq!(center, Vec2::new(10.0, 10.0));
+    }
+
+    /// 相位必须取自**连续**相机：相机的整数步进不能变成背景的 0/−1/−2 px 跳步。
+    ///
+    /// 旧实现先 `round(camera)` 再算相位：相机以 190–200 px/s 移动时，整数相机
+    /// 每步走 3–4 px，`round(-c_rounded * 0.3)` 会偶发 −2 px 跳步（实机抖动）。
+    #[test]
+    fn continuous_phase_never_skips_a_pixel() {
+        for speed in [195.0_f32, 190.0, 180.0, 150.0, 100.0] {
+            let mut phase = Vec2::new(160.0, 0.0);
+            let mut previous: Option<f32> = None;
+            for _ in 0..600 {
+                let camera = placed(phase);
+                let (center, _) = parallax_placement(phase, camera, VIEW, Vec2::splat(0.3), PERIOD);
+                let offset = center.x - camera.x;
+                if let Some(previous) = previous {
+                    let mut step = offset - previous;
+                    // 相位回绕：模 period 后取最短方向。
+                    step = (step + PERIOD.x / 2.0).rem_euclid(PERIOD.x) - PERIOD.x / 2.0;
+                    assert!(
+                        (-1.0..=0.0).contains(&step),
+                        "speed={speed} step={step}（背景不能反向或一次跳 2 px）"
+                    );
+                }
+                previous = Some(offset);
+                phase.x += speed / 60.0;
+            }
+        }
     }
 }

@@ -10,7 +10,7 @@ use level_format::ROOM_PX;
 use crate::config::render::{VIEWPORT_H, VIEWPORT_W};
 use crate::net::client::ClientNet;
 use crate::player::{PlayerId, PlayerMotion};
-use crate::render::pixel_camera::{MAX_VIEWS, PlayerView, ViewLayout};
+use crate::render::pixel_camera::{CameraAnchor, MAX_VIEWS, PlayerView, ViewLayout};
 use crate::state::{GameSet, SessionMode};
 use crate::world::load::LoadedLevel;
 
@@ -82,11 +82,11 @@ fn drive_cameras(
     mode: Res<SessionMode>,
     client: Option<Res<ClientNet>>,
     players: Query<(&PlayerId, &PlayerMotion)>,
-    mut cameras: Query<(&PlayerView, &mut Transform)>,
+    mut cameras: Query<(&PlayerView, &mut CameraAnchor, &mut Transform)>,
 ) {
     let targets = view_players(&mode, client.and_then(|client| client.player_id));
 
-    for (view, mut transform) in &mut cameras {
+    for (view, mut anchor, mut transform) in &mut cameras {
         if view.0 as usize >= layout.views as usize {
             continue;
         }
@@ -101,6 +101,10 @@ fn drive_cameras(
             loaded.level.grid.cols,
             loaded.level.grid.rows,
         );
+        // 连续目标给视差相位用；`Transform` 稍后由 `GameSet::Snap` 取整。
+        if anchor.0 != target {
+            anchor.0 = target;
+        }
         transform.translation.x = target.x;
         transform.translation.y = target.y;
     }

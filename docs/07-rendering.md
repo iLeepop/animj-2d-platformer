@@ -1023,24 +1023,37 @@ UI **不得**再写调色板之外的十六进制值。
 
 ### 7.13.2 相位公式（唯一实现：`game::render::parallax::parallax_placement`）
 
-记 `c` = 相机中心（世界像素），`v` = 视口世界尺寸，`p` = 贴图尺寸，`s ∈ [0,1]` = 滚动百分比 / 100：
+记 `a` = 相机的**连续**中心（`CameraAnchor`，未像素吸附）、`c` = 相机的**渲染**中心
+（取整后的 `Transform`）、`v` = 视口世界尺寸、`p` = 贴图尺寸、`s ∈ [0,1]` = 滚动百分比 / 100：
 
 ```
-offset = (-c * s).rem_euclid(p)          // 贴图原点相对视口左上角的屏幕偏移
+offset = round((-a * s).rem_euclid(p))   // 贴图原点相对视口左上角的整像素屏幕偏移
 center = c + offset                     // sprite 中心（贴图原点在 sprite 左上角）
 size   = v + 2 * p
 ```
 
 - `s = 0`：`offset = 0` ⇒ 背景固定在屏幕上（无限远）。
-- `s = 1`：`offset = (-c) mod p` ⇒ 贴图相对世界固定（与地形同速）。
-- 中心取整到整像素：像素风不允许亚像素采样（`00` §0.4 / `06` §6.8）。
+- `s = 1`：`offset = (-a) mod p` ⇒ 贴图相对世界固定（与地形同速）。
+- **相位必须用连续相机 `a`，落点用渲染相机 `c`**。若先取整相机再算相位（`a = c`），
+  等于对同一运动量化两次：相机每帧走 3–4 px 时，`round(-c·s)` 会偶发 0/±2 px 跳步，
+  背景表现为抖动/闪烁（190–200 px/s 的实机区间尤其明显）。用 `a` 只会产生 0/−1 px 步进。
+- 中心/尺寸取整到整像素：像素风不允许亚像素采样（`00` §0.4 / `06` §6.8）。
+  游戏内层相机 `scale = 1`，1 世界像素 = 1 离屏 texel；编辑器相机没有 `CameraAnchor`，
+  回落为「相位 = 当前 `Transform`、落点 = 取整后的 `Transform`」。
 
 ### 7.13.3 调度与相机
 
-- 系统在 `PostUpdate`、`.before(TransformSystems::Propagate)` 执行；**读相机的 `Transform` 而不是 `GlobalTransform`**（后者在本帧尚未传播，会晚一帧、平移时产生拖影）。
-- 视口世界尺寸 = `Camera::logical_viewport_size() * OrthographicProjection::scale`；相机中心 = `Transform::translation.truncate()`。
+- 系统在 `PostUpdate`、`GameSet::Snap` **之后**、`TransformSystems::Propagate` 之前执行；
+  **读相机的 `Transform` 而不是 `GlobalTransform`**（后者在本帧尚未传播，会晚一帧、平移时产生拖影）。
+- 视口世界尺寸 = `Camera::logical_viewport_size() * OrthographicProjection::scale`。
+- 相机中心分两个：渲染中心 = 取整后的 `Transform::translation.truncate()`；
+  相位中心 = `CameraAnchor`（`camera::rig::drive_cameras` 在 `Update` 写入的连续跟随目标）。
+  只有相位中心允许是小数；sprite 的世界坐标仍然整像素。编辑器的 `EditorCamera` 没有
+  `CameraAnchor`，两者都从 `Transform` 取（落点取整）。
 - 需要背景的相机插 `ParallaxCamera`：发布 bin 是每个内层 `InGameCamera`（带 `PlayerView`）；编辑器是 `EditorCamera`（没有 `PlayerView` ⇒ 视图 0）。
 - 每个视图的背景用**自己的相机**算相位（`parallax.rs` 按 `PlayerView` 分组）；编辑器没有像素管线，`ViewLayout` 缺省为 1。
+- 每帧只在值真正变化时写 `Transform` / `Sprite.custom_size`：否则 `Changed<Sprite>` 会逐帧触发
+  `SpriteMeshMaterial` 的重新绑定与管线特化（无谓开销，且是 0.20 下闪帧的已知风险面）。
 
 ### 7.13.4 与房间背景板的关系
 
