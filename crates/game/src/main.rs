@@ -570,9 +570,6 @@ type CameraQuery<'w, 's> = Query<
     ),
 >;
 
-/// 自检允许的相机平滑滞后（px）：移动中相机不会精确等于目标（`02` §2.2）。
-const CAMERA_LAG_TOLERANCE_PX: f32 = 64.0;
-
 /// 像素完美管线的不变量自检。
 ///
 /// 这些条件是「无插值模糊」的**充分条件**：最近邻采样 + 整数倍缩放 + 所有渲染位置为整像素。
@@ -780,7 +777,7 @@ fn self_check(
         });
     check("player transform == aabb", projection_ok);
 
-    // ⑩ 每个内层相机跟随**自己的玩家**；平滑允许有限滞后（`02` §2.2）
+    // ⑩ 每个内层相机跟随**自己的玩家**，取整后必须精确等于目标（无平滑，`02` §2.2）
     let client_id = view.client.as_ref().and_then(|client| client.player_id);
     let targets = game::camera::rig::view_players(&view.mode, client_id);
     let mut follows = 0usize;
@@ -804,8 +801,10 @@ fn self_check(
                 loaded.level.grid.cols,
                 loaded.level.grid.rows,
             );
-            let lag = transform.translation.truncate().distance(target);
-            if lag > CAMERA_LAG_TOLERANCE_PX {
+            let expected = game::render::snap::snap_px(target.x);
+            if transform.translation.x != expected
+                || transform.translation.y != game::render::snap::snap_px(target.y)
+            {
                 follow_ok = false;
                 break;
             }

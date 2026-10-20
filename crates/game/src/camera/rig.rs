@@ -1,29 +1,22 @@
 //! 相机跟随。所有者文档：`docs/02-world-and-rooms.md` §2.2。
 //!
 //! 单机 / 主机 / 客户端：一个内层相机跟随**本进程的玩家**（单人 0、主机 0、客户端为主机分配的编号）。
-//! 本地双人：两个内层相机各自跟随 P1/P2，画面左右分屏（`07` §7.2.3）。
-//! 相机中心先钳制在关卡 AABB 内，再做指数平滑；取整仍由 `render::snap` 统一完成。
+//! 本地双人：两个内层相机各自跟随 P1/P2，画面左右分屏（`07` §7.2.2）。
+//! 相机中心**直接**等于钳制后的玩家 AABB 中心，不做平滑/缓动；取整由 `render::snap` 统一完成。
 
 use bevy::prelude::*;
 use level_format::ROOM_PX;
 
 use crate::config::render::{VIEWPORT_H, VIEWPORT_W};
-use crate::config::room::CAMERA_SMOOTH_TAU_SECS;
 use crate::net::client::ClientNet;
 use crate::player::{PlayerId, PlayerMotion};
 use crate::render::pixel_camera::{MAX_VIEWS, PlayerView, ViewLayout};
-use crate::state::{GameSet, GameState, SessionMode};
+use crate::state::{GameSet, SessionMode};
 use crate::world::load::LoadedLevel;
-
-/// 每个内层相机的平滑状态（`None` = 首帧，直接落到目标）。
-#[derive(Component, Debug, Default)]
-pub struct CameraRig {
-    pub last: Option<Vec2>,
-}
 
 /// 每个视图跟随哪个玩家。索引 = `PlayerView.0`。
 ///
-/// 客户端在收到 `Welcome` 之前不知道自己的编号，此时相机不动（等首帧快照）。
+/// 客户端在收到 `Welcome` 之前不知道自己的编号，此时相机不动。
 pub fn view_players(mode: &SessionMode, client_id: Option<u8>) -> [Option<PlayerId>; MAX_VIEWS] {
     let mut targets = [None; MAX_VIEWS];
     match mode {
@@ -45,35 +38,13 @@ pub struct CameraRigPlugin;
 
 impl Plugin for CameraRigPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(OnEnter(GameState::Playing), reset_camera_rigs)
-            // ★ 必须在 FixedUpdate（与物理同频）推进相机平滑。
-            // 若每渲染帧平滑一次，而玩家 AABB 只有 60 Hz 变化，角色会在屏幕上
-            // 「先向前跳、再被相机追回来」——高刷新率下表现为持续抖动/闪烁。
-            .add_systems(
-                FixedUpdate,
-                drive_cameras
-                    .after(GameSet::Physics)
-                    .run_if(resource_exists::<LoadedLevel>),
-            );
+        app.add_systems(
+            Update,
+            drive_cameras
+                .in_set(GameSet::Camera)
+                .run_if(resource_exists::<LoadedLevel>),
+        );
     }
-}
-
-/// 新一局 / 从暂停恢复：丢掉平滑历史，相机首帧直接对准目标（不跨地图滑行）。
-fn reset_camera_rigs(mut rigs: Query<&mut CameraRig>) {
-    for mut rig in &mut rigs {
-        rig.last = None;
-    }
-}
-
-/// 解一时步的指数平滑（帧率无关）。`tau <= 0` 或 `dt <= 0` 时直接返回目标。
-///
-/// 只做插值、不做钳制：调用方先钳制目标，两个端点都在合法区间内，插值结果必然也在区间内。
-pub fn smooth_towards(current: Vec2, target: Vec2, dt: f32, tau: f32) -> Vec2 {
-    if dt <= 0.0 || tau <= 0.0 {
-        return target;
-    }
-    let alpha = 1.0 - (-dt / tau).exp();
-    current + (target - current) * alpha.clamp(0.0, 1.0)
 }
 
 /// 相机目标：指定玩家 AABB 中心，钳制到「视野完全落在地图内」的合法区间。
@@ -104,29 +75,18 @@ fn clamp_axis(value: f32, extent: f32, view: f32) -> f32 {
     }
 }
 
-/// 把平滑结果放到「相对目标的整像素落后量」上，再做地图钳制。
-///
-/// 相机与角色都会在 `PostUpdate` 取整；若落后量是小数，两者取整边界不同步，
-/// 屏幕坐标会 ±1 px 抖动。量化后匀速移动时 `round(target) - round(camera)` 恒定。
-pub fn place_camera(target: Vec2, smoothed: Vec2, grid_cols: u32, grid_rows: u32) -> Vec2 {
-    let lag = (target - smoothed).round();
-    follow_target(target - lag, grid_cols, grid_rows)
-}
-
-/// 每个激活视图跟着自己的玩家；平滑后再由 `render::snap` 取整。
+/// 每个激活视图直接对准自己的玩家（无平滑）。
 fn drive_cameras(
     loaded: Res<LoadedLevel>,
     layout: Res<ViewLayout>,
     mode: Res<SessionMode>,
     client: Option<Res<ClientNet>>,
     players: Query<(&PlayerId, &PlayerMotion)>,
-    mut cameras: Query<(&PlayerView, &mut CameraRig, &mut Transform)>,
-    time: Res<Time>,
+    mut cameras: Query<(&PlayerView, &mut Transform)>,
 ) {
     let targets = view_players(&mode, client.and_then(|client| client.player_id));
-    let dt = time.delta_secs();
 
-    for (view, mut rig, mut transform) in &mut cameras {
+    for (view, mut transform) in &mut cameras {
         if view.0 as usize >= layout.views as usize {
             continue;
         }
@@ -141,21 +101,8 @@ fn drive_cameras(
             loaded.level.grid.cols,
             loaded.level.grid.rows,
         );
-        let next = match rig.last {
-            None => target,
-            // 跨房间重生/传送：不做长距离滑行（否则会横穿整张地图，也会让自检误判）。
-            Some(current) if current.distance(target) > VIEWPORT_W as f32 => target,
-            Some(current) => smooth_towards(current, target, dt, CAMERA_SMOOTH_TAU_SECS),
-        };
-        // 把「落后量」量化到整像素，再做钳制。
-        // 相机与角色都会在 PostUpdate 被取整；若落后量是小数，两者的取整边界不同步，
-        // 屏幕坐标会以 ±1 px 来回跳（高刷新率下就是"角色闪烁"）。落后量取整后，
-        // 匀速移动时 `round(角色) - round(相机)` 恒定，角色在屏幕上稳定。
-        let lag = (target - next).round();
-        let placed = follow_target(target - lag, loaded.level.grid.cols, loaded.level.grid.rows);
-        rig.last = Some(placed);
-        transform.translation.x = placed.x;
-        transform.translation.y = placed.y;
+        transform.translation.x = target.x;
+        transform.translation.y = target.y;
     }
 }
 
@@ -251,39 +198,6 @@ mod tests {
             follow_target(Vec2::splat(extent), 1, 1),
             Vec2::splat(extent - half)
         );
-    }
-
-    /// 指数平滑：单调逼近、不越过目标；`dt = 0` 保持不动。
-    #[test]
-    fn smoothing_converges_without_overshoot() {
-        let target = Vec2::new(100.0, -40.0);
-        let mut current = Vec2::ZERO;
-        let mut previous = f32::INFINITY;
-        for _ in 0..600 {
-            current = smooth_towards(current, target, 1.0 / 60.0, 0.10);
-            let distance = (target - current).length();
-            assert!(distance <= previous.max(f32::EPSILON));
-            assert!(current.x <= target.x && current.y >= target.y);
-            previous = distance;
-        }
-        assert!((target - current).length() < 0.01);
-        assert_eq!(smooth_towards(current, target, 0.0, 0.10), target);
-    }
-
-    /// 落后量量化后，匀速移动时角色在屏幕上的位置恒定（不再 ±1 px 抖动）。
-    #[test]
-    fn quantized_lag_keeps_screen_position_stable() {
-        let grid = (10, 3);
-        for step in 0..120 {
-            let target = Vec2::new(1000.0 + step as f32 * 3.333, 700.0);
-            let smoothed = target - Vec2::new(18.4, 3.6);
-            let camera = place_camera(target, smoothed, grid.0, grid.1);
-            let screen = Vec2::new(
-                target.x.round() - camera.x.round(),
-                target.y.round() - camera.y.round(),
-            );
-            assert_eq!(screen, Vec2::new(18.0, 4.0), "step={step}");
-        }
     }
 
     /// 视角映射：本地双人两路；客户端用主机分配的编号；主机/单人只有 0。

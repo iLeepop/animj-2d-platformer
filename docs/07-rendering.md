@@ -145,7 +145,7 @@
 文件：`crates/game/src/render/pixel_camera.rs`。
 
 - 启动时创建 `MAX_VIEWS = 2` 张 320×320 的 `Image::new_target_texture`（`Bgra8UnormSrgb` + `COPY_SRC`），
-  每张对应一台 `InGameCamera`（`ScalingMode::Fixed{VIEWPORT_W,VIEWPORT_H}`、`Msaa::Off`、`PlayerView(i)`、`CameraRig`）
+  每张对应一台 `InGameCamera`（`ScalingMode::Fixed{VIEWPORT_W,VIEWPORT_H}`、`Msaa::Off`、`PlayerView(i)`）
   和一个 `Canvas { view: i }` sprite。
 - `ViewLayout { views }` 由 `SessionMode` 决定：`LocalCoop = 2`，其它 = 1。
   `apply_view_activation` 把 `view >= views` 的内层相机 `is_active = false`；`fit_canvas` 隐藏多余 canvas。
@@ -154,8 +154,7 @@
 - canvas sprite i 的世界 x = `(i - (views-1)/2) × VIEWPORT_W`，整体居中；外层相机仍在原点。
 - `fit_canvas` 计算 `k = max(1, floor(min(window_w / (views×VIEWPORT_W), window_h / VIEWPORT_H)))`，
   写外层 `scale = 1/k`，并把 UI 相机视口设为居中的 `(views×VIEWPORT_W×k, VIEWPORT_H×k)`。
-- 相机位置由 `camera::rig` 写：先 `follow_target` 钳制，再指数平滑（时间常数见 `02` §2.2），
-  最后由 `render::snap` 统一取整。
+- 相机位置由 `camera::rig` 写：`follow_target` 直接钳制到地图内，随后由 `render::snap` 统一取整。
 - UI 逻辑尺寸 = 视口物理尺寸 / `UiScale` = `views×VIEWPORT_W × VIEWPORT_H`；单人仍是 320×320。
 
 **数学推导（为什么 `scale = 1 / k`）**
@@ -400,7 +399,7 @@ app.add_systems(
 
 > 结论：
 > - 本地实体：`snap_px(aabb.center())` → 写 `Transform`，**不做**位置插值。
-> - 相机：固定步指数平滑 + 整像素落后量（`02` §2.2），不再逐帧硬跟随。
+> - 相机：每个视图直接跟随自己的玩家 AABB 中心（无平滑，`02` §2.2）。
 > - **联机客户端的远端玩家**：快照以 60 Hz 到达、且没有本地物理；为了消除「停几帧 → 跳一段」的拖影感，
 >   用 `RenderCenter` 在两次快照之间做**线性渲染插值**（`net/client.rs`），最多增加一个快照间隔的视觉延迟。
 >   `PlayerMotion(Aabb)` 仍直接使用快照权威值，逻辑/相机/自检不读插值结果。

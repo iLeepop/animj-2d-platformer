@@ -20,7 +20,3 @@ pub const DEFAULT_SPAWN_LOCAL: Vec2 = Vec2::new(
 /// 房间切换滞回（px）：玩家 AABB 中心必须**深入**新房间超过该距离才承认切换。
 /// 只影响 `CurrentRoom`（HUD/目标判定），不影响相机跟随。见 `02` §2.2。
 pub const ROOM_SWITCH_HYSTERESIS: f32 = 8.0;
-
-/// 相机跟随的时间常数（秒）：`current += (target - current) * (1 - e^(-dt/τ))`。
-/// 越小越跟手，越大越飘。见 `02` §2.2。
-pub const CAMERA_SMOOTH_TAU_SECS: f32 = 0.10;

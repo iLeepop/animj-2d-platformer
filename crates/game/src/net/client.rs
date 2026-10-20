@@ -345,7 +345,7 @@ pub fn apply_snapshot(
     }
 }
 
-/// 把远端玩家从一个快照位置平滑推进到下一个快照位置。
+/// 把远端玩家从一个快照位置插值推进到下一个快照位置。
 pub fn advance_net_visuals(
     time: Res<Time>,
     mut visuals: Query<(&mut NetVisual, &mut RenderCenter)>,

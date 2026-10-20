@@ -14,7 +14,6 @@ use bevy::render::render_resource::TextureUsages;
 use bevy::ui::UiScale;
 use bevy::window::{PrimaryWindow, WindowResized};
 
-use crate::camera::rig::CameraRig;
 use crate::config::render::{
     CAMERA_Z, CANVAS_FORMAT, INNER_CAMERA_ORDER, MIN_CANVAS_SCALE, OUTER_CAMERA_ORDER,
     UI_CAMERA_ORDER, VIEWPORT_H, VIEWPORT_W, WINDOW_H, WINDOW_H_SPLIT, WINDOW_W, WINDOW_W_SPLIT, z,
@@ -222,7 +221,6 @@ fn setup_pixel_camera(mut commands: Commands, mut images: ResMut<Assets<Image>>)
             Transform::from_xyz(0.0, 0.0, CAMERA_Z),
             InGameCamera,
             PlayerView(view as u8),
-            CameraRig::default(),
             RenderLayers::from_layers(&[0, PARALLAX_LAYER_BASE + view]),
             crate::render::parallax::ParallaxCamera,
             PixelSnap,
