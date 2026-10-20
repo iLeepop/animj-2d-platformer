@@ -8,8 +8,6 @@
 
 use bevy::prelude::*;
 
-use crate::fonts::UiFont;
-
 /// 调试绘制开关（`dev` 构建默认开，`F3` 切换）。
 #[derive(Resource)]
 pub struct DebugDrawEnabled(pub bool);
@@ -65,6 +63,7 @@ mod dev {
 
     use crate::assets::AssetRoot;
     use crate::coords::room_local_to_world;
+    use crate::fonts::UiFont;
     use crate::player::decor::Decorations;
     use crate::render::pixel_camera::CanvasScale;
     use crate::state::GameState;

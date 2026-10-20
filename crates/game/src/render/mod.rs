@@ -9,6 +9,7 @@ pub mod pixel_camera;
 pub mod snap;
 pub mod sprite_anim;
 pub mod tiles;
+pub mod ui_kit;
 
 use bevy::prelude::*;
 

@@ -5,6 +5,7 @@ pub mod net;
 pub mod physics;
 pub mod render;
 pub mod room;
+pub mod ui;
 
 /// 固定物理步长频率（Hz）。见 `docs/00-conventions.md` §0.1 **D11**。
 ///

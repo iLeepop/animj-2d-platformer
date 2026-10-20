@@ -270,8 +270,8 @@ fn log_restart_counts(
 /// 冒烟：`--demo click` 用真实的 `PointerInput` 消息点一次「START GAME」。
 ///
 /// 这条路径与鼠标完全一致：`PointerInput` → 拾取后端 → `PointerPress` observer → `Pressed`
-/// → 菜单按钮系统。UI 若仍挂在内层离屏相机上，拾取后端找不到同目标的指针，本 demo 会停在
-/// 主菜单并超时（这正是「GUI 点不动」的根因回归测试）。
+/// → `PointerClick` → `Activate` → 菜单 observer。UI 若仍挂在内层离屏相机上，拾取后端找不到
+/// 同目标的指针，本 demo 会停在主菜单并超时（这正是「GUI 点不动」的根因回归测试）。
 #[allow(clippy::too_many_arguments)]
 fn drive_demo_click(
     tick: Res<FrameTick>,

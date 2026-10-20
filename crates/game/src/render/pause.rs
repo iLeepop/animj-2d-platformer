@@ -3,24 +3,22 @@
 //! `GameState::Paused` 冻结物理与计时（`05` §5.5）。注意：编辑器也把状态停在 `Paused`，
 //! 但它不会把 [`PauseMenu::open`] 置真 ⇒ 编辑态不会弹出本菜单。
 
+use bevy::input_focus::AutoFocus;
 use bevy::prelude::*;
-use bevy::ui::Pressed;
-use bevy::ui_widgets::{Button, ScrollArea};
+use bevy::ui_widgets::{Activate, ScrollArea};
 
-use crate::config::render::{DECORATION_LAYERS, MENU_FONT_PX, VIEWPORT_H, z};
+use crate::config::render::DECORATION_LAYERS;
+use crate::config::ui::{
+    MENU_GAP_PX, UI_BUTTON_HEIGHT, UI_BUTTON_HEIGHT_SM, UI_PAUSE_BUTTON_WIDTH, UI_PAUSE_PANEL_WIDTH,
+};
 use crate::fonts::UiFont;
 use crate::player::decor::{Decorations, spec_of};
 use crate::render::pixel_camera::ViewLayout;
+use crate::render::ui_kit::{self, UiButtonRole};
 use crate::save;
 use crate::settings::GameSettings;
 use crate::state::GameState;
 use crate::world::progress::LevelProgress;
-
-/// 暂停面板距视口边的留白。视口尺寸见 `07` §7.1.1。
-const PAUSE_MARGIN_X: f32 = 12.0;
-const PAUSE_MARGIN_Y: f32 = 8.0;
-/// 面板铺满视口（减去留白）；内容过高时由内部滚动区处理，不再越出屏幕。
-const PAUSE_HEIGHT: f32 = VIEWPORT_H as f32 - 2.0 * PAUSE_MARGIN_Y;
 
 #[derive(Resource, Debug, Default)]
 pub struct PauseMenu {
@@ -29,6 +27,9 @@ pub struct PauseMenu {
 
 #[derive(Component)]
 struct PauseRoot;
+
+#[derive(Component)]
+struct PauseScroll;
 
 #[derive(Component)]
 struct PauseButton(PauseAction);
@@ -49,8 +50,8 @@ pub struct PausePlugin;
 impl Plugin for PausePlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<PauseMenu>()
-            .add_systems(Update, toggle_pause)
-            .add_systems(Update, (rebuild_pause_ui, handle_pause_buttons).chain());
+            .add_observer(handle_pause_activate)
+            .add_systems(Update, (toggle_pause, rebuild_pause_ui).chain());
     }
 }
 
@@ -78,23 +79,37 @@ fn toggle_pause(
     }
 }
 
-/// 菜单开关或装备变化时重建（一次性重建，避免每帧 diff UI 树）。
+/// 菜单开关、装备或语言变化时重建；重建前保留滚动位置。
+#[allow(clippy::too_many_arguments)]
 fn rebuild_pause_ui(
     mut commands: Commands,
     menu: Res<PauseMenu>,
     decorations: Res<Decorations>,
     layout: Res<ViewLayout>,
     settings: Option<Res<GameSettings>>,
+    state: Res<State<GameState>>,
     font: Res<UiFont>,
     roots: Query<Entity, With<PauseRoot>>,
+    scrolls: Query<&ScrollPosition, With<PauseScroll>>,
 ) {
     let settings_changed = settings
         .as_ref()
         .is_some_and(|settings| settings.is_changed());
-    let settings_changed = settings_changed || layout.is_changed();
-    if !menu.is_changed() && !decorations.is_changed() && !settings_changed {
+    let entering = state.is_changed() && *state.get() == GameState::Paused;
+    let changed = menu.is_changed()
+        || decorations.is_changed()
+        || settings_changed
+        || layout.is_changed()
+        || entering;
+    if !changed {
         return;
     }
+    let was_open = !roots.is_empty();
+    let scroll_pos = scrolls
+        .iter()
+        .next()
+        .map(|position| position.0)
+        .unwrap_or(Vec2::ZERO);
     for entity in &roots {
         commands.entity(entity).despawn();
     }
@@ -102,75 +117,76 @@ fn rebuild_pause_ui(
         return;
     }
 
-    let root = commands
-        .spawn((
-            Node {
-                position_type: PositionType::Absolute,
-                left: px(PAUSE_MARGIN_X),
-                top: px(PAUSE_MARGIN_Y),
-                width: px(layout.width() - 2.0 * PAUSE_MARGIN_X),
-                height: px(PAUSE_HEIGHT),
-                flex_direction: FlexDirection::Column,
-                row_gap: px(6.0),
-                padding: UiRect::all(px(8.0)),
-                overflow: Overflow::clip(),
-                ..default()
-            },
-            BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.9)),
-            PauseRoot,
-            GlobalZIndex(10),
-        ))
-        .id();
+    let root = ui_kit::scrim_screen(&mut commands, &layout, 10);
+    commands.entity(root).insert(PauseRoot);
+    let panel = ui_kit::panel(&mut commands, root, UI_PAUSE_PANEL_WIDTH, None);
 
     let language = settings
         .as_ref()
         .map(|settings| settings.language)
         .unwrap_or_default();
     let s = language.strings();
-    button(
+    ui_kit::title(&mut commands, &font, panel, s.paused);
+
+    let resume = pause_button(
         &mut commands,
         &font,
-        root,
+        panel,
         format!("{} (Esc)", s.resume),
+        UiButtonRole::Primary,
         PauseAction::Resume,
     );
-    button(
+    pause_button(
         &mut commands,
         &font,
-        root,
+        panel,
         s.settings,
+        UiButtonRole::Secondary,
         PauseAction::Settings,
     );
-    button(
+    pause_button(
         &mut commands,
         &font,
-        root,
+        panel,
         format!("{} (Ctrl+S)", s.save),
+        UiButtonRole::Secondary,
         PauseAction::Save,
     );
-    button(
+    pause_button(
         &mut commands,
         &font,
-        root,
+        panel,
         s.main_menu,
+        UiButtonRole::Secondary,
         PauseAction::MainMenu,
     );
-    button(&mut commands, &font, root, s.quit_save, PauseAction::Quit);
+    pause_button(
+        &mut commands,
+        &font,
+        panel,
+        s.quit_save,
+        UiButtonRole::Danger,
+        PauseAction::Quit,
+    );
+    if entering || !was_open {
+        commands.entity(resume).insert(AutoFocus);
+    }
 
     // 装饰品行放进滚动区：行数多时不再把面板顶出视口。
     let scroll = commands
         .spawn((
             Node {
                 flex_direction: FlexDirection::Column,
-                row_gap: px(6.0),
+                row_gap: px(MENU_GAP_PX),
                 flex_grow: 1.0,
                 min_height: px(0.0),
                 overflow: Overflow::scroll_y(),
                 ..default()
             },
-            ScrollPosition::default(),
+            ScrollPosition(scroll_pos),
             ScrollArea,
-            ChildOf(root),
+            PauseScroll,
+            ChildOf(panel),
         ))
         .id();
 
@@ -193,12 +209,7 @@ fn rebuild_pause_ui(
                 ChildOf(scroll),
             ))
             .id();
-        commands.spawn((
-            Text::new(format!("L{layer} {current}")),
-            font.text_font(MENU_FONT_PX),
-            TextColor(Color::WHITE),
-            ChildOf(row),
-        ));
+        ui_kit::body(&mut commands, &font, row, format!("L{layer} {current}"));
         for id in decorations.owned() {
             let Some(spec) = spec_of(id) else {
                 continue; // 未知 id：不显示（存档缺失元数据视为未装备）
@@ -206,48 +217,54 @@ fn rebuild_pause_ui(
             if spec.layer != layer {
                 continue;
             }
-            button(
+            ui_kit::button_sized_with_action(
                 &mut commands,
                 &font,
                 row,
                 id,
-                PauseAction::Equip(id.clone()),
+                UiButtonRole::Secondary,
+                Val::Auto,
+                UI_BUTTON_HEIGHT_SM,
+                PauseButton(PauseAction::Equip(id.clone())),
             );
         }
-        button(&mut commands, &font, row, "x", PauseAction::Unequip(layer));
+        ui_kit::button_sized_with_action(
+            &mut commands,
+            &font,
+            row,
+            "x",
+            UiButtonRole::Secondary,
+            Val::Auto,
+            UI_BUTTON_HEIGHT_SM,
+            PauseButton(PauseAction::Unequip(layer)),
+        );
     }
-    let _ = z::DECORATION_BASE;
 }
 
-fn button(
+fn pause_button(
     commands: &mut Commands,
     font: &UiFont,
     parent: Entity,
     label: impl Into<String>,
+    role: UiButtonRole,
     action: PauseAction,
-) {
-    commands
-        .spawn((
-            Button,
-            Node {
-                padding: UiRect::axes(px(6.0), px(2.0)),
-                flex_shrink: 0.0,
-                ..default()
-            },
-            BackgroundColor(Color::srgb(0.15, 0.15, 0.2)),
-            PauseButton(action),
-            ChildOf(parent),
-        ))
-        .with_child((
-            Text::new(label),
-            font.text_font(MENU_FONT_PX),
-            TextColor(Color::WHITE),
-        ));
+) -> Entity {
+    ui_kit::button_sized_with_action(
+        commands,
+        font,
+        parent,
+        label,
+        role,
+        px(UI_PAUSE_BUTTON_WIDTH),
+        UI_BUTTON_HEIGHT,
+        PauseButton(action),
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
-fn handle_pause_buttons(
-    interactions: Query<&PauseButton, Added<Pressed>>,
+fn handle_pause_activate(
+    activate: On<Activate>,
+    buttons: Query<&PauseButton>,
     mut decorations: ResMut<Decorations>,
     mut menu: ResMut<PauseMenu>,
     mut next: ResMut<NextState<GameState>>,
@@ -257,52 +274,53 @@ fn handle_pause_buttons(
     mode: Res<crate::state::SessionMode>,
     mut exit: MessageWriter<AppExit>,
 ) {
-    for button in &interactions {
-        match &button.0 {
-            PauseAction::Resume => {
-                menu.open = false;
-                next.set(GameState::Playing);
+    let Ok(button) = buttons.get(activate.entity) else {
+        return;
+    };
+    match &button.0 {
+        PauseAction::Resume => {
+            menu.open = false;
+            next.set(GameState::Playing);
+        }
+        PauseAction::Settings => {
+            settings_return.0 = GameState::Paused;
+            next.set(GameState::Settings);
+        }
+        PauseAction::Save => {
+            if let Some(progress) = progress.as_ref().filter(|_| !mode.is_client()) {
+                save::persist_now(
+                    progress,
+                    &decorations,
+                    checkpoint.as_ref().and_then(|point| point.0),
+                );
             }
-            PauseAction::Settings => {
-                settings_return.0 = GameState::Paused;
-                next.set(GameState::Settings);
+        }
+        PauseAction::MainMenu => {
+            if let Some(progress) = progress.as_ref().filter(|_| !mode.is_client()) {
+                save::persist_now(
+                    progress,
+                    &decorations,
+                    checkpoint.as_ref().and_then(|point| point.0),
+                );
             }
-            PauseAction::Save => {
-                if let Some(progress) = progress.as_ref().filter(|_| !mode.is_client()) {
-                    save::persist_now(
-                        progress,
-                        &decorations,
-                        checkpoint.as_ref().and_then(|point| point.0),
-                    );
-                }
+            menu.open = false;
+            next.set(GameState::MainMenu);
+        }
+        PauseAction::Quit => {
+            if let Some(progress) = progress.as_ref().filter(|_| !mode.is_client()) {
+                save::persist_now(
+                    progress,
+                    &decorations,
+                    checkpoint.as_ref().and_then(|point| point.0),
+                );
             }
-            PauseAction::MainMenu => {
-                if let Some(progress) = progress.as_ref().filter(|_| !mode.is_client()) {
-                    save::persist_now(
-                        progress,
-                        &decorations,
-                        checkpoint.as_ref().and_then(|point| point.0),
-                    );
-                }
-                menu.open = false;
-                next.set(GameState::MainMenu);
-            }
-            PauseAction::Quit => {
-                if let Some(progress) = progress.as_ref().filter(|_| !mode.is_client()) {
-                    save::persist_now(
-                        progress,
-                        &decorations,
-                        checkpoint.as_ref().and_then(|point| point.0),
-                    );
-                }
-                exit.write(AppExit::Success);
-            }
-            PauseAction::Equip(id) => {
-                decorations.equip(id);
-            }
-            PauseAction::Unequip(layer) => {
-                decorations.unequip(*layer);
-            }
+            exit.write(AppExit::Success);
+        }
+        PauseAction::Equip(id) => {
+            decorations.equip(id);
+        }
+        PauseAction::Unequip(layer) => {
+            decorations.unequip(*layer);
         }
     }
 }

@@ -68,6 +68,7 @@ pub fn default_plugins() -> PluginGroupBuilder {
 pub fn add_game_plugins(app: &mut App) {
     app.add_plugins(fonts::UiFontPlugin);
     app.add_plugins(net::NetPlugin);
+    app.add_plugins(render::ui_kit::UiKitPlugin);
     app.add_plugins((
         state::CorePlugin,
         assets::AssetPathPlugin,

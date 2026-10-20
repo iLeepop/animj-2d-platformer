@@ -4,29 +4,23 @@
 //! `ViewLayout` 的尺寸（单人 320×320，本地双人 640×320；`07` §7.10.1）。因此所有尺寸与字号都用 `px()` 的整数值，
 //! 禁止 `vw()` / `vh()` / `percent()`。
 
+use bevy::prelude::*;
+
 use crate::config::render::HUD_TOAST_SECS;
+use crate::config::ui::{
+    HUD_FONT_PX, HUD_MARGIN_PX, UI_COMPLETION_HEIGHT, UI_COMPLETION_WIDTH, UI_HUD_BG,
+    UI_HUD_PILL_MAX_WIDTH, UI_ORANGE, UI_PAPER, UI_PLUM, UI_SPACE_SM, UI_SPACE_XS, UI_TOAST_BOTTOM,
+};
 use crate::fonts::UiFont;
 use crate::player::decor::Decorations;
+use crate::render::pixel_camera::ViewLayout;
+use crate::render::ui_kit;
 use crate::room::{DecorationGranted, RoomCleared, fruit_count};
 use crate::settings::GameSettings;
 use crate::state::GameState;
 use crate::world::CurrentRoom;
 use crate::world::load::LoadedLevel;
 use crate::world::progress::LevelProgress;
-use bevy::prelude::*;
-
-/// HUD 字号（逻辑像素，坐标系是 `VIEWPORT_W` 宽的视口）。
-const HUD_FONT_PX: f32 = 12.0;
-/// HUD 距视口左/上边距（逻辑像素）。
-const HUD_MARGIN_PX: f32 = 8.0;
-/// 结算面板的固定几何（`07` §7.10 禁止用百分比定位）。
-const PANEL_W: f32 = 296.0;
-const PANEL_H: f32 = 96.0;
-const PANEL_LEFT: f32 = 12.0;
-const PANEL_TOP: f32 = 112.0;
-
-// HUD 文案由 `i18n` 提供（默认中文）。字体来自 `fonts::UiFont`；缺 CJK 字形时 Bevy 会把整行
-// 后续文本一起丢掉（`10` §10.3.1 E7），所以字体加载失败只保证英文可见。
 
 /// HUD 文本节点标记。
 ///
@@ -34,6 +28,10 @@ const PANEL_TOP: f32 = 112.0;
 /// 不加过滤的 `Single<&mut Text>` 会因匹配到两个实体而**静默跳过整个系统**（HUD 永远停在生成时的初值）。
 #[derive(Component)]
 struct HudText;
+
+/// HUD 左上角药丸根。
+#[derive(Component)]
+struct HudPill;
 
 /// 一次性的提示条（通关、获奖）。同一时刻只显示最新一条。
 #[derive(Resource, Debug, Default)]
@@ -49,6 +47,12 @@ impl HudToast {
     }
 }
 
+#[derive(Component)]
+struct ToastRoot;
+
+#[derive(Component)]
+struct ToastText;
+
 /// 结算面板根。
 #[derive(Component)]
 struct CompletionPanel;
@@ -59,23 +63,73 @@ impl Plugin for HudPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<HudToast>()
             .add_systems(Startup, spawn_hud)
-            .add_systems(Update, (collect_toasts, tick_toast, update_hud).chain())
+            .add_systems(
+                Update,
+                (collect_toasts, tick_toast, update_hud, update_toast_ui).chain(),
+            )
             .add_systems(OnEnter(GameState::GameComplete), spawn_completion);
     }
 }
 
 fn spawn_hud(mut commands: Commands, font: Res<UiFont>) {
+    let pill = commands
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                left: px(HUD_MARGIN_PX),
+                top: px(HUD_MARGIN_PX),
+                max_width: px(UI_HUD_PILL_MAX_WIDTH),
+                padding: UiRect::axes(px(UI_SPACE_SM), px(UI_SPACE_XS)),
+                border: UiRect::all(px(1.0)),
+                display: Display::None,
+                ..default()
+            },
+            BackgroundColor(UI_HUD_BG),
+            BorderColor::all(UI_PLUM),
+            HudPill,
+        ))
+        .id();
     commands.spawn((
-        Node {
-            position_type: PositionType::Absolute,
-            left: px(HUD_MARGIN_PX),
-            top: px(HUD_MARGIN_PX),
-            ..default()
-        },
         Text::new(""),
         font.text_font(HUD_FONT_PX),
-        TextColor(Color::WHITE),
+        TextColor(UI_PAPER),
         HudText,
+        ChildOf(pill),
+    ));
+
+    let toast_root = commands
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                left: px(0.0),
+                right: px(0.0),
+                bottom: px(UI_TOAST_BOTTOM),
+                justify_content: JustifyContent::Center,
+                display: Display::None,
+                ..default()
+            },
+            GlobalZIndex(20),
+            ToastRoot,
+        ))
+        .id();
+    let toast_pill = commands
+        .spawn((
+            Node {
+                padding: UiRect::axes(px(UI_SPACE_SM), px(UI_SPACE_XS)),
+                border: UiRect::all(px(1.0)),
+                ..default()
+            },
+            BackgroundColor(UI_HUD_BG),
+            BorderColor::all(UI_ORANGE),
+            ChildOf(toast_root),
+        ))
+        .id();
+    commands.spawn((
+        Text::new(""),
+        font.text_font(HUD_FONT_PX),
+        TextColor(UI_PAPER),
+        ToastText,
+        ChildOf(toast_pill),
     ));
 }
 
@@ -125,22 +179,18 @@ fn goals_summary(
         .join("  ")
 }
 
-/// 只显示**玩法信息**：当前房间的目标进度与提示条。
-///
-/// 关卡名/网格尺寸/房间坐标/通关计数/装饰品数/资产根路径属于开发诊断信息，
-/// 归 F3 调试叠层（`render::debug`）——不要放回常驻 HUD。
+/// 只显示**玩法信息**：当前房间的目标进度。提示条由 `update_toast_ui` 单独处理。
 fn update_hud(
     current: Option<Res<CurrentRoom>>,
     loaded: Option<Res<LoadedLevel>>,
     progress: Option<Res<LevelProgress>>,
-    toast: Option<Res<HudToast>>,
     settings: Res<GameSettings>,
     mut text: Single<&mut Text, With<HudText>>,
+    mut pill: Single<&mut Node, With<HudPill>>,
 ) {
     let s = settings.language.strings();
-    let mut lines: Vec<String> = Vec::new();
+    let mut next = String::new();
 
-    // 当前房间的目标进度（收集计数已包含在 `goals_summary` 里，例如 `果实 2/3`）
     if let (Some(loaded), Some(current), Some(progress)) =
         (loaded.as_ref(), current.as_ref(), progress.as_ref())
     {
@@ -157,21 +207,39 @@ fn update_hud(
                 s,
             );
             if !goals.is_empty() {
-                lines.push(format!("{} {goals}", s.goals));
+                next = format!("{} {goals}", s.goals);
             }
         }
     }
 
-    if let Some(toast) = toast.as_ref()
-        && !toast.text.is_empty()
-    {
-        lines.push(toast.text.clone());
-    }
-
-    let next = lines.join("\n");
-    // 只在内容变化时写回：避免每帧触发 CJK 文本的重新断行/排版（ICU4X 的开销与日志噪声）。
     if text.0 != next {
-        text.0 = next;
+        text.0 = next.clone();
+    }
+    let display = if next.is_empty() {
+        Display::None
+    } else {
+        Display::Flex
+    };
+    if pill.display != display {
+        pill.display = display;
+    }
+}
+
+fn update_toast_ui(
+    toast: Res<HudToast>,
+    mut root: Single<&mut Node, With<ToastRoot>>,
+    mut text: Single<&mut Text, With<ToastText>>,
+) {
+    let display = if toast.text.is_empty() {
+        Display::None
+    } else {
+        Display::Flex
+    };
+    if root.display != display {
+        root.display = display;
+    }
+    if text.0 != toast.text {
+        text.0 = toast.text.clone();
     }
 }
 
@@ -182,6 +250,7 @@ fn spawn_completion(
     decorations: Option<Res<Decorations>>,
     settings: Res<GameSettings>,
     font: Res<UiFont>,
+    layout: Res<ViewLayout>,
 ) {
     let s = settings.language.strings();
     let total_rewards = loaded
@@ -197,33 +266,34 @@ fn spawn_completion(
         .unwrap_or(0);
     let owned = decorations.as_ref().map(|d| d.len()).unwrap_or(0);
 
-    let panel = commands
+    let root = ui_kit::scrim_screen(&mut commands, &layout, 50);
+    commands
+        .entity(root)
+        .insert((CompletionPanel, DespawnOnExit(GameState::GameComplete)));
+    let panel = ui_kit::panel(
+        &mut commands,
+        root,
+        UI_COMPLETION_WIDTH,
+        Some(UI_COMPLETION_HEIGHT),
+    );
+    let content = commands
         .spawn((
             Node {
-                position_type: PositionType::Absolute,
-                left: px(PANEL_LEFT),
-                top: px(PANEL_TOP),
-                width: px(PANEL_W),
-                height: px(PANEL_H),
+                flex_direction: FlexDirection::Column,
                 align_items: AlignItems::Center,
                 justify_content: JustifyContent::Center,
+                flex_grow: 1.0,
+                row_gap: px(UI_SPACE_SM),
                 ..default()
             },
-            BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.85)),
-            CompletionPanel,
+            ChildOf(panel),
         ))
         .id();
-    commands.spawn((
-        Text::new(format!(
-            "{}\n{} {owned}/{total_rewards}",
-            s.all_rooms_cleared, s.decorations
-        )),
-        font.text_font(HUD_FONT_PX),
-        TextColor(Color::WHITE),
-        TextLayout {
-            justify: Justify::Center,
-            ..default()
-        },
-        ChildOf(panel),
-    ));
+    ui_kit::title(&mut commands, &font, content, s.all_rooms_cleared);
+    ui_kit::body_center(
+        &mut commands,
+        &font,
+        content,
+        format!("{} {owned}/{total_rewards}", s.decorations),
+    );
 }
