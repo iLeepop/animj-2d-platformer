@@ -550,8 +550,8 @@ animj-dev gen-placeholder-assets [--out assets] [--force]
 
 | 资源 | 路径 | 命名规则 | 说明 |
 |---|---|---|---|
-| UI/世界文字字体 | `assets/fonts/<font_name>.ttf` | `snake_case`，如 `pixel_sans.ttf` | 首选来源；发布前应随仓库提交（占位生成器**不**生成字体） |
-| UI 图标图集 | `assets/sprites/ui/ui_atlas.png` | 固定文件名；网格固定 **`4 × 2`**（=128×64 像素），单元 `TILE_PX`，padding/offset = 0 | 8 个格位按行主序；占位生成器（§7.2）即按此输出 |
+| UI/世界文字字体 | `assets/fonts/noto_sans_sc_ui.ttf` | `snake_case` | 已入库：Noto Sans SC 的 UI 字符子集（OFL 1.1，许可证 `assets/fonts/OFL-NotoSansSC.txt`）；占位生成器**不**生成字体 |
+| UI 图标图集 | `assets/sprites/ui/ui_atlas.png` | 固定文件名；网格固定 **`4 × 2`**（=128×64 像素），单元 `TILE_PX`，padding/offset = 0 | 8 个格位按行主序；占位生成器（§7.2）即按此输出。**当前运行时未接入**；16 逻辑像素图标需要另做 16px 格位图集（`07` §7.10.5.5） |
 | UI 单图 | `assets/sprites/ui/<name>.png` | `snake_case` | 未打包成图集的独立图标/底图 |
 
 > ⚠️ **Bevy 的 `default_font` 只内嵌 ASCII 字形**（feature 表原文："Include a default font, containing only ASCII characters"），

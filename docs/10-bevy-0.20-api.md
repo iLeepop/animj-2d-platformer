@@ -666,6 +666,33 @@ app.insert_resource(UiScale(2.0));
   <https://docs.rs/bevy/0.20.0/src/bevy_picking/pointer.rs.html>
 - UI 节点的几何查询：`UiGlobalTransform`（`Affine2`，`translation` 为**物理像素**的节点中心）与 `ComputedNode`（`size()` 物理像素）。【已验证】（本仓 `--demo click` 用它们定位 `START GAME`）
 
+### 10.2.18 UI 交互状态、`Activate` 与焦点导航（M7 UI 设计系统）
+
+```rust
+use bevy::input_focus::AutoFocus;
+use bevy::input_focus::tab_navigation::{TabGroup, TabIndex, TabNavigationPlugin};
+use bevy::picking::hover::Hovered;
+use bevy::ui::Pressed;
+use bevy::ui_widgets::{Activate, Button};
+```
+
+| 事实 | 说明 | 证据 |
+|---|---|---|
+| `Hovered` 不是自动插入的 | `bevy_picking::hover::update_is_hovered` 只更新**已有** `Hovered` 的实体；按钮必须显式 `spawn((Hovered(false), ...))` | 源码 `bevy_picking-0.20.0/src/hover.rs`（`hovers: Query<(Entity, &Hovered)>`） |
+| `Pressed` 由 `ButtonPlugin` 维护 | 指针按下时 `insert(Pressed)`，松开/取消/拖出时移除；**`Added<Pressed>` 在按下瞬间触发**，不适合作为“点击完成” | 源码 `bevy_ui_widgets-0.20.0/src/button.rs` |
+| 业务动作用 `Activate` | `ButtonPlugin` 在「松开鼠标」以及「焦点按钮上 Enter/Space」时触发 `Activate`；它是 `EntityEvent`，用 `On<Activate>` observer 读 `activate.entity` | 同上；`pub struct Activate { pub entity: Entity }` |
+| `TabNavigationPlugin` 不在 `DefaultPlugins` | `DefaultPlugins` 只有 `InputFocusPlugin` + `InputDispatchPlugin`；要 Tab 导航必须显式添加 | 源码 `bevy_internal-0.20.0/src/default_plugins.rs` |
+| `TabGroup` / `TabIndex` / `AutoFocus` | `TabGroup::modal()` 放在界面根；按钮 `TabIndex(0)`（同 index 按层级顺序）；首个按钮 `AutoFocus`。`AutoFocus` 的 hook 会写 `InputFocus` | 源码 `bevy_input_focus-0.20.0/src/tab_navigation.rs`、`autofocus.rs` |
+| 焦点环 | `Outline { width: px(1.0), offset: px(1.0), color }` 是**独立组件**；隐藏时设 `color = Color::NONE`，不要反复插拔 | 源码 `bevy_ui-0.20.0/src/ui_node.rs`（`Outline`） |
+| 焦点查询 | `Res<InputFocus>` 的 `get() -> Option<Entity>`；`InputFocusVisible(pub bool)` 只是“是否显示焦点”的约定，不自动改样式 | 源码 `bevy_input_focus-0.20.0/src/lib.rs` |
+| 位移/缩放 | `UiTransform { translation: Val2, scale: Vec2, rotation: Rot2 }`；只改它不会重排布局 | 源码 `bevy_ui-0.20.0/src/ui_transform.rs` |
+| 边框/硬阴影 | `BorderColor::all(color)`；`Node { border: UiRect::all(px(2.)), .. }`；`BoxShadow::new(color, x, y, spread, blur)`，像素风用 `blur = 0` | 源码 `bevy_ui-0.20.0/src/ui_node.rs` |
+| 滚动位置 | `ScrollPosition(pub Vec2)`；重建滚动区前读取、重建后写回即可保持位置 | 源码 `bevy_ui-0.20.0/src/ui_node.rs` |
+| `BorderRadius` | 是 `Node` 字段，不是独立组件（`Node { border_radius: .. }`） | 见 `10.1` B6/B7 |
+
+> `bevy_ui::widget::Button` 是 0.20 的弃用别名；新代码必须 `use bevy::ui_widgets::Button`。
+> `bevy_ui::Interaction` 同样弃用；不要用 `Interaction::Hovered/Pressed` 做状态。
+
 ---
 
 ## 10.3 0.20 破坏性变更 Top 10（含对本项目影响）

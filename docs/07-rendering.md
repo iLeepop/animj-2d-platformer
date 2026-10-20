@@ -838,7 +838,7 @@ fn spawn_world_label(commands: &mut Commands, font: &Handle<Font>, at: Vec2, tex
 | 字号字段类型 | `TextFont { font: FontSource, font_size: FontSize, weight, width, style, font_smoothing, font_features, font_variations }`；`FontSize::Px(f32)` / `Rem(f32)` / `Vw` / `Vh` / `VMin` / `VMax` | 【已验证】<https://docs.rs/bevy/0.20.0/bevy/prelude/struct.TextFont.html> ；<https://docs.rs/bevy/0.20.0/bevy/prelude/enum.FontSize.html> |
 | **字号必须显式 `Px`** | `TextFont::default()` 在 0.20 是 `FontSize::Rem(1.)` ⇒ 不写就跟随 `RemSize` 资源漂移，破坏像素对齐 | 【已验证】`FontSize` 变体表（`Rem` = “relative to the value of the `RemSize` resource”）+ `10` 的 C5 警告 |
 | 字体源 | `FontSource` 泛型族：`sans_serif()` / `serif()` / `monospace()` / `cursive()` / `fantasy()` / `system_ui()` / `family(name)` / `families(..)`；`Handle<Font>` 可 `.into()` | 【已验证】<https://docs.rs/bevy/0.20.0/bevy/prelude/enum.FontSource.html> ；example 写法 `font: font_handle.clone().into()` <https://docs.rs/bevy/0.20.0/bevy/prelude/struct.Text2d.html> |
-| 抗锯齿 | `FontSmoothing::None` 文档原文：“No antialiasing. Useful for when you want to render text with a pixel art aesthetic.” ⇒ 本项目**一律** `None`；用 `AntiAliased` 会在放大 k 倍后出现灰色过渡像素 | 【已验证】<https://docs.rs/bevy/0.20.0/bevy/prelude/enum.FontSmoothing.html> |
+| 抗锯齿 | **UI 文本**保持 `AntiAliased`（默认）：UI 在原生分辨率按 `k` 倍光栅化，关掉会让 12px CJK 边缘发毛。**世界空间 `Text2d`** 用 `None`（随画布放大，需要硬边）。两者不得混用 | 【已验证】<https://docs.rs/bevy/0.20.0/bevy/prelude/enum.FontSmoothing.html>；UI 取舍见 §7.10.2 与 §7.10.5.4 |
 | `Text2d` 的定位 | `Text2d(pub String)`；`justify` **只影响块内对齐**，位置由 **`Anchor`**（默认 `CENTER`，`bevy::sprite::Anchor`，不在 prelude）决定 | 【已验证】<https://docs.rs/bevy/0.20.0/bevy/prelude/struct.Text2d.html>（原文：“With `Text2d` the `justify` field of `TextLayout` only affects the internal alignment … and not its relative position, which is controlled by the `Anchor` component.”） |
 | 长度单位 | `px(f32)`（0.20 的长度构造函数）；`UiRect` 用 `px(8.0).all()`；`Val::Px` 亦可 | 【已验证】<https://docs.rs/bevy/0.20.0/bevy/prelude/struct.Node.html>（`Node` 字段用 `px(..)`/`percent(..)`） |
 | 字体资源 | `assets/fonts/*.ttf`（目录见 `00` §0.6，规格见 `04` §9）；由 `UiFontPlugin` 同步加载并暴露句柄 | — |
@@ -851,31 +851,159 @@ fn spawn_world_label(commands: &mut Commands, font: &Handle<Font>, at: Vec2, tex
 | `HUD_MARGIN_PX` | `8.0` | HUD 距视口边缘的像素 |
 | `WORLD_TEXT_FONT_PX` | `12.0` | 世界空间文字字号 |
 | `HUD_LINE_HEIGHT_PX` | `20.0` | 多行 HUD 的行高 |
+| `UI_HUD_PILL_MAX_WIDTH` | `240.0` | HUD 药丸最大宽度；超出换行 |
+| `UI_TOAST_BOTTOM` | `24.0` | 提示条距视口底部 |
+| `UI_COMPLETION_WIDTH` | `240.0` | 结算面板宽 |
+| `UI_COMPLETION_HEIGHT` | `120.0` | 结算面板高 |
 
 > 字号约束：一律显式 `FontSize::Px`，不得使用 `Rem`（见 §7.10.3）。UI 走原生分辨率后不再要求与画布像素格对齐；世界文字（`Text2d`）仍随画布放大。
 > 具体 UI 布局（哪个面板放哪、有几行）属于对应玩法文档，本文只拥有尺寸常量与写法。
 
-### 7.10.5 菜单界面（主菜单 / 关卡选择 / 设置）
+### 7.10.5 UI 设计系统（主菜单 / 关卡选择 / 设置 / 暂停 / HUD）
 
-所有者：`crates/game/src/render/menu.rs`。只由发布 bin 注册（`05` §5.3）。
+所有者：`crates/game/src/render/ui_kit.rs`（组件）、`crates/game/src/render/menu.rs` /
+`pause.rs` / `hud.rs`（界面组合）、`crates/game/src/config/ui.rs`（常量）。
+只由发布 bin 注册 `MenuPlugin` / `HudPlugin`；`PausePlugin` 与 `UiKitPlugin` 也由编辑器复用
+（`05` §5.3）。
 
-| 项 | 约定 |
-|---|---|
-| 相机 | 与 HUD 相同：UI 由 **UI 窗口相机**（`IsDefaultUiCamera`）渲染，逻辑坐标系 = `VIEWPORT_W × VIEWPORT_H`（`UiScale = k`） |
-| 背景 | 每个界面一个全屏不透明 `Node`（`left/top = 0`，`width/height = px(VIEWPORT_W/H)`），`GlobalZIndex(100)` 盖住 HUD 与暂停面板 |
-| 生命周期 | 根节点带 `DespawnOnExit(对应 GameState)`；设置界面在 `GameSettings` 变化时整块重建 |
-| 文本 | 中/英文案来自 `i18n`（默认中文）；字体来自 `UiFont`（`04` §9）。缺字体时 Bevy 只显示 ASCII |
-| 尺寸 | 一律 `px(..)` 整数；**禁止** `vw()`/`vh()`/`percent()` |
+**设计目标**：暗紫底、金色主行动、2px 硬边框、0 模糊硬阴影、12/24px 两档字号。
+不使用大圆角、平滑渐变、模糊阴影；像素风的层次靠纯色分层、硬边和整数像素位移。
+
+#### 7.10.5.1 调色板
+
+颜色取自项目自产的地形 / 角色 / UI 占位图（`tileset.png`、`cat_sheet.png`、`ui_atlas.png`）。
+UI **不得**再写调色板之外的十六进制值。
+
+| Token | 色值 | 用途 | 对 `INK` 对比度 |
+|---|---|---|---|
+| `UI_INK` | `#1a1c2c` | 屏幕底、深色面板 | — |
+| `UI_PLUM` | `#5d275d` | 边框、分隔线 | 1.54:1，仅装饰 |
+| `UI_CRIMSON` | `#b13e53` | 危险/退出 | 2.96:1，仅大字/图标 |
+| `UI_ORANGE` | `#ef7d57` | 警告、按下态 | 6.21:1 |
+| `UI_GOLD` | `#ffcd75` | 主按钮、焦点环 | 11.43:1 |
+| `UI_GREEN` | `#38b764` | 成功/已存档 | 6.52:1 |
+| `UI_PAPER` | `#f4f4f4` | 正文 | 15.32:1 |
+
+两级暗面由 `INK` 提亮得到，不引入新色相：
+
+| Token | 色值 | 用途 |
+|---|---|---|
+| `UI_SURFACE` | `#24273d` | 次按钮、设置行底 |
+| `UI_SURFACE_HI` | `#2f334d` | 次按钮 hover |
+| `UI_MUTED` | `#f4f4f4` 60% alpha | 次要文本 |
+| `UI_PANEL_BG` | `#1a1c2c` 95% alpha | 暂停/设置/结算面板 |
+| `UI_SCRIM` | `#1a1c2c` 72% alpha | 暂停/结算遮罩 |
+| `UI_HUD_BG` | `#1a1c2c` 65% alpha | HUD 药丸底 |
+| `UI_SHADOW` | `#000000` 45% alpha | 2px 硬阴影 |
+
+`CRIMSON` 对 `INK` 只有 2.96:1，不能做正文；危险按钮使用「`UI_SURFACE` 底 + `CRIMSON` 边框 + `PAPER` 字」。
+主按钮使用 `UI_GOLD` 底 + `UI_INK` 字（11.43:1）。
+
+#### 7.10.5.2 尺寸、字体与状态
 
 | 常量 | 值 | 说明 |
 |---|---|---|
-| `MENU_FONT_PX` | `12.0` | 菜单正文/按钮字号 |
+| `MENU_FONT_PX` | `12.0` | 正文/按钮字号（CJK 下限） |
 | `MENU_TITLE_FONT_PX` | `24.0` | 界面标题字号（2 × 正文） |
-| `MENU_PADDING_PX` | `12.0` | 面板内边距；实现里取 2 × 作为左上边距 |
-| `MENU_GAP_PX` | `6.0` | 行/按钮间距 |
+| `MENU_PADDING_PX` | `12.0` | 屏幕/面板内边距 |
+| `MENU_GAP_PX` | `8.0` | 菜单行/按钮间距 |
+| `UI_SPACE_XS` / `SM` / `MD` / `LG` | `4 / 8 / 12 / 16` | 4px 基准间距 |
+| `UI_BUTTON_WIDTH` | `200.0` | 主菜单/关卡选择按钮宽 |
+| `UI_BUTTON_HEIGHT` | `24.0` | 菜单按钮高 |
+| `UI_BUTTON_HEIGHT_SM` | `20.0` | 设置控件、装饰品 chip |
+| `UI_BORDER_PX` | `2.0` | 按钮/面板边框 |
+| `UI_SHADOW_PX` | `2.0` | 硬阴影偏移（blur = 0） |
+| `UI_FOCUS_OUTLINE_PX` | `1.0` | 焦点环宽度（offset = 1） |
+| `UI_PANEL_PADDING` | `12.0` | 面板内边距 |
+| `UI_PANEL_MAX_HEIGHT` | `288.0` | 暂停面板最大高度 |
+| `UI_PAUSE_PANEL_WIDTH` | `260.0` | 暂停面板宽 |
+| `UI_PAUSE_BUTTON_WIDTH` | `232.0` | 暂停按钮宽（260 − 2×2 边框 − 2×12 内边距） |
+| `UI_SETTINGS_PANEL_WIDTH` | `240.0` | 设置面板宽 |
+| `UI_SETTINGS_CONTENT_WIDTH` | `212.0` | 设置行宽（240 − 2×2 − 2×12） |
+| `UI_SETTINGS_TOGGLE_WIDTH` | `80.0` | 设置页 toggle 宽（固定宽度避免文本切换抖动） |
+| `UI_SETTINGS_VALUE_WIDTH` | `32.0` | 设置页音量数值宽 |
+| `UI_LEVEL_CARD_WIDTH` | `128.0` | 关卡卡片宽（两列 + 8 间距 = 264） |
+| `UI_LEVEL_CARD_HEIGHT` | `56.0` | 关卡卡片高 |
+| `UI_ONLINE_ROOM_WIDTH` | `264.0` | 联机房间行宽 |
 
-> 这些常量的职责是「菜单类 UI 的排版网格」；具体有哪些按钮属于 `05` §5.5 的流程。
-> 菜单同样参与「窗口 == 画布 × k」的逐像素验证（截图见 `AGENTS.md` §4）。
+> 字号只用 `12/24` 两档；一律 `FontSize::Px`，禁止 `Rem`。
+
+**按钮层级**（`UiButtonRole`）：
+
+| 角色 | 静止 | hover / focus | 按下 | 文本 |
+|---|---|---|---|---|
+| `Primary` | `GOLD` 底 / `GOLD` 边 | 边 `PAPER` | `ORANGE` 底 | `INK` |
+| `Secondary` | `SURFACE` 底 / `PLUM` 边 | `SURFACE_HI` 底 / `GOLD` 边 | `INK` 底 / `ORANGE` 边 | `PAPER` → hover `GOLD` |
+| `Danger` | `SURFACE` 底 / `CRIMSON` 边 | `SURFACE_HI` 底 / `ORANGE` 边 | `INK` 底 / `CRIMSON` 边 | `PAPER` |
+
+- 每个界面**只有一个** `Primary`；主菜单是「开始游戏」，暂停是「继续」。
+- hover / focus 上移 1px；按下下移 1px。只改 `UiTransform.translation`，**不改 `Node` 尺寸**，避免每帧重排。
+- 焦点环是 `Outline { width: 1px, offset: 1px, color: GOLD }`；失焦时把 `color` 设为 `Color::NONE`，不要反复插拔组件。
+- 禁用态统一 `PAPER` 40% alpha + 不响应 `Activate`；当前没有禁用按钮，保留规则。
+
+#### 7.10.5.3 构图
+
+所有界面共用：UI 窗口相机（`IsDefaultUiCamera`）、逻辑坐标 = `ViewLayout` 尺寸、
+`GlobalZIndex(100)`（菜单）/`10`（暂停）/`50`（结算）、`DespawnOnExit`（菜单与结算）。
+尺寸一律 `px(..)` 整数；**禁止** `vw()`/`vh()`/`percent()` 做定位与尺寸。
+
+| 界面 | 构图 |
+|---|---|
+| 主菜单 | 全屏 `INK`，垂直/水平居中；标题 `ANIMJ` 24px + 48×2px 金色下划线；200px 宽按钮列（间距 8）；底部绝对定位版本号 + `ui_hint`；状态提示单独一行，空时 `Display::None` |
+| 关卡选择 | 全屏 `INK` 居中；标题；两列 128×56 卡片（间距 8），标题为 `world_01 → WORLD 01`，有存档时绿色副标题；返回按钮 |
+| 联机 | 全屏 `INK` 居中；标题；264px 房间行；创建房间 `Primary`；返回 `Secondary`；空列表显示 `searching` |
+| 设置 | 全屏 `INK` 居中；240px 面板；每行 24px：左 label（`flex_grow`），右控件；音量 `- / 值 / +`，全屏/语言为 20px 高 toggle，返回 24px |
+| 暂停 | 全屏 `UI_SCRIM` 遮罩 + 居中 260px 面板（最大高 288）；标题「暂停」；5 个 232×24 按钮；装饰品行放入 `flex_grow` 滚动区；重建时保留 `ScrollPosition` |
+| HUD | 左上角 8px 药丸：1px `PLUM` 边框 + `UI_HUD_BG`，内文 12px；无目标时 `Display::None` |
+| 提示条 | 底部 24px 居中独立药丸；`HudToast` 有文本时显示，2.5s 后隐藏；不再混进常驻 HUD 文本 |
+| 结算 | 全屏 `UI_SCRIM` + 居中 240×120 面板；24px 标题 + 12px 统计；`DespawnOnExit(GameComplete)` |
+
+布局容器用 `Node` 的 flex：`flex_direction: Column`、`align_items: Center`、
+`justify_content: Center`；底部行用 `PositionType::Absolute` + `bottom: px(8)`。
+本地双人 `ViewLayout.width() == 640` 时，菜单列仍按整个宽度居中，不按单视图居中。
+
+#### 7.10.5.4 交互语义（Bevy 0.20）
+
+- 按钮组件：`bevy::ui_widgets::Button`；交互状态：
+  - `bevy::picking::hover::Hovered` **必须显式插入**（`Hovered(false)`）——`update_is_hovered` 只更新已有该组件的实体。
+  - `bevy::ui::Pressed` 由 `ButtonPlugin` 在指针按下/松开时维护；**不要**用 `Added<Pressed>` 触发业务动作（按下即触发、键盘不触发）。
+  - `bevy::ui_widgets::Activate` 在「松开鼠标」或「焦点按钮上 Enter/Space」时触发；业务动作统一用
+    `app.add_observer(|activate: On<Activate>| …)` + `Query<&MenuButton>` / `Query<&PauseButton>`。
+- 键盘焦点：`DefaultPlugins` 只含 `InputFocusPlugin` + `InputDispatchPlugin`，**不含** `TabNavigationPlugin`；
+  `UiKitPlugin` 显式添加。每个界面根节点 `TabGroup::modal()`，每个按钮 `TabIndex(0)`（同 index 按层级顺序），
+  首个按钮 `AutoFocus`。焦点环由 §7.10.5.2 的 `Outline` 表达。
+- 设置界面**不再整块重建**：`OnEnter(Settings)` 生成一次，`GameSettings` 变化时只更新带 marker 的
+  `Text`（音量值、全屏值、语言值、标题/行标签）。这样焦点、hover 与按钮状态不会在连续调音量时丢失。
+- 暂停菜单保留整块重建（装饰品变化时），但重建前读取 `ScrollPosition(Vec2)`，重建后写回；
+  `AutoFocus` 只在「从关闭到打开」或「重新进入 `Paused`」时添加，避免装备装饰品后焦点跳回「继续」。
+- 动画只用于颜色与 1px 位移；不做布局宽高补间。文字保持 `FontSmoothing::AntiAliased`（见 §7.10.3）。
+
+#### 7.10.5.5 资产与字体
+
+- **字体**：发布前必须把含 CJK 的唯一字体放进 `assets/fonts/`（`04` §9）；`UiFontPlugin` 按
+  `ANIMJ_UI_FONT` → `assets/fonts/` → 系统 CJK 的顺序加载。缺字体时 Bevy 只显示 ASCII，且缺字形会丢掉整行后续文本。
+  当前仓库提交的是 Noto Sans SC 的 UI 子集（OFL 1.1，见 `assets/fonts/OFL-NotoSansSC.txt`）；
+  `assets/fonts/` 中只允许一个 `.ttf`，避免按文件名字典序选中错误字体。
+- **UI 图标**：`assets/sprites/ui/ui_atlas.png` 仍是 32×32 占位格位，未接入运行时。若后续接入，
+  16 逻辑像素显示需要单独生成 16px 格位图集；不要在 `k = 1/3` 时把 32px 源图缩到 16px（会丢像素/非整数放大）。
+- **九宫格**：当前按钮/面板用 `Node` 的 `border` + `BackgroundColor` + `BorderColor` + `BoxShadow(blur = 0)`
+  实现，不依赖贴图。只有需要纹理面板时才加 `ImageNode` + `NodeImageMode::Sliced(TextureSlicer {
+  border: BorderRect::all(8.0), .. })`，源图 24×24、角 8px。
+- **阴影**：`BoxShadow::new(UI_SHADOW, px(0), px(2), px(0), px(0))`；`blur_radius` 必须为 0，避免灰色过渡像素。
+
+#### 7.10.5.6 验收
+
+| 项 | 判据 |
+|---|---|
+| 主菜单 | `cargo game -- --demo menu --frames 90 --screenshot target/ui-menu`；窗口截图中按钮列水平居中、宽度一致、主按钮为金色 |
+| 关卡/设置/暂停 | `--demo levels` / `--demo settings` / `--demo pause` 各生成截图；设置连续调音量不丢焦点；暂停滚动位置在装备后保持 |
+| 点击 | `--demo click --frames 120` 日志出现 `点击生效`（`PointerInput → PointerPress → Pressed → PointerClick → Activate`） |
+| 键盘 | 人工运行 `cargo game`，Tab / Shift+Tab 切换焦点、Enter/Space 触发；焦点环可见 |
+| 中/英 | 两种语言下无截断、无缺字；`settings.ron` 与 `--demo settings` 日志一致 |
+| 回归 | `cargo test-all` + `cargo clippy --workspace --all-targets -- -D warnings` |
+
+> 菜单/暂停/设置同样参与「窗口 == 画布 × k」的几何验证：UI 只渲染在窗口相机，画布截图应为纯黑，
+> 窗口截图中 UI 与游戏区域严格重合（截图见 `AGENTS.md` §4）。
 
 ---
 

@@ -70,7 +70,7 @@ flowchart LR
 | `04` | [`04-assets.md`](04-assets.md) | 美术资源规格、图集、锚点、帧动画、装饰品图层、占位资产 |
 | `05` | [`05-architecture.md`](05-architecture.md) | crate 划分、模块树、插件、调度顺序、消息、测试策略 |
 | `06` | [`06-physics-and-movement.md`](06-physics-and-movement.md) | AABB 碰撞算法、移动手感常量、宽容机制 |
-| `07` | [`07-rendering.md`](07-rendering.md) | 像素完美双层相机、采样/MSAA/色调映射、像素吸附、瓦片渲染 |
+| `07` | [`07-rendering.md`](07-rendering.md) | 像素完美双层相机、采样/MSAA/色调映射、像素吸附、瓦片渲染、UI 设计系统（调色板/组件/焦点/HUD） |
 | `08` | [`08-level-editor.md`](08-level-editor.md) | 地图设计工具：选型、工具集、就地试玩、热重载 |
 | `09` | [`09-dependencies.md`](09-dependencies.md) | 依赖矩阵（含 0.20 不可用项）、feature、Cargo 配置 |
 | `10` | [`10-bevy-0.20-api.md`](10-bevy-0.20-api.md) | Bevy 0.20 API 速查 + **过期名称黑名单** + 取证方法 |

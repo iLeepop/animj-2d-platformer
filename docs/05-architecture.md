@@ -36,7 +36,7 @@ flowchart LR
 | 路径 | 内容 |
 |---|---|
 | `lib.rs` | `pub fn add_game_plugins(app: &mut App)` —— 注册全部玩法插件，**不含** `DefaultPlugins`/窗口/资产源/任何编辑器类型。两个 bin 各自负责外壳（`DefaultPlugins`、`AssetPlugin.file_path` 见 `09` §9.6） |
-| `config/{mod,physics,render,room,net}.rs` | **所有运行时常量的唯一代码落点**（所有者文档见各文件头注释；`net` 归本文 §5.15） |
+| `config/{mod,physics,render,room,net,ui}.rs` | **所有运行时常量的唯一代码落点**（所有者文档见各文件头注释；`net` 归本文 §5.15，`ui` 归 `07` §7.10.5） |
 | `coords.rs` | `room_local_to_world` / `world_to_room` / `room_center`（`00` §0.3 的唯一换算入口） |
 | `physics/{mod,aabb,tile,core,tests}.rs` | **纯函数物理内核**（`06`）：`Aabb`、`TileWorld`/`TileKind`、`step`、`overlaps_tile_kind`，以及 T1–T21 不变量测试 |
 | `player/{mod,input,spawn,death}.rs` | ECS 适配层（`06` §6.1.5）：`PlayerMotion`/`PlayerInput`、输入采样、生成、Hazard 死亡与重生 |
@@ -61,9 +61,10 @@ flowchart LR
 | `render/tiles.rs` | 瓦片 sprite 批量生成 + 房间可见性裁剪 |
 | `render/parallax.rs` | 2D 视差背景（`03` §3.10 / `07` §7.13）：贴图平铺、相位与滚动、编辑器预览覆盖、mtime 重载 |
 | `render/sprite_anim.rs` | 自写帧动画（`04` §5） |
-| `render/hud.rs` | 屏幕空间 HUD |
+| `render/hud.rs` | 屏幕空间 HUD（目标药丸 / 独立提示条 / 结算面板） |
 | `render/pause.rs` | 暂停菜单 + 装饰品装备界面（`Esc` 开关；含「设置」「主菜单」入口） |
-| `render/menu.rs` | 主菜单 / 关卡选择 / 设置界面（仅发布 bin；`05` §5.5、`07` §7.10.5） |
+| `render/menu.rs` | 主菜单 / 关卡选择 / 联机 / 设置界面（仅发布 bin；`05` §5.5、`07` §7.10.5） |
+| `render/ui_kit.rs` | UI 设计系统组件：调色板角色、按钮/卡片/面板、`Hovered`/`Pressed`/`Outline` 反馈、`TabNavigationPlugin` |
 | `render/debug.rs` | gizmos 网格、`F3` 调试开关、诊断行（dev feature，见 `07` §7.9） |
 | `anim_data.rs` | 角色动画数据（`assets/anim/player.anim.ron`，`04` §5.5）：类型/校验/加载器/内置回退 |
 | `save/mod.rs` | `SaveData` + `save_path()` + 原子写（M6） |
@@ -122,9 +123,10 @@ flowchart LR
 | `SpriteAnimPlugin` | 帧动画 + 按朝向水平翻转 sprite（装饰品同步镜像，`04` §4.5） | 无 |
 | `SavePlugin` | 读档（版本/地图/存档点校验）+ 通关/授奖/设置存档点/退出即存。**客户端 `run_if(not_client)` 全部跳过** | `WorldPlugin`、`RoomPlugin` |
 | `NetPlugin` | `SessionMode` 资源、主机/客户端生命周期、UDP 收包、快照广播/应用、`OnlineMenu` 房间搜索（本文 §5.15） | 无（只依赖 `std::net` + `serde`/`ron`） |
-| `HudPlugin` | HUD（进度/提示条/结算面板） | `CorePlugin` |
-| `PausePlugin` | 暂停菜单 + 装饰品装备界面（`GameState::Paused`，`Esc` 开关）；「设置」进 `Settings`、「主菜单」先存档再回 `MainMenu` | `CorePlugin` |
-| `MenuPlugin` | 主菜单 / 关卡选择 / 设置 UI。**只由 `add_render_plugins` 注册（发布 bin）**；写入 `StartRequest` 驱动加载 | `WorldPlugin`、`SavePlugin`、`SettingsPlugin`、`CorePlugin` |
+| `HudPlugin` | HUD（目标药丸 / 独立提示条 / 结算面板） | `CorePlugin`、`UiKitPlugin` |
+| `PausePlugin` | 暂停菜单 + 装饰品装备界面（`GameState::Paused`，`Esc` 开关）；「设置」进 `Settings`、「主菜单」先存档再回 `MainMenu` | `CorePlugin`、`UiKitPlugin` |
+| `MenuPlugin` | 主菜单 / 关卡选择 / 联机 / 设置 UI。**只由 `add_render_plugins` 注册（发布 bin）**；写入 `StartRequest` 驱动加载 | `WorldPlugin`、`SavePlugin`、`SettingsPlugin`、`CorePlugin`、`UiKitPlugin` |
+| `UiKitPlugin` | UI 设计系统：按钮/卡片/面板构造、`Hovered`/`Pressed`/`Outline` 反馈、`TabNavigationPlugin` 与 `AutoFocus` 约定 | 无 |
 | `SettingsPlugin` | 读设置 → `GlobalVolume` + 主窗口 `WindowMode`；变化后原子写 `settings.ron`。**只由发布 bin 注册** | 无 |
 | `UiFontPlugin` | 加载唯一 UI 字体并暴露 `UiFont::text_font(px)`；编辑器与发布 bin 共用（`04` §9） | 无 |
 | `AudioFxPlugin` | 事件 → 音效（`04` §6.9；物理结果与 `05` §5.6 的消息） | `RoomPlugin`、`PlayerPlugin` |
