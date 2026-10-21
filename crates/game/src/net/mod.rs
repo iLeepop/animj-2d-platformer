@@ -67,7 +67,7 @@ impl Plugin for NetPlugin {
             .add_systems(
                 FixedUpdate,
                 (
-                    client::send_input.in_set(GameSet::Input),
+                    client::send_input_and_predict.in_set(GameSet::Physics),
                     host::broadcast_snapshot.after(GameSet::Physics),
                 ),
             )

@@ -355,6 +355,12 @@ pub fn broadcast_snapshot(
             vy: motion.0.vel.y,
             grounded: motion.0.grounded,
             facing_right: facing.0,
+            // 主机自己控制的玩家没有上行输入；远程玩家回带最后收到的序号。
+            last_input_seq: host
+                .clients
+                .iter()
+                .find(|conn| conn.player_id == id.0)
+                .map_or(0, |conn| conn.last_input_seq),
         })
         .collect();
     snaps.sort_by_key(|player| player.id);

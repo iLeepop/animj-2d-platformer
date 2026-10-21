@@ -394,19 +394,19 @@ pub struct GameSettings {
   - 发现/加入/输入等低频消息：`TAG_RON` + RON 文本（与关卡/存档同一套 `serde`）。
   - 每固定步快照：`TAG_SNAPSHOT` + 定长小端二进制。布局见源码头注释；单包 ≤ `MAX_PACKET_BYTES = 1200`，
     超限直接丢弃（避免 IP 分片）。房间上限 64 ⇒ 通关集合用 `u64` 位图。
-- 协议版本 `PROTOCOL_VERSION = 2`；发现响应带版本，不匹配不显示。
+- 协议版本 `PROTOCOL_VERSION = 3`（v3：`PlayerSnap` 增加 `last_input_seq`）；发现响应带版本，不匹配不显示。
 - 其余常量（`config/net.rs`，本文拥有）：`MAX_PLAYERS = 4`、`MAX_PACKETS_PER_FRAME = 64`、
   `CONNECT_TIMEOUT_SECS = 10`、`CLIENT_TIMEOUT_SECS = 5`、`REMOTE_INPUT_STALE_SECS = 0.25`、
   `DISCOVERY_INTERVAL_SECS = 1`、`ROOM_TTL_SECS = 3.5`、`JOIN_RETRY_SECS = 0.25`、`PLAYER_SPAWN_GAP_PX = 24`、
   `SPAWN_PLACEMENT_TRIES = 8`、`SNAPSHOT_MAX_ROOMS = 64`、`INTERP_DELAY_STEPS = 2`、
-  `INTERP_MAX_LAG_STEPS = 8`。
+  `INTERP_MAX_LAG_STEPS = 8`、`MAX_PENDING_INPUTS = 240`。
 
 ### 5.15.3 同步模型（主机权威）
 
 | 方向 | 频率 | 内容 |
 |---|---|---|
 | 客户端 → 主机 `Input` | 每固定步（60 Hz） | 序号 + `PlayerInput` 四个字段；主机按序号丢弃乱序/重复包 |
-| 主机 → 客户端 `Snapshot` | 每固定步（60 Hz） | 全部玩家 `(id, x, y, vx, vy, grounded, facing)`、通关房间、果实计数、已拾取 `ZoneId`、当前存档点 |
+| 主机 → 客户端 `Snapshot` | 每固定步（60 Hz） | 全部玩家 `(id, x, y, vx, vy, grounded, facing, last_input_seq)`、通关房间、果实计数、已拾取 `ZoneId`、当前存档点 |
 | `Join` / `Welcome` / `Reject` | 0.25 s 重试 / 事件 | 加入握手；`Join` 带持久 `client_id`。主机分配最小空闲 `PlayerId(1..MAX_PLAYERS)`，在**关卡出生点**生成角色；出生点被墙/已有玩家占用时就近找空位。**同一 `client_id` 从新端口重连时复用原玩家编号/实体**，不新增角色 |
 | `Discover` / `RoomInfo` | 1 s 查询 + 响应 | 房间搜索（§5.15.4） |
 | `Bye` / 超时 | 离开 / 5 s 静默 | 客户端收到 `WindowCloseRequested`（点击关闭按钮）或 `AppExit` 时主动发 `Bye`，主机立即移除；异常退出（崩溃/强杀）则 5 s 超时清理 |
@@ -415,19 +415,22 @@ pub struct GameSettings {
   `physics::step`（含玩家间碰撞，`06` §6.11）。
 - 远程跳跃/交互按键按**或**写入锁存槽位（同一固定步之间到达的多个输入包不会互相吞掉）；
   超过 0.25 s 没有新输入时把 `move_x` / `jump_held` 清零（客户端暂停或卡顿不会让角色一直走）。
-- 客户端**不跑** `apply_player_physics` / Hazard / 存档点 / 条件求值 / 存档 / 热重载；
-  快照在 `Update` 的 `GameSet::PostPhysics`（早于 `Camera`）写入 `PlayerMotion`。
+- 客户端**不跑** `apply_player_physics`（全体玩家）/ Hazard / 存档点 / 条件求值 / 存档 / 热重载；
+  只对**自己的角色**在 `FixedUpdate` 的 `GameSet::Physics` 内做本地预测（与主机同一个
+  `physics::step_with_players`，其他玩家用最近快照的 AABB 当实心障碍）。
+  快照在 `Update` 的 `GameSet::PostPhysics`（早于 `Camera`）写入 `PlayerMotion`，随后：
+  丢弃 `seq ≤ last_input_seq` 的待确认输入，并从权威状态重放剩余输入（预测收敛）。
+  因此输入→自己角色画面不再等待 RTT；偏差由快照纠正。
 - 快照是**完整状态**而非增量：丢包在下一帧自愈。
 - 客户端标识：`client_id` 持久化在存档目录的 `client_id` 文件；`ANIMJ_CLIENT_ID` 可覆盖（同机多开测试）。
 - 客户端不生成玩家：玩家实体由第一份快照创建；离开的玩家由快照差集销毁。
-- 客户端对**所有玩家（含本地玩家）**在快照 `seq` 轴上做渲染插值（`RenderCenter`，只影响
-  `Transform` 与相机）：渲染时刻 = 最新 `seq` − `INTERP_DELAY_STEPS`，在相邻两帧之间线性插值。
+- 客户端只对**远端玩家**在快照 `seq` 轴上做渲染插值（`RenderCenter`，只影响 `Transform`）：
+  渲染时刻 = 最新 `seq` − `INTERP_DELAY_STEPS`，在相邻两帧之间线性插值。
   `seq` 每固定步恰好 +1，所以它是无抖动的时间轴；丢一个包时插值跨过缺口继续以平均速度前进。
   落后超过 `INTERP_MAX_LAG_STEPS`（暂停、长卡顿）时向前重同步。
-  `PlayerMotion` 仍是权威值，逻辑不读插值结果。视觉代价固定为 `INTERP_DELAY_STEPS` 个固定步。
+  本地玩家不插值（用预测位置直接投影），因此相机也跟随预测位置。
 - 相机按视图绑定玩家（`camera::rig::view_players`）：本地双人 2 个视图；主机/客户端各 1 个视图，
-  客户端在收到 `Welcome` 之前相机不动。客户端相机跟随 `RenderCenter`（否则相机按包到达节奏抖动）。
-  分屏细节见 `02` §2.2 / `07` §7.2.2。
+  客户端在收到 `Welcome` 之前相机不动。分屏细节见 `02` §2.2 / `07` §7.2.2。
 
 ### 5.15.4 局域网房间搜索
 
@@ -440,9 +443,11 @@ pub struct GameSettings {
 ### 5.15.5 已知边界
 
 - 不做公网穿透/NAT、账号、匹配、反作弊、房间密码。
-- 不做客户端预测/回滚：LAN 下输入→画面为一个 RTT + 最多一个快照间隔 + `INTERP_DELAY_STEPS`
-  个固定步的渲染延迟；高延迟网络会明显滞后。
-- 渲染插值只平滑表现，不降低输入延迟；丢包时表现为「以平均速度跨过缺口」，而不是冻结再跳。
+- 本地预测**没有回滚**：预测结果被快照纠正（丢弃已确认输入 + 重放未确认输入），
+  不保存历史状态做 rollback。与主机状态偏差大（如死亡/传送）时表现为一次位置跳变。
+- 远端玩家仍有 `INTERP_DELAY_STEPS` 个固定步的渲染延迟；本地玩家的输入→画面只受 RTT 影响
+  （自己的移动立即生效），但位置最终仍由主机裁决。
+- 渲染插值只平滑表现，不降低远端玩家的延迟；丢包时表现为「以平均速度跨过缺口」，而不是冻结再跳。
 - 本地双人**做**左右分屏（每个视图 320×320）；联机不做同机分屏——每个进程只有自己的视图。
 - 客户端热重载被禁用；主机热重载不会同步房间实体编号（联机时建议不编辑关卡）。
 - 装饰品/存档进度：主机负责写入；客户端只读快照，不写本地存档。

@@ -13,18 +13,19 @@ use crate::anim_data::ActiveAnim;
 use crate::checkpoint::{ActiveCheckpoint, CheckpointPoint};
 use crate::config::net::{
     CLIENT_TIMEOUT_SECS, CONNECT_TIMEOUT_SECS, INTERP_DELAY_STEPS, INTERP_MAX_LAG_STEPS,
-    JOIN_RETRY_SECS, MAX_PACKET_BYTES, MAX_PACKETS_PER_FRAME,
+    JOIN_RETRY_SECS, MAX_PACKET_BYTES, MAX_PACKETS_PER_FRAME, MAX_PENDING_INPUTS,
 };
-use crate::config::physics::{COYOTE_STEPS, FIXED_DT};
+use crate::config::physics::{COYOTE_STEPS, DEFAULT_PHYSICS, FIXED_DT};
 use crate::config::render::VIEWPORT_W;
-use crate::physics::Body;
+use crate::physics::{Aabb, Body, StepInput, StepOutcome, step_with_players};
 use crate::player::spawn::{PlayerSheet, spawn_player};
 use crate::player::{
-    PlayerFacing, PlayerId, PlayerInput, PlayerInputs, PlayerMotion, PlayerStepOutcome,
+    PlayerFacing, PlayerId, PlayerInput, PlayerInputs, PlayerMotion, PlayerStepOutcome, next_facing,
 };
 use crate::render::snap::RenderCenter;
 use crate::room::{PickedZones, ZoneId};
 use crate::state::{GameState, SessionMode};
+use crate::tiles::LevelTiles;
 use crate::world::load::{LoadNotice, LoadedLevel, Notice};
 use crate::world::progress::LevelProgress;
 
@@ -41,6 +42,11 @@ pub struct ClientNet {
     started: Instant,
     input_seq: u32,
     client_id: u64,
+    /// 已发送、尚未被主机确认的输入（`seq`, 输入）。
+    ///
+    /// 快照回带 `last_input_seq` 后，丢弃 ≤ 该值的项，再用剩下的输入从权威状态重放，
+    /// 让本地预测收敛到主机结果。
+    pending_inputs: VecDeque<(u32, PlayerInput)>,
     pending: Option<Snapshot>,
     /// 用于渲染插值的最近快照，按 `seq` 升序，容量 `INTERP_DELAY_STEPS + 1`。
     recent: VecDeque<Snapshot>,
@@ -54,9 +60,9 @@ pub struct ClientNet {
 /// 快照插值的窗口：包住 `render_seq` 的两帧快照与插值系数。
 ///
 /// 客户端每 60 Hz 收到一次快照；渲染帧与快照到达时刻不同步，直接投影权威 `Aabb`
-/// 会让角色与相机按包到达节奏跳动。渲染时统一在 `seq` 轴上回看
-/// [`INTERP_DELAY_STEPS`] 步，并在相邻快照之间线性插值——**本地玩家也一样**，
-/// 因为它的位置同样只来自快照。
+/// 会让**远端角色**按包到达节奏跳动。渲染时统一在 `seq` 轴上回看
+/// [`INTERP_DELAY_STEPS`] 步，并在相邻快照之间线性插值。
+/// 本地玩家不插值：它在本地按固定步预测（见 [`send_input_and_predict`]）。
 fn interpolation_pair(recent: &VecDeque<Snapshot>, render_seq: f32) -> (&Snapshot, &Snapshot, f32) {
     let first = recent.front().expect("recent 非空");
     let last = recent.back().expect("recent 非空");
@@ -87,6 +93,11 @@ fn advance_render_seq(render_seq: f32, dt_secs: f32, newest_seq: u32) -> f32 {
         next = newest - delay;
     }
     next.min(newest)
+}
+
+/// 丢弃主机已确认的输入：序号 ≤ `ack` 的输入效果已经包含在权威快照里。
+fn drop_acked_inputs(pending: &mut VecDeque<(u32, PlayerInput)>, ack: u32) {
+    pending.retain(|(seq, _)| *seq > ack);
 }
 
 /// 某玩家在快照里的 AABB 中心（`PlayerSnap` 已按 id 升序存放）。
@@ -155,6 +166,7 @@ pub fn start_client(mut commands: Commands, mode: Res<SessionMode>) {
                 started: now,
                 input_seq: 0,
                 client_id: load_or_create_client_id(),
+                pending_inputs: VecDeque::with_capacity(MAX_PENDING_INPUTS),
                 pending: None,
                 recent: VecDeque::with_capacity(INTERP_DELAY_STEPS as usize + 1),
                 render_seq: 0.0,
@@ -306,7 +318,10 @@ pub fn poll_client(
     }
 }
 
-/// 应用最新快照（`Update`，早于相机；客户端不跑物理）。
+/// 应用最新快照（`Update`，早于相机）。
+///
+/// 远端玩家直接采用权威位置；本地玩家先采用权威位置，再重放未确认输入，
+/// 把本地预测收敛到主机结果（`05` §5.15.3）。
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub fn apply_snapshot(
     mut commands: Commands,
@@ -314,6 +329,7 @@ pub fn apply_snapshot(
     state: Res<State<GameState>>,
     sheet: Option<Res<PlayerSheet>>,
     anim: Option<Res<ActiveAnim>>,
+    tiles: Option<Res<LevelTiles>>,
     mut progress: Option<ResMut<LevelProgress>>,
     mut active: Option<ResMut<ActiveCheckpoint>>,
     mut picked: Option<ResMut<PickedZones>>,
@@ -368,10 +384,12 @@ pub fn apply_snapshot(
                 PlayerId(snap.id),
                 Vec2::new(snap.x, snap.y),
             );
-            // 所有客户端玩家（含本地）都走渲染插值，权威 `Aabb` 不变。
-            commands
-                .entity(entity)
-                .insert(RenderCenter(Vec2::new(snap.x, snap.y)));
+            // 只有远端玩家走渲染插值；本地玩家由预测位置直接投影。
+            if client.player_id != Some(snap.id) {
+                commands
+                    .entity(entity)
+                    .insert(RenderCenter(Vec2::new(snap.x, snap.y)));
+            }
         }
     }
 
@@ -379,6 +397,46 @@ pub fn apply_snapshot(
     for (id, entity) in existing {
         if !alive.contains(&id) {
             commands.entity(entity).despawn();
+        }
+    }
+
+    // 本地玩家：丢弃已确认的输入，再从权威状态重放剩余输入（客户端预测的收敛步骤）。
+    if let Some(local_id) = client.player_id
+        && let Some(local_snap) = snapshot.players.iter().find(|player| player.id == local_id)
+    {
+        drop_acked_inputs(&mut client.pending_inputs, local_snap.last_input_seq);
+        if let (Some(tiles), Some((_, _, mut motion, mut outcome, _))) = (
+            tiles.as_ref(),
+            players.iter_mut().find(|(_, id, _, _, _)| id.0 == local_id),
+        ) {
+            // 与主机同一物理函数；其他玩家用本快照的 AABB 当实心障碍。
+            let others: Vec<Aabb> = snapshot
+                .players
+                .iter()
+                .filter(|player| player.id != local_id)
+                .map(|player| {
+                    Aabb::from_center_size(
+                        Vec2::new(player.x, player.y),
+                        DEFAULT_PHYSICS.player_size,
+                    )
+                })
+                .collect();
+            for (_, input) in &client.pending_inputs {
+                let mut out = StepOutcome::default();
+                step_with_players(
+                    &DEFAULT_PHYSICS,
+                    tiles.as_ref(),
+                    &mut motion.0,
+                    StepInput {
+                        move_x: input.move_x,
+                        jump_pressed: input.jump_pressed,
+                        jump_held: input.jump_held,
+                    },
+                    &others,
+                    &mut out,
+                );
+                outcome.0 = out;
+            }
         }
     }
 
@@ -484,11 +542,21 @@ pub fn advance_net_visuals(
     }
 }
 
-/// 每个固定步上行一次输入（客户端无物理，所以锁存由这里消费）。
-pub fn send_input(
+/// 每个固定步：上行一次输入，并用同一份输入在本地预测自己的角色。
+///
+/// 预测让「按键 → 自己角色开始动」不再依赖快照往返；快照到达后
+/// [`apply_snapshot`] 用 `last_input_seq` 丢弃已确认输入并重放剩余输入，纠正偏差。
+pub fn send_input_and_predict(
     mut client: Option<ResMut<ClientNet>>,
     state: Res<State<GameState>>,
+    tiles: Option<Res<LevelTiles>>,
     mut inputs: ResMut<PlayerInputs>,
+    mut players: Query<(
+        &PlayerId,
+        &mut PlayerMotion,
+        &mut PlayerStepOutcome,
+        &mut PlayerFacing,
+    )>,
 ) {
     let Some(client) = client.as_mut() else {
         return;
@@ -496,10 +564,20 @@ pub fn send_input(
     if !client.welcomed || *state.get() != GameState::Playing {
         return;
     }
+    let Some(local_id) = client.player_id else {
+        return;
+    };
+
     let input: PlayerInput = inputs.slots[0];
     client.input_seq = client.input_seq.wrapping_add(1);
+    let seq = client.input_seq;
+    if client.pending_inputs.len() >= MAX_PENDING_INPUTS {
+        client.pending_inputs.pop_front();
+    }
+    client.pending_inputs.push_back((seq, input));
+
     let message = NetMessage::Input {
-        seq: client.input_seq,
+        seq,
         move_x: input.move_x,
         jump_pressed: input.jump_pressed,
         jump_held: input.jump_held,
@@ -511,6 +589,38 @@ pub fn send_input(
     // 一个按下只发一次；`move_x` / `jump_held` 是持续量。
     inputs.slots[0].jump_pressed = false;
     inputs.slots[0].interact_pressed = false;
+
+    // ---- 本地预测（与主机同一个物理函数，确定性）----
+    let Some(tiles) = tiles.as_ref() else {
+        return;
+    };
+    let others: Vec<Aabb> = players
+        .iter()
+        .filter(|(id, _, _, _)| id.0 != local_id)
+        .map(|(_, motion, _, _)| motion.0.aabb)
+        .collect();
+    let Some((_, mut motion, mut outcome, mut facing)) =
+        players.iter_mut().find(|(id, _, _, _)| id.0 == local_id)
+    else {
+        return; // 本地玩家实体还没由第一份快照生成
+    };
+    let mut out = StepOutcome::default();
+    step_with_players(
+        &DEFAULT_PHYSICS,
+        tiles.as_ref(),
+        &mut motion.0,
+        StepInput {
+            move_x: input.move_x,
+            jump_pressed: input.jump_pressed,
+            jump_held: input.jump_held,
+        },
+        &others,
+        &mut out,
+    );
+    outcome.0 = out;
+    if input.move_x != 0 {
+        facing.0 = next_facing(facing.0, input.move_x);
+    }
 }
 
 #[cfg(test)]
@@ -529,6 +639,7 @@ mod tests {
                 vy: 0.0,
                 grounded: true,
                 facing_right: true,
+                last_input_seq: 0,
             }],
             cleared: Vec::new(),
             fruits: Vec::new(),
@@ -610,6 +721,22 @@ mod tests {
         let recent = VecDeque::from(vec![snapshot(10, 3.0), snapshot(11, 7.0)]);
         assert_eq!(interpolation_pair(&recent, 0.0).2, 0.0);
         assert_eq!(interpolation_pair(&recent, 99.0).2, 1.0);
+    }
+
+    /// 客户端只重放主机尚未确认的输入；确认序号处的输入必须被丢弃。
+    #[test]
+    fn acked_inputs_are_dropped_before_replay() {
+        let mut pending: VecDeque<(u32, PlayerInput)> =
+            (1..=5).map(|seq| (seq, PlayerInput::default())).collect();
+
+        drop_acked_inputs(&mut pending, 3);
+        assert_eq!(
+            pending.iter().map(|(seq, _)| *seq).collect::<Vec<_>>(),
+            vec![4, 5]
+        );
+
+        drop_acked_inputs(&mut pending, 5);
+        assert!(pending.is_empty());
     }
 
     /// 正常节奏下渲染时钟与最新快照保持固定延迟。

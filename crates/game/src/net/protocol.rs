@@ -25,6 +25,10 @@ pub struct PlayerSnap {
     pub vy: f32,
     pub grounded: bool,
     pub facing_right: bool,
+    /// 主机**已接收**的该玩家最后一条输入序号（客户端预测用；主机自己控制的玩家为 0）。
+    ///
+    /// 客户端用它丢弃已确认的待重放输入：序号 ≤ 该值的输入已经体现在本快照的位置里。
+    pub last_input_seq: u32,
 }
 
 /// 主机 → 客户端的进度快照（`05` §5.15.3）。
@@ -115,7 +119,7 @@ pub fn decode(bytes: &[u8]) -> Option<NetMessage> {
 // ---------- 快照二进制 ----------
 //
 // 布局（全小端）：
-//   seq u32 | players u8 | [id u8, x/y/vx/vy f32, flags u8] × n
+//   seq u32 | players u8 | [id u8, x/y/vx/vy f32, flags u8, last_input_seq u32] × n
 //   cleared u64（房间下标位图）
 //   fruits u8 | [(room u8, count u16)] × n
 //   picked u16 | [zone u16] × n
@@ -137,6 +141,7 @@ fn encode_snapshot(snapshot: &Snapshot) -> Option<Vec<u8>> {
         }
         let flags = u8::from(player.grounded) | (u8::from(player.facing_right) << 1);
         out.push(flags);
+        out.extend_from_slice(&player.last_input_seq.to_le_bytes());
     }
 
     let mut cleared = 0u64;
@@ -240,6 +245,7 @@ fn decode_snapshot(bytes: &[u8]) -> Option<Snapshot> {
         let vx = reader.f32()?;
         let vy = reader.f32()?;
         let flags = reader.u8()?;
+        let last_input_seq = reader.u32()?;
         players.push(PlayerSnap {
             id,
             x,
@@ -248,6 +254,7 @@ fn decode_snapshot(bytes: &[u8]) -> Option<Snapshot> {
             vy,
             grounded: flags & 1 != 0,
             facing_right: flags & 2 != 0,
+            last_input_seq,
         });
     }
     let cleared_bits = reader.u64()?;
@@ -307,6 +314,7 @@ mod tests {
                 vy: -2.0,
                 grounded: true,
                 facing_right: false,
+                last_input_seq: 123,
             }],
             cleared: vec![0, 3],
             fruits: vec![(1, 2)],
@@ -385,6 +393,7 @@ mod tests {
                     vy: 560.0,
                     grounded: true,
                     facing_right: true,
+                    last_input_seq: 0,
                 })
                 .collect(),
             cleared: (0..64).collect(),

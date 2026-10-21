@@ -3,7 +3,9 @@
 //! 联机层只用 `std::net::UdpSocket`（`09` §9.0 R1：不引入新的网络 crate）。
 
 /// 协议版本。客户端与主机不一致时拒绝加入（`05` §5.15.2）。
-pub const PROTOCOL_VERSION: u16 = 2;
+///
+/// v3：`PlayerSnap` 增加 `last_input_seq`（客户端预测的确认序号）。
+pub const PROTOCOL_VERSION: u16 = 3;
 
 /// 局域网发现与游戏共用的 UDP 端口（`05` §5.15.2）。
 pub const NET_PORT: u16 = 42345;
@@ -44,6 +46,12 @@ pub const INTERP_DELAY_STEPS: u32 = 2;
 /// 用于客户端暂停（`Paused` 期间不推进渲染时钟，但仍在收包）或系统卡顿后
 /// 重新对齐，避免恢复后长时间「追赶」。
 pub const INTERP_MAX_LAG_STEPS: u32 = 8;
+
+/// 客户端未确认输入的最大保留数（约 4 秒 @ 60 Hz）。
+///
+/// 主机长时间不 ack（卡顿/断线）时丢弃最旧的输入，防止队列无限增长；
+/// 丢弃后本地预测会与主机短暂不一致，下一份快照负责纠正。
+pub const MAX_PENDING_INPUTS: usize = 240;
 
 /// 客户端等待主机接受加入的总时长（秒）。
 pub const CONNECT_TIMEOUT_SECS: f32 = 10.0;
