@@ -42,7 +42,7 @@ pub struct RenderCenter(pub Vec2);
 
 /// `Aabb` → `Transform` 的**单向投影**（`06` §6.8.2）：位置语义 = AABB 底边中点（脚底中点）。
 ///
-/// 有 [`RenderCenter`] 时用它（仅客户端远端玩家的快照插值），否则用 AABB。
+/// 有 [`RenderCenter`] 时用它（客户端全部玩家的快照插值），否则用 AABB。
 /// 全世界只有这里与 [`snap_render_transforms`] 会写渲染位置；物理侧任何地方都不得读 `Transform`。
 pub fn sync_player_transform(
     mut players: Query<(

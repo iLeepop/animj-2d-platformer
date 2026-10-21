@@ -398,7 +398,8 @@ pub struct GameSettings {
 - 其余常量（`config/net.rs`，本文拥有）：`MAX_PLAYERS = 4`、`MAX_PACKETS_PER_FRAME = 64`、
   `CONNECT_TIMEOUT_SECS = 10`、`CLIENT_TIMEOUT_SECS = 5`、`REMOTE_INPUT_STALE_SECS = 0.25`、
   `DISCOVERY_INTERVAL_SECS = 1`、`ROOM_TTL_SECS = 3.5`、`JOIN_RETRY_SECS = 0.25`、`PLAYER_SPAWN_GAP_PX = 24`、
-  `SPAWN_PLACEMENT_TRIES = 8`、`SNAPSHOT_MAX_ROOMS = 64`。
+  `SPAWN_PLACEMENT_TRIES = 8`、`SNAPSHOT_MAX_ROOMS = 64`、`INTERP_DELAY_STEPS = 2`、
+  `INTERP_MAX_LAG_STEPS = 8`。
 
 ### 5.15.3 同步模型（主机权威）
 
@@ -419,10 +420,14 @@ pub struct GameSettings {
 - 快照是**完整状态**而非增量：丢包在下一帧自愈。
 - 客户端标识：`client_id` 持久化在存档目录的 `client_id` 文件；`ANIMJ_CLIENT_ID` 可覆盖（同机多开测试）。
 - 客户端不生成玩家：玩家实体由第一份快照创建；离开的玩家由快照差集销毁。
-- 客户端对**非本地玩家**在两次快照之间做渲染插值（`RenderCenter`，只影响 `Transform`）；
-  `PlayerMotion` 仍是权威值。这样 60 Hz 快照在高刷新率屏幕上不会表现为「停几帧再跳」的拖影。
+- 客户端对**所有玩家（含本地玩家）**在快照 `seq` 轴上做渲染插值（`RenderCenter`，只影响
+  `Transform` 与相机）：渲染时刻 = 最新 `seq` − `INTERP_DELAY_STEPS`，在相邻两帧之间线性插值。
+  `seq` 每固定步恰好 +1，所以它是无抖动的时间轴；丢一个包时插值跨过缺口继续以平均速度前进。
+  落后超过 `INTERP_MAX_LAG_STEPS`（暂停、长卡顿）时向前重同步。
+  `PlayerMotion` 仍是权威值，逻辑不读插值结果。视觉代价固定为 `INTERP_DELAY_STEPS` 个固定步。
 - 相机按视图绑定玩家（`camera::rig::view_players`）：本地双人 2 个视图；主机/客户端各 1 个视图，
-  客户端在收到 `Welcome` 之前相机不动。分屏细节见 `02` §2.2 / `07` §7.2.2。
+  客户端在收到 `Welcome` 之前相机不动。客户端相机跟随 `RenderCenter`（否则相机按包到达节奏抖动）。
+  分屏细节见 `02` §2.2 / `07` §7.2.2。
 
 ### 5.15.4 局域网房间搜索
 
@@ -435,7 +440,9 @@ pub struct GameSettings {
 ### 5.15.5 已知边界
 
 - 不做公网穿透/NAT、账号、匹配、反作弊、房间密码。
-- 不做客户端预测/回滚：LAN 下输入→画面为一个 RTT + 快照间隔；高延迟网络会明显滞后。
+- 不做客户端预测/回滚：LAN 下输入→画面为一个 RTT + 最多一个快照间隔 + `INTERP_DELAY_STEPS`
+  个固定步的渲染延迟；高延迟网络会明显滞后。
+- 渲染插值只平滑表现，不降低输入延迟；丢包时表现为「以平均速度跨过缺口」，而不是冻结再跳。
 - 本地双人**做**左右分屏（每个视图 320×320）；联机不做同机分屏——每个进程只有自己的视图。
 - 客户端热重载被禁用；主机热重载不会同步房间实体编号（联机时建议不编辑关卡）。
 - 装饰品/存档进度：主机负责写入；客户端只读快照，不写本地存档。

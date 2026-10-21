@@ -33,6 +33,18 @@ pub const MAX_PACKET_BYTES: usize = 1200;
 /// 每次轮询最多处理的包数：防止恶意/突发流量把一帧卡死。
 pub const MAX_PACKETS_PER_FRAME: usize = 64;
 
+/// 客户端渲染插值的延迟（固定步数）：渲染时刻 = 最新快照 `seq` − 该值（`05` §5.15.3）。
+///
+/// 至少 1 步才能在两帧快照之间插值；取 2 步多留一帧余量——单个快照丢失时，
+/// 渲染时刻仍落在两个已收到快照之间，不会「冻结一帧再跳」。
+pub const INTERP_DELAY_STEPS: u32 = 2;
+
+/// 渲染时钟与最新快照的最大允许滞后（固定步数）：超过即重同步。
+///
+/// 用于客户端暂停（`Paused` 期间不推进渲染时钟，但仍在收包）或系统卡顿后
+/// 重新对齐，避免恢复后长时间「追赶」。
+pub const INTERP_MAX_LAG_STEPS: u32 = 8;
+
 /// 客户端等待主机接受加入的总时长（秒）。
 pub const CONNECT_TIMEOUT_SECS: f32 = 10.0;
 

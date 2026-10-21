@@ -2,7 +2,9 @@
 //!
 //! 单机 / 主机 / 客户端：一个内层相机跟随**本进程的玩家**（单人 0、主机 0、客户端为主机分配的编号）。
 //! 本地双人：两个内层相机各自跟随 P1/P2，画面左右分屏（`07` §7.2.2）。
-//! 相机中心**直接**等于钳制后的玩家 AABB 中心，不做平滑/缓动；取整由 `render::snap` 统一完成。
+//! 相机中心**直接**等于钳制后的玩家中心，不做平滑/缓动；取整由 `render::snap` 统一完成。
+//! 客户端玩家带 [`RenderCenter`]（快照插值结果），相机跟随它而不是权威 `Aabb`，
+//! 否则相机与角色会按 UDP 包的到达节奏抖动。
 
 use bevy::prelude::*;
 use level_format::ROOM_PX;
@@ -11,6 +13,7 @@ use crate::config::render::{VIEWPORT_H, VIEWPORT_W};
 use crate::net::client::ClientNet;
 use crate::player::{PlayerId, PlayerMotion};
 use crate::render::pixel_camera::{CameraAnchor, MAX_VIEWS, PlayerView, ViewLayout};
+use crate::render::snap::RenderCenter;
 use crate::state::{GameSet, SessionMode};
 use crate::world::load::LoadedLevel;
 
@@ -81,7 +84,7 @@ fn drive_cameras(
     layout: Res<ViewLayout>,
     mode: Res<SessionMode>,
     client: Option<Res<ClientNet>>,
-    players: Query<(&PlayerId, &PlayerMotion)>,
+    players: Query<(&PlayerId, &PlayerMotion, Option<&RenderCenter>)>,
     mut cameras: Query<(&PlayerView, &mut CameraAnchor, &mut Transform)>,
 ) {
     let targets = view_players(&mode, client.and_then(|client| client.player_id));
@@ -93,14 +96,13 @@ fn drive_cameras(
         let Some(player_id) = targets[view.0 as usize] else {
             continue;
         };
-        let Some((_, motion)) = players.iter().find(|(id, _)| **id == player_id) else {
+        let Some((_, motion, render_center)) = players.iter().find(|(id, _, _)| **id == player_id)
+        else {
             continue;
         };
-        let target = follow_target(
-            motion.0.aabb.center(),
-            loaded.level.grid.cols,
-            loaded.level.grid.rows,
-        );
+        // 客户端玩家的权威位置来自快照；相机跟随插值后的渲染中心，否则相机按包到达节奏抖动。
+        let center = render_center.map_or_else(|| motion.0.aabb.center(), |center| center.0);
+        let target = follow_target(center, loaded.level.grid.cols, loaded.level.grid.rows);
         // 连续目标给视差相位用；`Transform` 稍后由 `GameSet::Snap` 取整。
         if anchor.0 != target {
             anchor.0 = target;

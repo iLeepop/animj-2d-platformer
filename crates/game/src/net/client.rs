@@ -2,7 +2,7 @@
 //!
 //! 客户端**不跑物理**：玩家位置完全来自主机快照。这让碰撞、死亡、房间进度只有一个真相。
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, VecDeque};
 use std::net::{SocketAddr, UdpSocket};
 use std::time::Instant;
 
@@ -12,8 +12,8 @@ use super::protocol::{self, NetMessage, Snapshot};
 use crate::anim_data::ActiveAnim;
 use crate::checkpoint::{ActiveCheckpoint, CheckpointPoint};
 use crate::config::net::{
-    CLIENT_TIMEOUT_SECS, CONNECT_TIMEOUT_SECS, JOIN_RETRY_SECS, MAX_PACKET_BYTES,
-    MAX_PACKETS_PER_FRAME,
+    CLIENT_TIMEOUT_SECS, CONNECT_TIMEOUT_SECS, INTERP_DELAY_STEPS, INTERP_MAX_LAG_STEPS,
+    JOIN_RETRY_SECS, MAX_PACKET_BYTES, MAX_PACKETS_PER_FRAME,
 };
 use crate::config::physics::{COYOTE_STEPS, FIXED_DT};
 use crate::config::render::VIEWPORT_W;
@@ -42,21 +42,60 @@ pub struct ClientNet {
     input_seq: u32,
     client_id: u64,
     pending: Option<Snapshot>,
+    /// 用于渲染插值的最近快照，按 `seq` 升序，容量 `INTERP_DELAY_STEPS + 1`。
+    recent: VecDeque<Snapshot>,
+    /// 渲染时钟：快照 `seq` 轴上的浮点位置（`INTERP_DELAY_STEPS` 步落后于最新快照）。
+    render_seq: f32,
     bye_sent: bool,
     logged_snapshot: bool,
     logged_join: bool,
 }
 
-/// 远端玩家的渲染插值状态（只影响 `Transform`，不影响权威 `Aabb`）。
+/// 快照插值的窗口：包住 `render_seq` 的两帧快照与插值系数。
 ///
-/// 客户端每 60 Hz 收到一次快照；渲染帧可能远高于 60 Hz。若直接跳位置，远端角色会
-/// 「停几帧 → 跳一段」，在移动相机下看起来像拖影/残影。这里在两个快照之间线性插值。
-#[derive(Component, Debug)]
-pub struct NetVisual {
-    from: Vec2,
-    to: Vec2,
-    current: Vec2,
-    elapsed: f32,
+/// 客户端每 60 Hz 收到一次快照；渲染帧与快照到达时刻不同步，直接投影权威 `Aabb`
+/// 会让角色与相机按包到达节奏跳动。渲染时统一在 `seq` 轴上回看
+/// [`INTERP_DELAY_STEPS`] 步，并在相邻快照之间线性插值——**本地玩家也一样**，
+/// 因为它的位置同样只来自快照。
+fn interpolation_pair(recent: &VecDeque<Snapshot>, render_seq: f32) -> (&Snapshot, &Snapshot, f32) {
+    let first = recent.front().expect("recent 非空");
+    let last = recent.back().expect("recent 非空");
+    if recent.len() == 1 || render_seq <= first.seq as f32 {
+        return (first, first, 0.0);
+    }
+    for (from, to) in recent.iter().zip(recent.iter().skip(1)) {
+        let from_seq = from.seq as f32;
+        let to_seq = to.seq as f32;
+        if render_seq < to_seq {
+            let alpha = (render_seq - from_seq) / (to_seq - from_seq);
+            return (from, to, alpha.clamp(0.0, 1.0));
+        }
+    }
+    (last, last, 1.0)
+}
+
+/// 推进渲染时钟（`seq` 轴）。
+///
+/// 正常节奏下每帧前进 `dt / FIXED_DT` 步；落后超过
+/// [`INTERP_MAX_LAG_STEPS`]（暂停、长卡顿）就直接对齐到「最新 − 延迟」，
+/// 但永远不越过最新快照（收包中断时冻结在最后一帧，由超时处理）。
+fn advance_render_seq(render_seq: f32, dt_secs: f32, newest_seq: u32) -> f32 {
+    let newest = newest_seq as f32;
+    let delay = INTERP_DELAY_STEPS as f32;
+    let mut next = render_seq + dt_secs / FIXED_DT;
+    if next < newest - delay - INTERP_MAX_LAG_STEPS as f32 {
+        next = newest - delay;
+    }
+    next.min(newest)
+}
+
+/// 某玩家在快照里的 AABB 中心（`PlayerSnap` 已按 id 升序存放）。
+fn player_center(snapshot: &Snapshot, id: u8) -> Option<Vec2> {
+    snapshot
+        .players
+        .iter()
+        .find(|player| player.id == id)
+        .map(|player| Vec2::new(player.x, player.y))
 }
 
 /// 本安装的稳定客户端标识（写在与存档同目录的 `client_id`）。
@@ -117,6 +156,8 @@ pub fn start_client(mut commands: Commands, mode: Res<SessionMode>) {
                 input_seq: 0,
                 client_id: load_or_create_client_id(),
                 pending: None,
+                recent: VecDeque::with_capacity(INTERP_DELAY_STEPS as usize + 1),
+                render_seq: 0.0,
                 bye_sent: false,
                 logged_snapshot: false,
                 logged_join: false,
@@ -217,6 +258,16 @@ pub fn poll_client(
                         client.last_rx = now;
                         if client.welcomed && snapshot.seq > client.last_seq {
                             client.last_seq = snapshot.seq;
+                            // 首帧把渲染时钟对齐到「最新 − 插值延迟」；此后只按帧时间推进，
+                            // 不因到达抖动重置，否则插值系数会每包跳一次。
+                            if client.recent.is_empty() {
+                                client.render_seq = snapshot.seq as f32 - INTERP_DELAY_STEPS as f32;
+                            }
+                            let capacity = INTERP_DELAY_STEPS as usize + 1;
+                            while client.recent.len() >= capacity {
+                                client.recent.pop_front();
+                            }
+                            client.recent.push_back(snapshot.clone());
                             client.pending = Some(snapshot);
                         }
                     }
@@ -272,7 +323,6 @@ pub fn apply_snapshot(
         &mut PlayerMotion,
         &mut PlayerStepOutcome,
         &mut PlayerFacing,
-        Option<&mut NetVisual>,
     )>,
     zones: Query<(Entity, &ZoneId)>,
 ) {
@@ -292,7 +342,7 @@ pub fn apply_snapshot(
     let alive: BTreeSet<u8> = snapshot.players.iter().map(|player| player.id).collect();
     let existing: Vec<(u8, Entity)> = players
         .iter()
-        .map(|(entity, id, _, _, _, _)| (id.0, entity))
+        .map(|(entity, id, _, _, _)| (id.0, entity))
         .collect();
 
     for snap in &snapshot.players {
@@ -302,24 +352,11 @@ pub fn apply_snapshot(
         body.airborne_since = if snap.grounded { 0 } else { COYOTE_STEPS + 1 };
         body.buffer_age = u32::MAX;
         if let Some((_, entity)) = existing.iter().find(|(id, _)| *id == snap.id)
-            && let Ok((_, _, mut motion, mut outcome, mut facing, visual)) =
-                players.get_mut(*entity)
+            && let Ok((_, _, mut motion, mut outcome, mut facing)) = players.get_mut(*entity)
         {
             motion.0 = body;
             outcome.0 = crate::physics::StepOutcome::default();
             facing.0 = snap.facing_right;
-            // 本地玩家不插值（相机跟随它，屏幕位置本来就稳定）；远端玩家做渲染插值。
-            let is_local = client.player_id == Some(snap.id);
-            if !is_local && let Some(mut visual) = visual {
-                let target = Vec2::new(snap.x, snap.y);
-                visual.from = visual.current;
-                visual.to = target;
-                visual.elapsed = 0.0;
-                if visual.from.distance(target) > VIEWPORT_W as f32 {
-                    visual.from = target;
-                    visual.current = target;
-                }
-            }
             continue;
         }
         // 新加入的玩家：生成实体；速度在下一份快照补齐（位置已经正确）。
@@ -331,18 +368,10 @@ pub fn apply_snapshot(
                 PlayerId(snap.id),
                 Vec2::new(snap.x, snap.y),
             );
-            if client.player_id != Some(snap.id) {
-                let center = Vec2::new(snap.x, snap.y);
-                commands.entity(entity).insert((
-                    NetVisual {
-                        from: center,
-                        to: center,
-                        current: center,
-                        elapsed: FIXED_DT,
-                    },
-                    RenderCenter(center),
-                ));
-            }
+            // 所有客户端玩家（含本地）都走渲染插值，权威 `Aabb` 不变。
+            commands
+                .entity(entity)
+                .insert(RenderCenter(Vec2::new(snap.x, snap.y)));
         }
     }
 
@@ -422,17 +451,36 @@ fn send_bye(client: &mut ClientNet, reason: &str) {
     }
 }
 
-/// 把远端玩家从一个快照位置插值推进到下一个快照位置。
+/// 按快照 `seq` 轴推进渲染时钟，把所有玩家（含本地）插值到渲染时刻。
+///
+/// 快照每固定步递增一个 `seq`，因此 `seq` 就是无抖动的时间轴：渲染时刻固定回看
+/// [`INTERP_DELAY_STEPS`] 步，相邻快照之间线性插值。丢一个包时两帧间隔变大，
+/// 插值会跨过该间隔继续以平均速度前进；到达时刻的抖动也被这道缓冲吸收。
 pub fn advance_net_visuals(
     time: Res<Time>,
-    mut visuals: Query<(&mut NetVisual, &mut RenderCenter)>,
+    mut client: Option<ResMut<ClientNet>>,
+    mut visuals: Query<(&PlayerId, &mut RenderCenter)>,
 ) {
-    let dt = time.delta_secs();
-    for (mut visual, mut center) in &mut visuals {
-        visual.elapsed += dt;
-        let t = (visual.elapsed / FIXED_DT).clamp(0.0, 1.0);
-        visual.current = visual.from.lerp(visual.to, t);
-        center.0 = visual.current;
+    let Some(client) = client.as_mut() else {
+        return;
+    };
+    let Some(newest_seq) = client.recent.back().map(|snapshot| snapshot.seq) else {
+        return;
+    };
+    client.render_seq = advance_render_seq(client.render_seq, time.delta_secs(), newest_seq);
+
+    let (from, to, alpha) = interpolation_pair(&client.recent, client.render_seq);
+    for (id, mut center) in &mut visuals {
+        let from = player_center(from, id.0);
+        let to = player_center(to, id.0);
+        center.0 = match (from, to) {
+            // 重生/传送会让两帧相距整屏以上：直接取目标，避免跨房间拖影。
+            (Some(from), Some(to)) if from.distance(to) > VIEWPORT_W as f32 => to,
+            (Some(from), Some(to)) => from.lerp(to, alpha),
+            (Some(from), None) => from,
+            (None, Some(to)) => to,
+            (None, None) => continue,
+        };
     }
 }
 
@@ -463,4 +511,128 @@ pub fn send_input(
     // 一个按下只发一次；`move_x` / `jump_held` 是持续量。
     inputs.slots[0].jump_pressed = false;
     inputs.slots[0].interact_pressed = false;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::net::protocol::PlayerSnap;
+
+    fn snapshot(seq: u32, x: f32) -> Snapshot {
+        Snapshot {
+            seq,
+            players: vec![PlayerSnap {
+                id: 1,
+                x,
+                y: 0.0,
+                vx: 0.0,
+                vy: 0.0,
+                grounded: true,
+                facing_right: true,
+            }],
+            cleared: Vec::new(),
+            fruits: Vec::new(),
+            picked: Vec::new(),
+            checkpoint: None,
+        }
+    }
+
+    /// 相邻快照之间：端点精确命中，中点线性插值。
+    #[test]
+    fn interpolates_between_adjacent_snapshots() {
+        let recent = VecDeque::from(vec![snapshot(10, 0.0), snapshot(11, 10.0)]);
+
+        let (from, to, alpha) = interpolation_pair(&recent, 10.5);
+        assert_eq!(alpha, 0.5);
+        assert_eq!(player_center(from, 1), Some(Vec2::ZERO));
+        assert_eq!(player_center(to, 1), Some(Vec2::new(10.0, 0.0)));
+
+        // 下端点渲染上一帧；上端点渲染最新帧。
+        let (from, _, alpha) = interpolation_pair(&recent, 10.0);
+        assert_eq!((alpha, player_center(from, 1)), (0.0, Some(Vec2::ZERO)));
+        let (_, to, alpha) = interpolation_pair(&recent, 11.0);
+        assert_eq!(
+            (alpha, player_center(to, 1)),
+            (1.0, Some(Vec2::new(10.0, 0.0)))
+        );
+    }
+
+    /// 丢一个包时两帧相隔 2 个 `seq`：插值跨过缺口，仍以平均速度前进。
+    #[test]
+    fn interpolates_across_a_lost_snapshot() {
+        let recent = VecDeque::from(vec![snapshot(10, 0.0), snapshot(12, 10.0)]);
+        let (from, to, alpha) = interpolation_pair(&recent, 11.0);
+
+        assert_eq!(alpha, 0.5);
+        assert_eq!(
+            player_center(from, 1)
+                .unwrap()
+                .lerp(player_center(to, 1).unwrap(), alpha),
+            Vec2::new(5.0, 0.0)
+        );
+    }
+
+    /// 单个快照丢失时，渲染位置仍然每步前进——不会「冻结一帧再跳」。
+    #[test]
+    fn a_lost_snapshot_never_freezes_the_visual() {
+        let mut recent: VecDeque<Snapshot> = VecDeque::new();
+        let mut render_seq = 0.0;
+        let mut xs = Vec::new();
+        for step in 0..20u32 {
+            if step != 7 {
+                let capacity = INTERP_DELAY_STEPS as usize + 1;
+                while recent.len() >= capacity {
+                    recent.pop_front();
+                }
+                if recent.is_empty() {
+                    render_seq = step as f32 - INTERP_DELAY_STEPS as f32;
+                }
+                recent.push_back(snapshot(step, step as f32 * 3.0));
+            }
+            let newest = recent.back().expect("至少一帧").seq;
+            render_seq = advance_render_seq(render_seq, FIXED_DT, newest);
+            let (from, to, alpha) = interpolation_pair(&recent, render_seq);
+            let x = player_center(from, 1)
+                .unwrap()
+                .lerp(player_center(to, 1).unwrap(), alpha)
+                .x;
+            xs.push(x);
+        }
+        // 跳过启动阶段（首帧没有前一帧可插值）；之后每个渲染步都必须前进。
+        for pair in xs[3..].windows(2) {
+            assert!(pair[1] > pair[0], "视觉冻结：{xs:?}");
+        }
+    }
+
+    /// 渲染时钟越界（首帧之前 / 末帧之后）夹到端点，不外插。
+    #[test]
+    fn clamps_outside_snapshot_range() {
+        let recent = VecDeque::from(vec![snapshot(10, 3.0), snapshot(11, 7.0)]);
+        assert_eq!(interpolation_pair(&recent, 0.0).2, 0.0);
+        assert_eq!(interpolation_pair(&recent, 99.0).2, 1.0);
+    }
+
+    /// 正常节奏下渲染时钟与最新快照保持固定延迟。
+    #[test]
+    fn render_clock_keeps_delay_under_steady_packets() {
+        // 快照 9 刚到达：渲染时钟对齐到 9 − 延迟，随后每步前进 1，与下一个到达同步。
+        let mut render_seq = 9.0 - INTERP_DELAY_STEPS as f32;
+        for newest in 10..200 {
+            render_seq = advance_render_seq(render_seq, FIXED_DT, newest);
+            assert!(
+                (newest as f32 - render_seq - INTERP_DELAY_STEPS as f32).abs() < 0.01,
+                "newest={newest} render_seq={render_seq}"
+            );
+        }
+    }
+
+    /// 暂停/长卡顿后对齐到「最新 − 延迟」，且从不越过最新快照。
+    #[test]
+    fn render_clock_resyncs_after_a_stall() {
+        let render_seq = advance_render_seq(10.0, 0.0, 1000);
+        assert_eq!(render_seq, 1000.0 - INTERP_DELAY_STEPS as f32);
+
+        let render_seq = advance_render_seq(999.9, FIXED_DT, 1000);
+        assert_eq!(render_seq, 1000.0);
+    }
 }

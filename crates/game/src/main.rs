@@ -594,6 +594,7 @@ fn self_check(
         &game::player::PlayerId,
         &game::player::PlayerMotion,
         Option<&Transform>,
+        Option<&game::render::snap::RenderCenter>,
     )>,
 ) {
     if *done || tick.0 < cli.check_frame() {
@@ -619,7 +620,7 @@ fn self_check(
     );
     let players_ready = (0..view.layout.views as usize).all(|index| {
         preview_targets[index]
-            .is_some_and(|id| player_q.iter().any(|(player_id, _, _)| *player_id == id))
+            .is_some_and(|id| player_q.iter().any(|(player_id, _, _, _)| *player_id == id))
     });
     if !players_ready {
         return;
@@ -756,23 +757,18 @@ fn self_check(
             && room_in_bounds,
     );
 
-    // ⑨ 角色存在，且渲染投影 == `Aabb` 的单向投影（`06` §6.8.2）
+    // ⑨ 角色存在，且渲染投影 == 中心（`Aabb` 或插值后的 `RenderCenter`）的单向投影（`06` §6.8.2）
     let players: Vec<_> = player_q.iter().collect();
-    let local_player = view
-        .client
-        .as_ref()
-        .and_then(|client| client.player_id)
-        .map(game::player::PlayerId);
     let projection_ok = !players.is_empty()
-        && players.iter().all(|(id, motion, transform)| {
-            // 客户端远端玩家使用快照插值（`RenderCenter`），不要求与 AABB 逐像素一致。
-            if local_player.is_some_and(|local| **id != local) {
-                return true;
-            }
+        && players.iter().all(|(_, motion, transform, render_center)| {
             transform.is_some_and(|transform| {
-                let aabb = motion.0.aabb;
-                (transform.translation.x - aabb.center().x.round()).abs() < 0.001
-                    && (transform.translation.y - aabb.min.y.round()).abs() < 0.001
+                let center =
+                    render_center.map_or_else(|| motion.0.aabb.center(), |center| center.0);
+                (transform.translation.x - center.x.round()).abs() < 0.001
+                    && (transform.translation.y
+                        - (center.y - game::config::physics::PLAYER_SIZE.y / 2.0).round())
+                    .abs()
+                        < 0.001
             })
         });
     check("player transform == aabb", projection_ok);
@@ -792,12 +788,15 @@ fn self_check(
                 follow_ok = false;
                 break;
             };
-            let Some((_, motion, _)) = players.iter().find(|(id, _, _)| **id == player_id) else {
+            let Some((_, motion, _, render_center)) =
+                players.iter().find(|(id, _, _, _)| **id == player_id)
+            else {
                 follow_ok = false;
                 break;
             };
+            let center = render_center.map_or_else(|| motion.0.aabb.center(), |center| center.0);
             let target = game::camera::rig::follow_target(
-                motion.0.aabb.center(),
+                center,
                 loaded.level.grid.cols,
                 loaded.level.grid.rows,
             );
@@ -816,7 +815,7 @@ fn self_check(
 
     // ⑪ 角色碰撞盒尺寸不变形（R1–R5：反向/压扁的 AABB 会静默关闭全部碰撞）
     let box_ok = !players.is_empty()
-        && players.iter().all(|(_, motion, _)| {
+        && players.iter().all(|(_, motion, _, _)| {
             (motion.0.aabb.size() - game::config::physics::PLAYER_SIZE).length() <= 1e-3
         });
     check("player collider size", box_ok);
