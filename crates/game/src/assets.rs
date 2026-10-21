@@ -5,22 +5,56 @@
 //! 因此必须显式覆盖 `AssetPlugin.file_path`，否则会去 `crates/game/assets/` 找文件。
 
 use bevy::prelude::*;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-/// 解析资产根路径。**路径算术只允许出现在这一处**（`09` §9.6.2 规则 A1）。
+/// 解析资产根路径（**绝对路径**）。**路径算术只允许出现在这一处**（`09` §9.6.2 规则 A1）。
 ///
-/// - 开发期：`CARGO_MANIFEST_DIR` = `crates/<crate>`，上跳两级到仓库根再拼 `assets/`。
-/// - 发布期：该变量不存在，返回 `"assets"`，即「exe 同级的 `assets/`」。
+/// 优先级（`09` §9.6.3）：
+/// 1. **exe 同级存在 `assets/`** ⇒ 发布布局，直接用它。即使父环境残留
+///    `CARGO_MANIFEST_DIR`，打包产物也只认自己旁边的资产。
+/// 2. `CARGO_MANIFEST_DIR`（`cargo run` / `cargo test` 注入，指向 `crates/<crate>`）
+///    ⇒ 上跳两级到仓库根。
+/// 3. `BEVY_ASSET_ROOT` ⇒ `<root>/assets`。
+/// 4. 可执行文件目录 ⇒ `<exe dir>/assets`。
+///
+/// 必须返回绝对路径：Bevy 的 `AssetServer` 与直接用 `std::fs` 的读取方（贴图直读、
+/// 关卡列表、字体扫描）因此看到同一个根目录，且都不受进程当前工作目录影响。
 pub fn asset_file_path() -> String {
-    match std::env::var_os("CARGO_MANIFEST_DIR") {
-        Some(manifest_dir) => Path::new(&manifest_dir)
-            .join("..")
-            .join("..")
-            .join("assets")
-            .to_string_lossy()
-            .into_owned(),
-        None => "assets".to_string(),
+    let exe_dir = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(Path::to_path_buf));
+    let manifest_dir = std::env::var_os("CARGO_MANIFEST_DIR").map(PathBuf::from);
+    let bevy_asset_root = std::env::var_os("BEVY_ASSET_ROOT").map(PathBuf::from);
+    resolve_asset_path(
+        exe_dir.as_deref(),
+        manifest_dir.as_deref(),
+        bevy_asset_root.as_deref(),
+    )
+    .to_string_lossy()
+    .into_owned()
+}
+
+/// [`asset_file_path`] 的纯决策部分（文件系统只用于判断 exe 同级是否有 `assets/`）。
+fn resolve_asset_path(
+    exe_dir: Option<&Path>,
+    manifest_dir: Option<&Path>,
+    bevy_asset_root: Option<&Path>,
+) -> PathBuf {
+    if let Some(dir) = exe_dir {
+        let sibling = dir.join("assets");
+        if sibling.is_dir() {
+            return sibling;
+        }
     }
+    if let Some(manifest_dir) = manifest_dir {
+        return manifest_dir.join("..").join("..").join("assets");
+    }
+    if let Some(root) = bevy_asset_root {
+        return root.join("assets");
+    }
+    exe_dir
+        .map(|dir| dir.join("assets"))
+        .unwrap_or_else(|| PathBuf::from("assets"))
 }
 
 /// 贴图文件的修改时间（外部改动检测，`docs/04-assets.md` §5.6）。
@@ -77,6 +111,63 @@ impl Plugin for AssetPathPlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn temp_exe_dir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("animj-assets-{}-{tag}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("创建临时 exe 目录");
+        dir
+    }
+
+    /// 发布布局：exe 同级有 `assets/` 时优先用它，不受残留的 `CARGO_MANIFEST_DIR` 影响。
+    #[test]
+    fn exe_sibling_assets_win_over_manifest() {
+        let exe = temp_exe_dir("sibling");
+        std::fs::create_dir_all(exe.join("assets")).unwrap();
+        let manifest = Path::new("/repo/crates/game");
+
+        assert_eq!(
+            resolve_asset_path(Some(&exe), Some(manifest), None),
+            exe.join("assets")
+        );
+        std::fs::remove_dir_all(&exe).unwrap();
+    }
+
+    /// 开发布局：exe 同级没有 `assets/` 时用 `CARGO_MANIFEST_DIR/../../assets`。
+    #[test]
+    fn dev_layout_uses_manifest_root() {
+        let exe = temp_exe_dir("dev");
+        let manifest = Path::new("/repo/crates/game");
+
+        assert_eq!(
+            resolve_asset_path(Some(&exe), Some(manifest), None),
+            manifest.join("..").join("..").join("assets")
+        );
+        std::fs::remove_dir_all(&exe).unwrap();
+    }
+
+    /// 裸跑 exe（无环境变量）：解析成 exe 同级的绝对路径，与 cwd 无关。
+    #[test]
+    fn release_layout_is_absolute_and_independent_of_cwd() {
+        let exe = temp_exe_dir("release");
+
+        let path = resolve_asset_path(Some(&exe), None, None);
+        assert_eq!(path, exe.join("assets"));
+        assert!(path.is_absolute());
+        std::fs::remove_dir_all(&exe).unwrap();
+    }
+
+    /// 没有 manifest 时，`BEVY_ASSET_ROOT` 仍然生效（与 Bevy 的 base path 语义一致）。
+    #[test]
+    fn bevy_asset_root_is_honored_without_manifest() {
+        let exe = temp_exe_dir("bevy-root");
+
+        assert_eq!(
+            resolve_asset_path(Some(&exe), None, Some(Path::new("/custom/root"))),
+            PathBuf::from("/custom/root").join("assets")
+        );
+        std::fs::remove_dir_all(&exe).unwrap();
+    }
 
     #[test]
     fn only_level_ron_files_map_to_ids() {

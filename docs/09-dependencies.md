@@ -314,25 +314,32 @@ check-all = ["check", "--workspace", "--all-targets"]
 
 ```rust
 // crates/game/src/assets.rs
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-/// 唯一的资产根路径真相源（见 `09` §9.6）。
+/// 唯一的资产根路径真相源（见 `09` §9.6）。恒为绝对路径。
 ///
-/// 开发期：Cargo 在 `cargo run` / `cargo test` 时提供 `CARGO_MANIFEST_DIR`，它指向
-/// `crates/<crate>`；上跳两级到仓库根后拼 `assets/`。
-/// 发布期：该变量不存在，Bevy 的 base path 退化为可执行文件所在目录，因此返回 `"assets"`。
+/// 优先级：exe 同级 `assets/`（发布布局）→ `CARGO_MANIFEST_DIR/../../assets`（开发布局）
+/// → `BEVY_ASSET_ROOT/assets` → `<exe dir>/assets`。
 pub fn asset_file_path() -> String {
-    match std::env::var_os("CARGO_MANIFEST_DIR") {
-        Some(manifest_dir) => Path::new(&manifest_dir)
-            .join("..")
-            .join("..")
-            .join("assets")
-            .to_string_lossy()
-            .into_owned(),
-        None => String::from("assets"),
-    }
+    let exe_dir = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(Path::to_path_buf));
+    let manifest_dir = std::env::var_os("CARGO_MANIFEST_DIR").map(PathBuf::from);
+    let bevy_asset_root = std::env::var_os("BEVY_ASSET_ROOT").map(PathBuf::from);
+    resolve_asset_path(
+        exe_dir.as_deref(),
+        manifest_dir.as_deref(),
+        bevy_asset_root.as_deref(),
+    )
+    .to_string_lossy()
+    .into_owned()
 }
 ```
+
+- 发布布局先判 **exe 同级是否存在 `assets/`**：`CARGO_MANIFEST_DIR` 会随父进程环境残留
+  （IDE、CI、`cargo run` 的 wrapper），若它优先，打包到别处的产物会去开发机的绝对路径找资产。
+- 解析结果恒为**绝对路径**：`AssetServer` 与 `std::fs` 直读（贴图直读、`level_ids()`、字体扫描）
+  共用同一个根，且与进程当前工作目录无关。
 
 接入 `App`（`DefaultPlugins.set(...)` 覆写单个插件是官方示例的既有写法）：
 
@@ -351,9 +358,9 @@ DefaultPlugins
 |---|---|---|
 | A1 | 路径算术**只允许**出现在 `asset_file_path()` 一处 | 与 `00` §0.3「转换函数唯一入口」同构：任何地方再手写 `../../assets` 都会在目录调整时静默失效 |
 | A2 | `..` 上跳**两级**成立的前提：`crates/game` 与 `crates/editor` 都位于仓库根下一级（`00` §0.6） | 新增/移动 crate 层级时必须同步改这个函数；M0 用一个断言性检查兜住（§9.8 **V6**） |
-| A3 | `manifest_dir` 通常是绝对路径，`Path::join` 会把 Bevy 的 base path 整体替换掉 | 于是无论 `get_base_path()` 解析成什么（CI 里设了 `BEVY_ASSET_ROOT` 也一样），最终都指向仓库根 `assets/` |
+| A3 | `asset_file_path()` **必须返回绝对路径**，且发布布局优先 exe 同级 `assets/` | ① `Path::join` 遇到绝对路径会整体替换 Bevy 的 base path ⇒ `AssetServer` 与 `std::fs` 直读看到同一根；② 不受 cwd 影响；③ 打包产物不会被父环境残留的 `CARGO_MANIFEST_DIR` 劫持到开发机路径 |
 | A4 | **不**用编译期 `env!("CARGO_MANIFEST_DIR")` | 它会把开发机的绝对路径烧进 release 二进制，到了别人机器上 `file_path` 指向不存在的目录，比直接用 `"assets"` 更糟；运行时读取才能让同一份代码在开发/发布两种布局下都正确 |
-| A5 | **不**用 `BEVY_ASSET_ROOT`，**不**在 `crates/*/assets` 建 junction/符号链接 | 前者要求每个人的 IDE/终端运行配置都设一遍（漏了就报"资源找不到"）；后者在 Windows 上需要管理员或开发者模式，破坏"clone 即跑" |
+| A5 | **不依赖** `BEVY_ASSET_ROOT` 完成默认布局，**不**在 `crates/*/assets` 建 junction/符号链接 | 前者只作为异常布局的兜底（默认布局靠 exe 同级 / manifest，不需要每个人配环境）；后者在 Windows 上需要管理员或开发者模式，破坏"clone 即跑" |
 | A6 | `unapproved_path_mode` 保持默认 | 所有资产都在 `file_path` 之下；该字段的文档明确"approved folders 是 `AssetPlugin::file_path` 与各 `AssetSource` 目录"【已验证】<https://docs.rs/bevy/0.20.0/bevy/asset/struct.AssetPlugin.html> |
 | A7 | `watch_for_changes_override` / `use_asset_processor_override` 保持 `None` | 热重载交给 `dev` feature（⇒ `file_watcher`），资产处理我们不用（§9.6.3） |
 
@@ -361,9 +368,11 @@ DefaultPlugins
 
 | 项 | 开发（`cargo run` / `cargo test`，仓库根为 cwd） | 发布（直接执行 exe / 双击） |
 |---|---|---|
-| base path | `CARGO_MANIFEST_DIR` = `crates/<crate>` | `current_exe().parent()` = 可执行文件所在目录 |
-| 实际 `file_path` | `<manifest>/../../assets`（绝对路径） | `"assets"` ⇒ `<exe 目录>/assets` |
+| 实际 `file_path` | `<CARGO_MANIFEST_DIR>/../../assets`（绝对路径） | `<exe 目录>/assets`（绝对路径） |
+| `AssetServer` base path | 被绝对 `file_path` 覆盖（不再参与） | 同左 |
+| 当前工作目录 | 不参与资产定位 | 不参与资产定位 |
 | 发布包布局 | — | `animj.exe`、`animj-editor.exe` 与 `assets/` **同级**（`assets/` 内含 `levels/`、`sprites/`、`fonts/`，见 `00` §0.6） |
+| 失败模式 | `cargo test` 未设置 manifest（理论上不会）⇒ 退化为 exe 同级 | exe 同级没有 `assets/` ⇒ 仍去 exe 目录找；放错目录即报 `Path not found` |
 | 热重载 | `dev` feature 打开 `file_watcher`：改 `.level.ron` 后 `AssetServer` 侦测变更并重载（`AssetEvent` 是 Message，消费侧用 `MessageReader<AssetEvent<_>>`；见 `10`） | 无 watcher、无 `bevy_dev_tools`（bevy `dev` 集合官方注明不应出现在发布构建） |
 | `mode` | `AssetMode::Unprocessed`（默认） | 同左：我们不做资产预处理，`processed_file_path`（默认 `imported_assets/Default`）用不到 |
 | `.meta` 文件 | 不需要（不使用 asset processor） | 也可不打进发布包：`AssetMetaCheck::Always` 下"meta 不存在时使用默认 meta"【已验证】<https://docs.rs/bevy/0.20.0/bevy/asset/enum.AssetMetaCheck.html> |
@@ -424,7 +433,7 @@ DefaultPlugins
 | **V3** | UI 与文本可用 | 在 game 的最小场景里 spawn 一个 `Node` + `Text` 与一个 `TextureAtlas` sprite | 文字与图集都能正确显示、字号与图集索引符合 `04`/`07` 的规格 | §9.4.2（U2） |
 | **V4** | PNG 与像素采样 | 加载 `assets/sprites/tiles/tileset.png`（路径规格见 `04`） | 贴图放大后不模糊（`ImagePlugin::default_nearest()` 生效，渲染取舍见 `07`） | §9.4.1（PNG 结论） |
 | **V5** | 编辑器宿主可用且依赖不冲突 | `cargo editor`（等价 `cargo run -p editor --bin animj-editor --features dev`） | egui 面板出现、可与 2D 画面共存、鼠标输入按 `08` 的策略被正确吸收；`cargo tree -d` 无重复 `bevy*` | §9.5.4、§9.2（`bevy_egui` 行） |
-| **V6** | 资产路径三种运行方式都成立 | (a) 仓库根 `cargo game`；(b) 仓库根 `cargo editor`；(c) `cargo build --release -p game` 后把 exe 与 `assets/` 放同一目录再运行 | 三者都能加载同一个 `assets/levels/<id>.level.ron`；用 `RUST_LOG=bevy_asset=debug` 核对日志里的 base path（`bevy_asset` 会打印 "Asset Server using … as its base path."） | §9.6.3 |
+| **V6** | 资产路径三种运行方式都成立 | (a) 仓库根 `cargo game`；(b) 仓库根 `cargo editor`；(c) `cargo build --release -p game` 后把 exe 与 `assets/` 放同一目录，并从**任意 cwd**、且**残留 `CARGO_MANIFEST_DIR`** 的环境运行 | 三者都能加载同一个 `assets/levels/<id>.level.ron`；`assets =` 日志必须是绝对路径；(c) 中直读贴图不得报 `No such file`；用 `RUST_LOG=bevy_asset=debug` 核对 "Asset Server using … as its base path." | §9.6.3 |
 | **V7** | 依赖卫生 | `cargo tree -p level_format`；`cargo tree -d` | `level_format` 的依赖树**不含任何 `bevy*`**（`00` §0.6）；全仓无重复版本 | §9.5.2、§9.2 |
 | **V8**（可选） | `dynamic_linking` 是否与 `dev` 共存 | `cargo run -p game --bin animj --features dev,bevy/dynamic_linking` | 能编译能开窗；若冲突则**不**把该别名写进 `.cargo/config.toml`，并在此记录冲突现象 | §9.5.5 |
 | **V9** | 工具链 | `rustup show` / `cargo build -p game` | 用最新 stable 编译无 MSRV 报错（Bevy README 述其 MSRV 贴近最新 stable）；因此本项目不写 `rust-version` | §9.1 |
@@ -440,7 +449,7 @@ DefaultPlugins
 | **V3** | ✅ 通过（附带一条新约束） | HUD 的 `Node`+`Text` 三行文本渲染成功（非背景像素 x ∈ [8,453]），`TextureAtlas` sprite 渲染成功。⚠️ **非 ASCII 文本会被静默截断**（内置字体仅 ASCII）⇒ 已写入 `04` §9 |
 | **V4** | ✅ **客观证明无模糊** | 内层画布截图（当时的 512×512）与窗口截图（1024×1024）逐像素比较：**1 048 576 像素、0 差异** ⇒ 严格 2 倍整数放大 + 最近邻 + 无插值。（方法：`animj --frames 90 --screenshot <prefix>` 后比对两张 PNG。现行视口为 320² / 窗口 640²，见 V13） |
 | **V5** | ✅ 通过 | `animj-editor.exe --frames 90 --screenshot …`：`bevy_egui::render: Using bindless_mode_array_size 16`、右侧 egui 面板可见、关卡两个房间都渲染（证明 `RoomCulling(false)` 生效）、无 panic。`cargo tree -d` 中无重复 `bevy*` |
-| **V6** | ✅ 通过（并发现一个必须记住的失败模式） | (a) 仓库根：`CARGO_MANIFEST_DIR` → 仓库 `assets/` ✓；(b) 编辑器同一入口 ✓；(c) `target/reltest/`（exe 与 `assets/` 同级）→ 日志 `assets = assets` 且 8/8 自检 PASS ✓。⚠️ **裸跑 `target/debug/animj.exe` 会找不到资产**（base path 落到 exe 目录）——见 `10` E4 |
+| **V6** | ✅ 通过（修复后重测） | (a) 仓库根：`CARGO_MANIFEST_DIR` → 仓库 `assets/` ✓；(b) 编辑器同一入口 ✓；(c) `target/reltest/`（exe 与 `assets/` 同级）：从 `/tmp` 运行、并设置 `CARGO_MANIFEST_DIR=/tmp/reltest`（指向错误位置）仍加载成功，日志 `assets = <exe dir>/assets`，0 条 `贴图 … 读取失败` ✓。裸跑 `target/debug/animj`（同级无 `assets/`）仍按预期报 `Path not found`——见 `10` E4 |
 | **V7** | ✅ 通过（判据按实测收窄） | `cargo tree -p level_format` 只含 `ron`/`serde`/`bitflags`/`once_cell`，**无任何 `bevy*`** ✓。⚠️ 全仓**存在上游重复版本**：`syn 2.0/3.0`、`miniz_oxide 0.8/0.9`、`hashbrown 0.16/0.17`、`itertools 0.14/0.15`、`windows-sys 0.52/0.61`、`regex-automata 0.4`、`winnow`、`toml_*` 等，全部来自 bevy / bevy_egui / 构建工具链，**不可消除**。⇒ 判据改为「我们自己三个 crate 共用同一份 bevy」 |
 | **V8** | ⏸ **未验证**（可选） | 未测 `dynamic_linking`：它会改变 cargo feature 集并触发 Bevy 全量重编（实测同类操作 ≈ 5–10 分钟）。因此别名里**不写** `game-fast`；需要热重载迭代时再单独测 |
 | **V9** | ✅ 通过（**并纠正了本文原有假设**） | **bevy 0.20.0 要求 `rustc ≥ 1.97.1`**：本机原 1.95.0 在**依赖解析阶段**即被 cargo 拒绝（`bevy@0.20.0 requires rustc 1.97.1`，同时 `wesl*`/`wgsl-*` 同要求）；`rustup update stable` → **1.99.1** 后编译通过。⇒ §9.1 已补 `rustc` 下限行 |
