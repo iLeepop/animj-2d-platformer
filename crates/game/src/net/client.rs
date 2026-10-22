@@ -1,6 +1,6 @@
-//! 客户端联机：加入重试、输入上行、应用权威快照（`05` §5.15.3）。
+//! 客户端联机：加入重试、输入上行、预测自己的角色、应用权威快照（`05` §5.15.3）。
 //!
-//! 客户端**不跑物理**：玩家位置完全来自主机快照。这让碰撞、死亡、房间进度只有一个真相。
+//! 客户端**只预测自己的角色**：其余玩家与全部玩法结果（碰撞、死亡、房间进度）仍以主机为准。
 
 use std::collections::{BTreeSet, VecDeque};
 use std::net::{SocketAddr, UdpSocket};
@@ -8,12 +8,13 @@ use std::time::Instant;
 
 use bevy::prelude::*;
 
-use super::protocol::{self, NetMessage, Snapshot};
+use super::protocol::{self, InputSample, NetMessage, Snapshot};
 use crate::anim_data::ActiveAnim;
 use crate::checkpoint::{ActiveCheckpoint, CheckpointPoint};
 use crate::config::net::{
-    CLIENT_TIMEOUT_SECS, CONNECT_TIMEOUT_SECS, INTERP_DELAY_STEPS, INTERP_MAX_LAG_STEPS,
-    JOIN_RETRY_SECS, MAX_PACKET_BYTES, MAX_PACKETS_PER_FRAME, MAX_PENDING_INPUTS,
+    CLIENT_TIMEOUT_SECS, CONNECT_TIMEOUT_SECS, INPUT_REDUNDANCY, INTERP_DELAY_STEPS,
+    INTERP_MAX_LAG_STEPS, JOIN_RETRY_SECS, MAX_PACKET_BYTES, MAX_PACKETS_PER_FRAME,
+    MAX_PENDING_INPUTS,
 };
 use crate::config::physics::{COYOTE_STEPS, DEFAULT_PHYSICS, FIXED_DT};
 use crate::config::render::VIEWPORT_W;
@@ -576,13 +577,22 @@ pub fn send_input_and_predict(
     }
     client.pending_inputs.push_back((seq, input));
 
-    let message = NetMessage::Input {
-        seq,
-        move_x: input.move_x,
-        jump_pressed: input.jump_pressed,
-        jump_held: input.jump_held,
-        interact_pressed: input.interact_pressed,
-    };
+    // 冗余重发最近几条未确认输入：单个 UDP 包丢失不会让某条输入永远消失。
+    let samples: Vec<InputSample> = client
+        .pending_inputs
+        .iter()
+        .rev()
+        .take(INPUT_REDUNDANCY)
+        .rev()
+        .map(|(seq, input)| InputSample {
+            seq: *seq,
+            move_x: input.move_x,
+            jump_pressed: input.jump_pressed,
+            jump_held: input.jump_held,
+            interact_pressed: input.interact_pressed,
+        })
+        .collect();
+    let message = NetMessage::Input { samples };
     if let Some(bytes) = protocol::encode(&message) {
         let _ = client.socket.send_to(&bytes, client.server);
     }

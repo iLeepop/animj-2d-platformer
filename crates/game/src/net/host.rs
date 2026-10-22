@@ -3,6 +3,7 @@
 //! 主机**权威**：全部玩家（本地 + 远程）都由主机物理推进，远程玩家只是输入槽的写入者。
 //! 客户端每固定步发一条输入，主机每固定步广播一条快照。
 
+use std::collections::VecDeque;
 use std::net::{SocketAddr, UdpSocket};
 use std::time::Instant;
 
@@ -12,8 +13,8 @@ use super::protocol::{self, NetMessage, PlayerSnap, Snapshot};
 use crate::anim_data::ActiveAnim;
 use crate::checkpoint::ActiveCheckpoint;
 use crate::config::net::{
-    CLIENT_TIMEOUT_SECS, DEFAULT_ROOM_NAME, MAX_PACKET_BYTES, MAX_PACKETS_PER_FRAME, MAX_PLAYERS,
-    NET_PORT, PROTOCOL_VERSION, REMOTE_INPUT_STALE_SECS,
+    CLIENT_TIMEOUT_SECS, DEFAULT_ROOM_NAME, MAX_PACKET_BYTES, MAX_PACKETS_PER_FRAME,
+    MAX_PENDING_INPUTS, MAX_PLAYERS, NET_PORT, PROTOCOL_VERSION, REMOTE_INPUT_STALE_SECS,
 };
 use crate::player::spawn::{PlayerSheet, nearest_free_spawn, spawn_player};
 use crate::player::{PlayerFacing, PlayerId, PlayerInput, PlayerInputs, PlayerMotion};
@@ -32,7 +33,10 @@ pub struct ClientConn {
     pub entity: Option<Entity>,
     pub last_seen: Instant,
     pub last_input: Instant,
+    /// **已被物理消费**的最后一条输入序号（回带给客户端，作为预测确认）。
     pub last_input_seq: u32,
+    /// 已收到、尚未消费的输入，按 `seq` 升序；每个固定步只消费队首一条。
+    pub pending_inputs: VecDeque<(u32, PlayerInput)>,
 }
 
 /// 主机运行时状态（`OnEnter(Playing)` 且会话模式为 `Host` 时存在）。
@@ -170,6 +174,7 @@ pub fn poll_host(
                     host.clients[index].last_seen = now;
                     host.clients[index].last_input = now;
                     host.clients[index].last_input_seq = 0;
+                    host.clients[index].pending_inputs.clear();
                     *inputs.get_mut(PlayerId(player_id)) = PlayerInput::default();
                     let welcome = NetMessage::Welcome {
                         player_id,
@@ -238,6 +243,7 @@ pub fn poll_host(
                     last_seen: now,
                     last_input: now,
                     last_input_seq: 0,
+                    pending_inputs: VecDeque::new(),
                 });
                 let welcome = NetMessage::Welcome {
                     player_id,
@@ -252,29 +258,34 @@ pub fn poll_host(
                     center.x, center.y
                 );
             }
-            NetMessage::Input {
-                seq,
-                move_x,
-                jump_pressed,
-                jump_held,
-                interact_pressed,
-            } => {
+            NetMessage::Input { samples } => {
                 let Some(conn) = host.clients.iter_mut().find(|conn| conn.addr == addr) else {
                     continue;
                 };
                 conn.last_seen = now;
-                if seq <= conn.last_input_seq {
-                    continue; // 乱序/重复包
+                for sample in samples {
+                    let input = PlayerInput {
+                        move_x: sample.move_x,
+                        jump_pressed: sample.jump_pressed,
+                        jump_held: sample.jump_held,
+                        interact_pressed: sample.interact_pressed,
+                    };
+                    if queue_input(
+                        &mut conn.pending_inputs,
+                        conn.last_input_seq,
+                        sample.seq,
+                        input,
+                    ) {
+                        conn.last_input = now;
+                    }
                 }
-                conn.last_input_seq = seq;
-                conn.last_input = now;
-                // 不能整槽覆盖：渲染帧可能比固定步快，两个输入包会在**同一个**固定步之间到达；
-                // 后到的 `jump_pressed: false` 会把先到的按下吞掉（跳跃丢失）。
-                let slot = inputs.get_mut(PlayerId(conn.player_id));
-                slot.move_x = move_x;
-                slot.jump_held = jump_held;
-                slot.jump_pressed |= jump_pressed;
-                slot.interact_pressed |= interact_pressed;
+                // 极端情况下（主机长时间不推进/恶意流量）把最旧的输入判为已消费，
+                // 防止队列无限增长；客户端会在下一份快照里丢弃它们。
+                while conn.pending_inputs.len() > MAX_PENDING_INPUTS {
+                    if let Some((seq, _)) = conn.pending_inputs.pop_front() {
+                        conn.last_input_seq = seq;
+                    }
+                }
             }
             NetMessage::Bye => {
                 remove_client(&mut host.clients, &mut commands, &mut inputs, addr, "离开");
@@ -305,6 +316,48 @@ pub fn poll_host(
     });
     for addr in expired {
         remove_client(&mut host.clients, &mut commands, &mut inputs, addr, "超时");
+    }
+}
+
+/// 把一条输入放进待消费队列：丢弃已消费/重复的 `seq`，并按 `seq` 升序插入。
+///
+/// 返回是否真的入队。
+fn queue_input(
+    pending: &mut VecDeque<(u32, PlayerInput)>,
+    acked: u32,
+    seq: u32,
+    input: PlayerInput,
+) -> bool {
+    if seq <= acked || pending.iter().any(|(queued, _)| *queued == seq) {
+        return false;
+    }
+    let at = pending.partition_point(|(queued, _)| *queued < seq);
+    pending.insert(at, (seq, input));
+    true
+}
+
+/// 每个固定步从每个客户端的输入队列消费**一条**（`05` §5.15.3）。
+///
+/// 一个输入对应一个固定步：客户端预测与主机推进因此一一对齐。Wi-Fi 突发到达的输入
+/// 会排队逐帧消费，而不是被合并进同一固定步——否则客户端会周期性被快照拉回。
+pub fn consume_remote_inputs(mut host: Option<ResMut<HostNet>>, mut inputs: ResMut<PlayerInputs>) {
+    let Some(host) = host.as_mut() else {
+        return;
+    };
+    let now = Instant::now();
+    for conn in &mut host.clients {
+        let Some((seq, input)) = conn.pending_inputs.pop_front() else {
+            continue;
+        };
+        conn.last_input_seq = seq;
+        conn.last_input = now;
+        let slot = inputs.get_mut(PlayerId(conn.player_id));
+        slot.move_x = input.move_x;
+        slot.jump_held = input.jump_held;
+        // 锁存语义：物理步消费 `jump_pressed`，存档点系统消费 `interact_pressed`；
+        // 用 OR 保证同一固定步内不会被后到的输入吞掉。
+        slot.jump_pressed |= input.jump_pressed;
+        slot.interact_pressed |= input.interact_pressed;
     }
 }
 
@@ -426,6 +479,46 @@ pub fn broadcast_snapshot(
             "联机：开始广播快照（{player_count} 名玩家 → {} 个客户端，关卡 {}）",
             clients.len(),
             loaded.level.name
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn input(move_x: i8) -> PlayerInput {
+        PlayerInput {
+            move_x,
+            ..PlayerInput::default()
+        }
+    }
+
+    /// 冗余重发的同一 `seq` 只入队一次；乱序到达仍按 `seq` 升序排队。
+    #[test]
+    fn input_queue_dedupes_and_orders() {
+        let mut pending = VecDeque::new();
+        assert!(queue_input(&mut pending, 0, 3, input(1)));
+        assert!(queue_input(&mut pending, 0, 1, input(1)));
+        assert!(queue_input(&mut pending, 0, 2, input(1)));
+        assert!(!queue_input(&mut pending, 0, 2, input(-1))); // 冗余重发
+        assert!(!queue_input(&mut pending, 0, 0, input(-1))); // seq 0 非法
+
+        assert_eq!(
+            pending.iter().map(|(seq, _)| *seq).collect::<Vec<_>>(),
+            vec![1, 2, 3]
+        );
+    }
+
+    /// 已被物理消费的 `seq` 不再入队（客户端的冗余窗口可能仍包含它们）。
+    #[test]
+    fn consumed_inputs_are_rejected() {
+        let mut pending = VecDeque::new();
+        assert!(!queue_input(&mut pending, 5, 5, input(1)));
+        assert!(queue_input(&mut pending, 5, 6, input(1)));
+        assert_eq!(
+            pending.iter().map(|(seq, _)| *seq).collect::<Vec<_>>(),
+            vec![6]
         );
     }
 }

@@ -380,7 +380,7 @@ pub struct GameSettings {
 | `Solo` | 1 | 本进程 | 默认；旧行为不变 |
 | `LocalCoop` | 2 | 本进程 | 同屏共享键盘；左右分屏，相机各跟各的玩家 |
 | `Host` | 1 | 本进程 | 绑定 UDP `NET_PORT`，接受最多 3 个远程玩家 |
-| `Client` | 0 | 远端主机 | 只发送输入、应用快照；**不跑物理、不写存档**；相机跟随主机分配的 `PlayerId` |
+| `Client` | 0 | 远端主机 | 上行输入、应用快照，并本地预测自己的角色（不跑其他玩家的物理）；**不写存档**；相机跟随主机分配的 `PlayerId` |
 
 `SessionMode` 由菜单或 CLI 写入；`OnEnter(MainMenu)` 会关闭 socket 并复位为 `Solo`。
 玩家实体带 `PlayerId(u8)`，输入按编号放在 `PlayerInputs.slots`（`06` §6.1.5、§6.11）。
@@ -394,26 +394,30 @@ pub struct GameSettings {
   - 发现/加入/输入等低频消息：`TAG_RON` + RON 文本（与关卡/存档同一套 `serde`）。
   - 每固定步快照：`TAG_SNAPSHOT` + 定长小端二进制。布局见源码头注释；单包 ≤ `MAX_PACKET_BYTES = 1200`，
     超限直接丢弃（避免 IP 分片）。房间上限 64 ⇒ 通关集合用 `u64` 位图。
-- 协议版本 `PROTOCOL_VERSION = 3`（v3：`PlayerSnap` 增加 `last_input_seq`）；发现响应带版本，不匹配不显示。
+- 协议版本 `PROTOCOL_VERSION = 3`（v3：`PlayerSnap` 增加 `last_input_seq`，`Input` 改为携带冗余输入样本数组）；发现响应带版本，不匹配不显示。
+- `Input { samples: Vec<InputSample> }`：每个固定步发送最近 `INPUT_REDUNDANCY` 条未确认输入（按 `seq` 升序）。
+  单个 UDP 包丢失时，后续包会补上；主机按 `seq` 去重。
 - 其余常量（`config/net.rs`，本文拥有）：`MAX_PLAYERS = 4`、`MAX_PACKETS_PER_FRAME = 64`、
   `CONNECT_TIMEOUT_SECS = 10`、`CLIENT_TIMEOUT_SECS = 5`、`REMOTE_INPUT_STALE_SECS = 0.25`、
   `DISCOVERY_INTERVAL_SECS = 1`、`ROOM_TTL_SECS = 3.5`、`JOIN_RETRY_SECS = 0.25`、`PLAYER_SPAWN_GAP_PX = 24`、
   `SPAWN_PLACEMENT_TRIES = 8`、`SNAPSHOT_MAX_ROOMS = 64`、`INTERP_DELAY_STEPS = 2`、
-  `INTERP_MAX_LAG_STEPS = 8`、`MAX_PENDING_INPUTS = 240`。
+  `INTERP_MAX_LAG_STEPS = 8`、`MAX_PENDING_INPUTS = 240`、`INPUT_REDUNDANCY = 4`。
 
 ### 5.15.3 同步模型（主机权威）
 
 | 方向 | 频率 | 内容 |
 |---|---|---|
-| 客户端 → 主机 `Input` | 每固定步（60 Hz） | 序号 + `PlayerInput` 四个字段；主机按序号丢弃乱序/重复包 |
+| 客户端 → 主机 `Input` | 每固定步（60 Hz） | 最近 `INPUT_REDUNDANCY` 条未确认输入（含序号与 `PlayerInput` 四个字段）；主机去重后排队 |
 | 主机 → 客户端 `Snapshot` | 每固定步（60 Hz） | 全部玩家 `(id, x, y, vx, vy, grounded, facing, last_input_seq)`、通关房间、果实计数、已拾取 `ZoneId`、当前存档点 |
 | `Join` / `Welcome` / `Reject` | 0.25 s 重试 / 事件 | 加入握手；`Join` 带持久 `client_id`。主机分配最小空闲 `PlayerId(1..MAX_PLAYERS)`，在**关卡出生点**生成角色；出生点被墙/已有玩家占用时就近找空位。**同一 `client_id` 从新端口重连时复用原玩家编号/实体**，不新增角色 |
 | `Discover` / `RoomInfo` | 1 s 查询 + 响应 | 房间搜索（§5.15.4） |
 | `Bye` / 超时 | 离开 / 5 s 静默 | 客户端收到 `WindowCloseRequested`（点击关闭按钮）或 `AppExit` 时主动发 `Bye`，主机立即移除；异常退出（崩溃/强杀）则 5 s 超时清理 |
 
-- 主机物理按 `PlayerId` 升序推进；远程输入写入对应槽位，因此远程玩家与本地玩家走**完全相同**的
-  `physics::step`（含玩家间碰撞，`06` §6.11）。
-- 远程跳跃/交互按键按**或**写入锁存槽位（同一固定步之间到达的多个输入包不会互相吞掉）；
+- 主机物理按 `PlayerId` 升序推进；远程玩家与本地玩家走**完全相同**的 `physics::step`（含玩家间碰撞，`06` §6.11）。
+- **主机为每个客户端维护输入队列**：每个固定步只消费队首**一条**输入，`last_input_seq` 表示
+  **已被物理消费**的序号（不是收到）。一个输入对应一个固定步，客户端预测与主机推进因此一一对齐。
+  Wi-Fi 突发到达的输入会排队逐帧消费，而不是合并进同一步——合并会造成客户端周期性被快照回拉。
+- 冗余输入在主机侧按 `seq` 去重；跳跃/交互按键仍按**或**写入锁存槽位。
   超过 0.25 s 没有新输入时把 `move_x` / `jump_held` 清零（客户端暂停或卡顿不会让角色一直走）。
 - 客户端**不跑** `apply_player_physics`（全体玩家）/ Hazard / 存档点 / 条件求值 / 存档 / 热重载；
   只对**自己的角色**在 `FixedUpdate` 的 `GameSet::Physics` 内做本地预测（与主机同一个

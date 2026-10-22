@@ -1,6 +1,7 @@
 //! 局域网联机（`05` §5.15）。零新依赖：`std::net::UdpSocket` + 现有 `serde`/`ron`。
 //!
-//! 权威模型：**主机权威**。主机跑全部物理、死亡、房间目标；客户端只上行输入、下行应用快照。
+//! 权威模型：**主机权威**。主机跑全部物理、死亡、房间目标；客户端上行输入、下行应用快照，
+//! 并对**自己的角色**做本地预测（无回滚，快照到达后重放未确认输入收敛）。
 //! 本模块只负责传输与状态同步，玩法逻辑仍在各自模块里（保持纯函数可测）。
 //!
 //! 分工：
@@ -68,6 +69,10 @@ impl Plugin for NetPlugin {
                 FixedUpdate,
                 (
                     client::send_input_and_predict.in_set(GameSet::Physics),
+                    host::consume_remote_inputs
+                        .in_set(GameSet::Physics)
+                        .before(crate::player::apply_player_physics)
+                        .run_if(resource_exists::<host::HostNet>),
                     host::broadcast_snapshot.after(GameSet::Physics),
                 ),
             )

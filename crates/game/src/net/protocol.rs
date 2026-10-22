@@ -46,6 +46,16 @@ pub struct Snapshot {
     pub checkpoint: Option<(u32, u32, i32, i32)>,
 }
 
+/// 一条带序号的输入样本（`05` §5.15.2）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InputSample {
+    pub seq: u32,
+    pub move_x: i8,
+    pub jump_pressed: bool,
+    pub jump_held: bool,
+    pub interact_pressed: bool,
+}
+
 /// 局域网消息。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum NetMessage {
@@ -76,13 +86,10 @@ pub enum NetMessage {
     /// 主机拒绝加入（房间满 / 关卡不符 / 版本不符）。
     Reject { reason: String },
     /// 客户端上行输入（每个固定步一条）。
-    Input {
-        seq: u32,
-        move_x: i8,
-        jump_pressed: bool,
-        jump_held: bool,
-        interact_pressed: bool,
-    },
+    ///
+    /// `samples` 按 `seq` 升序，包含最近若干个未确认输入（冗余发送）：单个 UDP 包丢失时，
+    /// 后续包会补上缺失的输入，主机按 `seq` 去重后逐固定步消费。
+    Input { samples: Vec<InputSample> },
     /// 主机下行权威快照（每个固定步一条）。
     Snapshot(Snapshot),
     /// 客户端主动离开。
@@ -351,11 +358,13 @@ mod tests {
                 reason: "full".into(),
             },
             NetMessage::Input {
-                seq: 9,
-                move_x: -1,
-                jump_pressed: true,
-                jump_held: false,
-                interact_pressed: true,
+                samples: vec![InputSample {
+                    seq: 9,
+                    move_x: -1,
+                    jump_pressed: true,
+                    jump_held: false,
+                    interact_pressed: true,
+                }],
             },
             snapshot(),
             NetMessage::Bye,

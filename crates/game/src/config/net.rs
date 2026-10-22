@@ -47,6 +47,11 @@ pub const INTERP_DELAY_STEPS: u32 = 2;
 /// 重新对齐，避免恢复后长时间「追赶」。
 pub const INTERP_MAX_LAG_STEPS: u32 = 8;
 
+/// 每个输入包冗余携带的最近未确认输入数（`05` §5.15.2）。
+///
+/// 单个 UDP 包丢失时，后续包会重发这些输入；主机按 `seq` 去重后逐固定步消费。
+pub const INPUT_REDUNDANCY: usize = 4;
+
 /// 客户端未确认输入的最大保留数（约 4 秒 @ 60 Hz）。
 ///
 /// 主机长时间不 ack（卡顿/断线）时丢弃最旧的输入，防止队列无限增长；
