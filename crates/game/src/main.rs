@@ -16,7 +16,7 @@
 //! - `--seconds N`：按墙钟秒数退出（联机验证要两个进程同时存活）。
 //! - `--local-players 2`：本地双人；`--host`：开房；`--join <host:port>`：加入主机。
 //! - `--demo menu|levels|settings|menu-start|load-save|click|online`：界面冒烟，从主菜单开始。
-//! - `--demo walk|jump|hop|checkpoint|edge|pause|goal|restart`：玩法冒烟，直接进默认关卡。
+//! - `--demo walk|jump|hop|checkpoint|edge|pause|goal|item|restart`：玩法冒烟，直接进默认关卡。
 //!
 //! **入口规则**：带任何验证开关或 `--demo`（菜单类除外）时用 `StartupFlow::Direct`
 //! （`LoadMode::Auto`，与旧验证命令语义一致）；无参数启动才走主菜单。
@@ -391,6 +391,50 @@ fn drive_demo_goal(
     println!("[demo goal] 已传送到终点");
 }
 
+/// 冒烟专用：把唯一玩家传送到第一个道具区域，验证 10 秒 buff 与到期清除。
+fn drive_demo_item(
+    tick: Res<FrameTick>,
+    loaded: Option<Res<game::world::load::LoadedLevel>>,
+    collision: Res<game::player::collision::PlayerCollision>,
+    items: Query<&game::room::RoomZone>,
+    mut players: Query<&mut game::player::PlayerMotion>,
+    mut stage: Local<u8>,
+    mut item_center: Local<Vec2>,
+) {
+    match (*stage, tick.0) {
+        (0, 40..) => {
+            let Some(item) = items
+                .iter()
+                .find(|zone| matches!(zone.kind, game::room::RoomZoneKind::Item(_)))
+            else {
+                return;
+            };
+            let Some(mut motion) = players.iter_mut().next() else {
+                return;
+            };
+            *item_center = item.aabb.center();
+            motion.0.aabb =
+                game::physics::Aabb::from_center_size(*item_center, motion.0.aabb.size());
+            motion.0.vel = Vec2::ZERO;
+            *stage = 1;
+            println!("[demo item] 已传送到道具");
+        }
+        // 拾取后立刻回出生点，避免生成器 1.5s 后重生再次续 buff，从而能观察到 10s 到期。
+        (1, 45..) => {
+            let Some(loaded) = loaded.as_ref() else {
+                return;
+            };
+            if let Some(mut motion) = players.iter_mut().next() {
+                let (_, _, center) = game::world::initial_spawn(&loaded.level, collision.size.1);
+                motion.0.aabb = game::physics::Aabb::from_center_size(center, motion.0.aabb.size());
+                motion.0.vel = Vec2::ZERO;
+            }
+            *stage = 2;
+        }
+        _ => {}
+    }
+}
+
 fn main() {
     let cli = Cli::parse();
     println!("animj 启动：assets = {}", game::assets::asset_file_path());
@@ -445,6 +489,10 @@ fn main() {
             // 冒烟：把玩家送到终点，验证「触碰 → 计时锁定 → 结算面板」全链路。
             app.add_systems(Update, drive_demo_goal);
         }
+        Some("item") => {
+            // 冒烟：把玩家送到第一个道具，验证拾取 → 10 秒 buff → 自动清除。
+            app.add_systems(Update, drive_demo_item);
+        }
         Some("levels") => {
             app.add_systems(Update, drive_demo_levels);
         }
@@ -472,7 +520,7 @@ fn main() {
         }
         Some("menu") => {}
         Some(other) => eprintln!(
-            "未知 demo：{other}（可选 walk|jump|edge|hop|checkpoint|pause|goal|menu|levels|settings|menu-start|load-save|restart|click|online）"
+            "未知 demo：{other}（可选 walk|jump|edge|hop|checkpoint|pause|goal|item|menu|levels|settings|menu-start|load-save|restart|click|online）"
         ),
         None => {}
     }

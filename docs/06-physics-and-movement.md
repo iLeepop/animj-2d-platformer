@@ -1174,9 +1174,10 @@ transform.translation = (render_pos.x, render_pos.y, Z)        // Z 由 07 给�
 
 ### 6.12.2 道具的生命周期
 
-- 拾取：`FixedUpdate` 物理步后，角色 AABB 外扩 `PICKUP_INFLATE` 与 `item` 区域相交 ⇒ 覆盖 `CarriedItem`。
+- 拾取：`FixedUpdate` 物理步后，角色 AABB 外扩 `PICKUP_INFLATE` 与 `item` 区域相交 ⇒ 覆盖 `CarriedItem`，buff 时间重置为 `ITEM_DURATION_SECS = 10` 秒。
   - 一次性 `item`：销毁实体并记录 `PickedZones`。
   - `item_spawner` 生成的道具：实体保留并 `Visibility::Hidden`，`SpawnerItem.respawn_left = 1.5`；倒计时结束后重新激活/可见（`config/item.rs`）。
+- buff 到期：固定步递减，归零后清除道具（主机权威；客户端由快照同步剩余时间）。
 - 贴图：`EntitySpec.sprite` 指定 PNG 时按 32×32 显示；未指定时使用按类型着色的 12×12 占位块。判定盒始终是 `PICKUP_SIZE`。
-- **死亡保留**道具：避免一次性道具被消耗后无法继续（`01` §1.5）。
+- **死亡清除**道具 buff（`player/death.rs`），避免死亡后继续享受限时能力（`01` §1.5）。
 - 不写存档，不进网络持久状态；联机快照带 `item` 供客户端预测，并带未激活生成器集合供客户端同步可见性。

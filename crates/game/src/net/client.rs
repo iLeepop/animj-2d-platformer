@@ -384,7 +384,8 @@ pub fn apply_snapshot(
             motion.0 = body;
             outcome.0 = crate::physics::StepOutcome::default();
             facing.0 = snap.facing_right;
-            item.0 = snap.item;
+            item.kind = snap.item;
+            item.remaining = snap.item_remaining;
             continue;
         }
         // 新加入的玩家：生成实体；速度在下一份快照补齐（位置已经正确）。
@@ -657,7 +658,7 @@ pub fn send_input_and_predict(
     let mut out = StepOutcome::default();
     let mut cfg = DEFAULT_PHYSICS;
     cfg.player_size = collision.size_vec();
-    crate::player::items::apply_item_to_physics(&mut cfg, carried.0);
+    crate::player::items::apply_item_to_physics(&mut cfg, carried.kind);
     step_with_players(
         &cfg,
         tiles.as_ref(),
@@ -694,6 +695,7 @@ mod tests {
                 grounded: true,
                 facing_right: true,
                 item: None,
+                item_remaining: 0.0,
                 air_jumps_used: 0,
                 finish: None,
                 last_input_seq: 0,

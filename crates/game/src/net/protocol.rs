@@ -28,6 +28,8 @@ pub struct PlayerSnap {
     pub facing_right: bool,
     /// 当前携带的道具（`None` = 空手）。
     pub item: Option<ItemKind>,
+    /// 道具 buff 剩余时间（秒）；空手时为 0。
+    pub item_remaining: f32,
     /// 已用掉的空中额外起跳次数（道具「二段跳」的预测状态）。
     pub air_jumps_used: u32,
     /// 该玩家的通关时间（`None` = 尚未到达终点）。
@@ -134,7 +136,7 @@ pub fn decode(bytes: &[u8]) -> Option<NetMessage> {
 //
 // 布局（全小端）：
 //   seq u32 | run_elapsed f32 | players u8
-//   × n: [id u8, x/y/vx/vy f32, flags u8, item u8, finish u8(+f32 if 1), last_input_seq u32]
+//   × n: [id u8, x/y/vx/vy f32, flags u8, item u8, item_remaining f32, finish u8(+f32 if 1), last_input_seq u32]
 //   fruits u8 | [(room u8, count u16)] × n
 //   picked u16 | [zone u16] × n
 //   item_spawners u16 | [zone u16] × n（只列**未激活**的生成器）
@@ -162,6 +164,7 @@ fn encode_snapshot(snapshot: &Snapshot) -> Option<Vec<u8>> {
             | ((player.air_jumps_used.min(3) as u8) << 2);
         out.push(flags);
         out.push(player.item.map_or(0, ItemKind::code));
+        out.extend_from_slice(&player.item_remaining.to_le_bytes());
         match player.finish {
             Some(time) => {
                 out.push(1);
@@ -271,6 +274,7 @@ fn decode_snapshot(bytes: &[u8]) -> Option<Snapshot> {
         let vy = reader.f32()?;
         let flags = reader.u8()?;
         let item = ItemKind::from_code(reader.u8()?);
+        let item_remaining = reader.f32()?;
         let finish = match reader.u8()? {
             0 => None,
             _ => Some(reader.f32()?),
@@ -285,6 +289,7 @@ fn decode_snapshot(bytes: &[u8]) -> Option<Snapshot> {
             grounded: flags & 1 != 0,
             facing_right: flags & 2 != 0,
             item,
+            item_remaining,
             air_jumps_used: u32::from((flags >> 2) & 3),
             finish,
             last_input_seq,
@@ -352,6 +357,7 @@ mod tests {
                 grounded: true,
                 facing_right: false,
                 item: Some(ItemKind::DoubleJump),
+                item_remaining: 7.5,
                 air_jumps_used: 1,
                 finish: Some(9.75),
                 last_input_seq: 123,
@@ -437,6 +443,7 @@ mod tests {
                     grounded: true,
                     facing_right: true,
                     item: Some(ItemKind::SuperJump),
+                    item_remaining: 10.0,
                     air_jumps_used: 1,
                     finish: Some(3599.0),
                     last_input_seq: 0,

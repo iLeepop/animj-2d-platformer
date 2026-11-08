@@ -113,7 +113,12 @@ pub fn respawn_on_death(
     active: Option<Res<ActiveCheckpoint>>,
     tiles: Option<Res<LevelTiles>>,
     collision: Res<crate::player::collision::PlayerCollision>,
-    mut players: Query<(&PlayerId, &mut PlayerMotion, &mut PlayerStepOutcome)>,
+    mut players: Query<(
+        &PlayerId,
+        &mut PlayerMotion,
+        &mut PlayerStepOutcome,
+        &mut crate::player::items::CarriedItem,
+    )>,
 ) {
     let dead: Vec<PlayerId> = died.read().map(|message| message.player_id).collect();
     if dead.is_empty() {
@@ -168,7 +173,7 @@ pub fn respawn_on_death(
         })
         .unwrap_or_else(|| vec![target.center; count]);
 
-    for (id, mut motion, mut outcome) in &mut players {
+    for (id, mut motion, mut outcome, mut item) in &mut players {
         if !dead.contains(id) {
             continue;
         }
@@ -176,6 +181,11 @@ pub fn respawn_on_death(
         // `Body::at_center_with` 保证「土狼时间用尽」，因此重生后不得凭空起跳（`06` §6.5.3 / T21）
         motion.0 = crate::physics::Body::at_center_with(center, collision.size_vec());
         outcome.0 = crate::physics::StepOutcome::default();
+        // 死亡清除道具 buff（`01` §1.5）。
+        if item.kind.is_some() {
+            info!("玩家 {} 死亡：道具 buff 已清除", id.0);
+        }
+        item.clear();
     }
 }
 
@@ -299,6 +309,10 @@ mod tests {
                 PlayerId(0),
                 PlayerMotion(Body::at_center(Vec2::new(700.0, 40.0))),
                 PlayerStepOutcome::default(),
+                crate::player::items::CarriedItem {
+                    kind: Some(level_format::ItemKind::Speed),
+                    remaining: 8.0,
+                },
             ))
             .id();
         app.world_mut().write_message(PlayerDied {
@@ -320,6 +334,14 @@ mod tests {
             (current.col, current.row),
             (spawn_col, spawn_row),
             "CurrentRoom 必须同步切回出生房间"
+        );
+        // 死亡清除道具 buff（`01` §1.5）。
+        assert_eq!(
+            app.world()
+                .get::<crate::player::items::CarriedItem>(player)
+                .unwrap()
+                .kind,
+            None
         );
     }
 }

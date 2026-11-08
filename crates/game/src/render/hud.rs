@@ -179,15 +179,26 @@ fn update_hud(
     mut pill: Single<&mut Node, With<HudPill>>,
 ) {
     let s = settings.language.strings();
-    let focus_item = players
+    let focus = players
         .iter()
         .min_by_key(|(id, _)| *id)
-        .and_then(|(_, item)| item.0);
-    let elapsed = run.as_ref().map(|run| run.elapsed).unwrap_or(0.0);
-    let name = focus_item
+        .map(|(_, item)| item);
+    let item_name = focus
+        .and_then(|item| item.kind)
         .map(|kind| settings.language.item_name(kind))
         .unwrap_or(s.no_item);
-    let next = format!("{} {:.2}{}   {}", s.time, elapsed, s.seconds, name);
+    let item_remaining = focus
+        .and_then(|item| item.kind.map(|_| item.remaining))
+        .unwrap_or(0.0);
+    let elapsed = run.as_ref().map(|run| run.elapsed).unwrap_or(0.0);
+    let next = if item_remaining > 0.0 {
+        format!(
+            "{} {:.2}{}   {} {:.1}{}",
+            s.time, elapsed, s.seconds, item_name, item_remaining, s.seconds
+        )
+    } else {
+        format!("{} {:.2}{}   {}", s.time, elapsed, s.seconds, item_name)
+    };
 
     if text.0 != next {
         text.0 = next.clone();

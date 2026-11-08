@@ -377,7 +377,9 @@ fn place_entity(
         id: None,
         item: matches!(session.entity_kind.as_str(), "item" | "item_spawner")
             .then_some(session.entity_item),
-        sprite: None,
+        sprite: matches!(session.entity_kind.as_str(), "item" | "item_spawner")
+            .then(|| session.entity_sprite.clone())
+            .flatten(),
     };
     session.room_mut().entities.push(spec);
     session.selected_entity = Some(session.room().entities.len() - 1);

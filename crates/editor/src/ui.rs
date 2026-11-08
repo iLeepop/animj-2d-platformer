@@ -592,85 +592,109 @@ fn right_panel(
     picker: &mut crate::tile_tool::AssetPickerState,
 ) {
     egui::Panel::right("animj_editor_right").show(ui, |ui| {
-        // 房间选择器：**点击式**切房间（`Tab` 会被 egui 焦点遍历吞掉，键盘不可靠）
-        // 切房间**不移动相机**；需要时点「对焦」。
-        ui.horizontal(|ui| {
-            ui.heading("房间");
-            if ui.small_button("对焦").clicked() {
-                session.focus_camera = true;
-            }
-        });
-        for row in 0..session.doc.grid.rows {
-            ui.horizontal(|ui| {
-                for col in 0..session.doc.grid.cols {
-                    let current = session.current_room == (col, row);
-                    if ui
-                        .selectable_label(current, format!("{col},{row}"))
-                        .clicked()
-                    {
-                        session.goto_room(col, row);
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                // 房间选择器：**点击式**切房间（`Tab` 会被 egui 焦点遍历吞掉，键盘不可靠）
+                // 切房间**不移动相机**；需要时点「对焦」。
+                ui.horizontal(|ui| {
+                    ui.heading("房间");
+                    if ui.small_button("对焦").clicked() {
+                        session.focus_camera = true;
+                    }
+                });
+                for row in 0..session.doc.grid.rows {
+                    ui.horizontal(|ui| {
+                        for col in 0..session.doc.grid.cols {
+                            let current = session.current_room == (col, row);
+                            if ui
+                                .selectable_label(current, format!("{col},{row}"))
+                                .clicked()
+                            {
+                                session.goto_room(col, row);
+                            }
+                        }
+                    });
+                }
+                ui.separator();
+                ui.heading("全关卡实体");
+                ui.label(format!(
+                    "终点 {} 个（要求恰好 1）",
+                    session
+                        .doc
+                        .rooms
+                        .iter()
+                        .flat_map(|room| room.entities.iter())
+                        .filter(|entity| entity.kind == "goal")
+                        .count()
+                ));
+                ui.separator();
+                ui.heading("实体笔刷");
+                if matches!(session.entity_kind.as_str(), "item" | "item_spawner") {
+                    ui.horizontal(|ui| {
+                        for item in [
+                            level_format::ItemKind::SuperJump,
+                            level_format::ItemKind::Speed,
+                            level_format::ItemKind::DoubleJump,
+                        ] {
+                            if ui
+                                .selectable_label(session.entity_item == item, item.label())
+                                .clicked()
+                            {
+                                session.entity_item = item;
+                            }
+                        }
+                    });
+                    let mut sprite = session.entity_sprite.clone().unwrap_or_default();
+                    let mut changed = false;
+                    ui.horizontal(|ui| {
+                        ui.label("放置贴图");
+                        changed |= ui
+                            .add(
+                                egui::TextEdit::singleline(&mut sprite)
+                                    .desired_width(150.0)
+                                    .hint_text("sprites/items/speed.png"),
+                            )
+                            .changed();
+                        if let Some(picked) =
+                            crate::tile_tool::asset_picker(ui, picker, "brush_item_sprite")
+                        {
+                            sprite = picked;
+                            changed = true;
+                        }
+                        if ui.small_button("清除").clicked() {
+                            session.entity_sprite = None;
+                        }
+                    });
+                    if changed {
+                        session.entity_sprite = level_format::normalize_asset_path(&sprite);
                     }
                 }
-            });
-        }
-        ui.separator();
-        ui.heading("全关卡实体");
-        ui.label(format!(
-            "终点 {} 个（要求恰好 1）",
-            session
-                .doc
-                .rooms
-                .iter()
-                .flat_map(|room| room.entities.iter())
-                .filter(|entity| entity.kind == "goal")
-                .count()
-        ));
-        ui.separator();
-        ui.heading("实体笔刷");
-        for kind in [
-            "fruit",
-            "goal",
-            "checkpoint",
-            "player_spawn",
-            "item",
-            "item_spawner",
-        ] {
-            if ui
-                .selectable_label(session.entity_kind == kind, kind)
-                .clicked()
-            {
-                session.entity_kind = kind.to_string();
-            }
-        }
-        if matches!(session.entity_kind.as_str(), "item" | "item_spawner") {
-            ui.horizontal(|ui| {
-                for item in [
-                    level_format::ItemKind::SuperJump,
-                    level_format::ItemKind::Speed,
-                    level_format::ItemKind::DoubleJump,
+                for kind in [
+                    "fruit",
+                    "goal",
+                    "checkpoint",
+                    "player_spawn",
+                    "item",
+                    "item_spawner",
                 ] {
                     if ui
-                        .selectable_label(session.entity_item == item, item.label())
+                        .selectable_label(session.entity_kind == kind, kind)
                         .clicked()
                     {
-                        session.entity_item = item;
+                        session.entity_kind = kind.to_string();
                     }
                 }
-            });
-        }
-        ui.separator();
-        // 实体按房间管理：只显示**当前房间**的列表；切房间后列表随 `current_room` 切换。
-        let room_index = session.room_index();
-        let entities = session.room().entities.clone();
-        ui.heading(format!(
-            "本房间实体 ({}) — 房间 ({}, {})",
-            entities.len(),
-            session.current_room.0,
-            session.current_room.1
-        ));
-        egui::ScrollArea::vertical()
-            .max_height(180.0)
-            .show(ui, |ui| {
+                ui.separator();
+                // 实体按房间管理：只显示**当前房间**的列表；切房间后列表随 `current_room` 切换。
+                let room_index = session.room_index();
+                let entities = session.room().entities.clone();
+                ui.heading(format!(
+                    "本房间实体 ({}) — 房间 ({}, {})",
+                    entities.len(),
+                    session.current_room.0,
+                    session.current_room.1
+                ));
                 if entities.is_empty() {
                     ui.label("（空；用工具 5 放置）");
                 }
@@ -693,59 +717,59 @@ fn right_panel(
                 if let Some(entity_index) = pending_delete {
                     session.delete_entity(room_index, entity_index);
                 }
-            });
-        if let Some(index) = session.selected_entity
-            && let Some(spec) = entities.get(index).cloned()
-        {
-            ui.separator();
-            ui.heading(format!("选中实体 #{index}：{}", spec.kind));
-            if matches!(spec.kind.as_str(), "item" | "item_spawner") {
-                ui.horizontal(|ui| {
-                    ui.label("道具");
-                    for item in [
-                        level_format::ItemKind::SuperJump,
-                        level_format::ItemKind::Speed,
-                        level_format::ItemKind::DoubleJump,
-                    ] {
-                        if ui
-                            .selectable_label(spec.item == Some(item), item.label())
-                            .clicked()
-                        {
-                            session.set_entity_item(index, Some(item));
+                if let Some(index) = session.selected_entity
+                    && let Some(spec) = entities.get(index).cloned()
+                {
+                    ui.separator();
+                    ui.heading(format!("选中实体 #{index}：{}", spec.kind));
+                    if matches!(spec.kind.as_str(), "item" | "item_spawner") {
+                        ui.horizontal(|ui| {
+                            ui.label("道具");
+                            for item in [
+                                level_format::ItemKind::SuperJump,
+                                level_format::ItemKind::Speed,
+                                level_format::ItemKind::DoubleJump,
+                            ] {
+                                if ui
+                                    .selectable_label(spec.item == Some(item), item.label())
+                                    .clicked()
+                                {
+                                    session.set_entity_item(index, Some(item));
+                                }
+                            }
+                        });
+                        let mut sprite = spec.sprite.clone().unwrap_or_default();
+                        let mut changed = false;
+                        ui.horizontal(|ui| {
+                            ui.label("贴图");
+                            changed |= ui
+                                .add(
+                                    egui::TextEdit::singleline(&mut sprite)
+                                        .desired_width(180.0)
+                                        .hint_text("sprites/items/super_jump.png"),
+                                )
+                                .changed();
+                            if let Some(picked) =
+                                crate::tile_tool::asset_picker(ui, picker, "entity_sprite")
+                            {
+                                sprite = picked;
+                                changed = true;
+                            }
+                            if ui.small_button("清除").clicked() {
+                                session.set_entity_sprite(index, None);
+                            }
+                        });
+                        if changed {
+                            session.set_entity_sprite(index, Some(sprite));
                         }
+                    } else {
+                        ui.label("只有 item / item_spawner 支持道具类型与贴图。");
                     }
-                });
-                let mut sprite = spec.sprite.clone().unwrap_or_default();
-                let mut changed = false;
-                ui.horizontal(|ui| {
-                    ui.label("贴图");
-                    changed |= ui
-                        .add(
-                            egui::TextEdit::singleline(&mut sprite)
-                                .desired_width(180.0)
-                                .hint_text("sprites/items/super_jump.png"),
-                        )
-                        .changed();
-                    if let Some(picked) =
-                        crate::tile_tool::asset_picker(ui, picker, "entity_sprite")
-                    {
-                        sprite = picked;
-                        changed = true;
-                    }
-                    if ui.small_button("清除").clicked() {
-                        session.set_entity_sprite(index, None);
-                    }
-                });
-                if changed {
-                    session.set_entity_sprite(index, Some(sprite));
                 }
-            } else {
-                ui.label("只有 item / item_spawner 支持道具类型与贴图。");
-            }
-        }
-        if ui.button("去重：出生点 / 终点").clicked() {
-            session.dedupe_singletons();
-        }
+                if ui.button("去重：出生点 / 终点").clicked() {
+                    session.dedupe_singletons();
+                }
+            });
     });
 }
 

@@ -233,6 +233,7 @@ flowchart TB
 | `CheckpointActivated` | `Message` | `point: CheckpointPoint`（房间 + 局部 `at`） | `checkpoint` → 存档（立即写盘） |
 | `RoomEntered` | `Message` | `room_index: u32` | `room` → HUD/调试/编辑器 |
 | `ItemPicked` | `Message` | `player: PlayerId`, `kind: ItemKind`, `replaced: Option<ItemKind>` | `player/items` → HUD/音效 |
+| `CarriedItem` | 组件 | `kind: Option<ItemKind>`, `remaining: f32`（10 秒 buff 倒计时） | 拾取/死亡/到期写；HUD 与客户端预测读 |
 | `SpawnerItem` | 组件 | `active: bool`, `respawn_left: f32` | `item_spawner` 生成的道具；主机倒计时，客户端按快照同步 |
 | `PlayerFinished` | `Message` | `player: PlayerId`, `time: f32` | `run::detect_goal_touch` → HUD/音效 |
 | `CollectiblePicked` | `Message` | `room_index: u32` | `room` 传感器 → 音效（`06` §6.5.4） |
@@ -398,7 +399,7 @@ pub struct GameSettings {
   - 发现/加入/输入等低频消息：`TAG_RON` + RON 文本（与关卡/存档同一套 `serde`）。
   - 每固定步快照：`TAG_SNAPSHOT` + 定长小端二进制。布局见源码头注释；单包 ≤ `MAX_PACKET_BYTES = 1200`，
     超限直接丢弃（避免 IP 分片）。
-- 协议版本 `PROTOCOL_VERSION = 5`（v5：快照增加 `inactive_item_spawners`；v4 已移除通关房间位图并增加计时/道具/通关时间）。发现响应带版本，不匹配不显示。
+- 协议版本 `PROTOCOL_VERSION = 6`（v6：`PlayerSnap` 增加道具剩余时间；v5 增加 `inactive_item_spawners`；v4 已移除通关房间位图并增加计时/道具/通关时间）。发现响应带版本，不匹配不显示。
 - `Input { samples: Vec<InputSample> }`：每个固定步发送最近 `INPUT_REDUNDANCY` 条未确认输入（按 `seq` 升序）。
   单个 UDP 包丢失时，后续包会补上；主机按 `seq` 去重。
 - 其余常量（`config/net.rs`，本文拥有）：`MAX_PLAYERS = 4`、`MAX_PACKETS_PER_FRAME = 64`、
@@ -412,7 +413,7 @@ pub struct GameSettings {
 | 方向 | 频率 | 内容 |
 |---|---|---|
 | 客户端 → 主机 `Input` | 每固定步（60 Hz） | 最近 `INPUT_REDUNDANCY` 条未确认输入（含序号与 `PlayerInput` 四个字段）；主机去重后排队 |
-| 主机 → 客户端 `Snapshot` | 每固定步（60 Hz） | `run_elapsed`；全部玩家 `(id, x, y, vx, vy, grounded, facing, item, air_jumps_used, finish, last_input_seq)`；果实计数、已拾取 `ZoneId`、未激活的道具生成器 `ZoneId`、当前存档点 |
+| 主机 → 客户端 `Snapshot` | 每固定步（60 Hz） | `run_elapsed`；全部玩家 `(id, x, y, vx, vy, grounded, facing, item, item_remaining, air_jumps_used, finish, last_input_seq)`；果实计数、已拾取 `ZoneId`、未激活的道具生成器 `ZoneId`、当前存档点 |
 | `Join` / `Welcome` / `Reject` | 0.25 s 重试 / 事件 | 加入握手；`Join` 带持久 `client_id`。主机分配最小空闲 `PlayerId(1..MAX_PLAYERS)`，在**关卡出生点**生成角色；出生点被墙/已有玩家占用时就近找空位。**同一 `client_id` 从新端口重连时复用原玩家编号/实体**，不新增角色 |
 | `Discover` / `RoomInfo` | 1 s 查询 + 响应 | 房间搜索（§5.15.4） |
 | `Bye` / 超时 | 离开 / 5 s 静默 | 客户端收到 `WindowCloseRequested`（点击关闭按钮）或 `AppExit` 时主动发 `Bye`，主机立即移除；异常退出（崩溃/强杀）则 5 s 超时清理 |

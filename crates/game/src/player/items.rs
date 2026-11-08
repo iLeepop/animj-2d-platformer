@@ -7,7 +7,7 @@
 use bevy::prelude::*;
 use level_format::ItemKind;
 
-use crate::config::item::ITEM_RESPAWN_SECS;
+use crate::config::item::{ITEM_DURATION_SECS, ITEM_RESPAWN_SECS};
 use crate::config::physics::{
     FIXED_DT, ITEM_DOUBLE_JUMP_MAX_AIR_JUMPS, ITEM_DOUBLE_JUMP_VELOCITY_MULT,
     ITEM_SPEED_ACCEL_MULT, ITEM_SPEED_MAX_MULT, ITEM_SUPER_JUMP_VELOCITY_MULT, PICKUP_INFLATE,
@@ -16,13 +16,31 @@ use crate::config::physics::{
 use crate::player::{PlayerId, PlayerMotion};
 use crate::room::{PickedZones, RoomZone, RoomZoneKind, ZoneId, aabb_overlaps};
 
-/// 角色当前携带的道具（`None` = 空手）。同一角色至多一个。
-#[derive(Component, Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct CarriedItem(pub Option<ItemKind>);
+/// 角色当前携带的道具（`kind` = `None` 表示空手）与剩余 buff 时间。
+///
+/// 同一角色至多一个道具；再次拾取覆盖并重置 [`ITEM_DURATION_SECS`]。
+#[derive(Component, Debug, Clone, Copy, Default, PartialEq)]
+pub struct CarriedItem {
+    pub kind: Option<ItemKind>,
+    /// 剩余 buff 时间（秒）；`kind == None` 时无意义。
+    pub remaining: f32,
+}
 
 impl CarriedItem {
     pub fn get(self) -> Option<ItemKind> {
-        self.0
+        self.kind
+    }
+
+    /// 拾取 / 覆盖道具，并把持续时间重置为满。
+    pub fn pick(&mut self, kind: ItemKind) {
+        self.kind = Some(kind);
+        self.remaining = ITEM_DURATION_SECS;
+    }
+
+    /// 清除 buff（死亡或超时）。
+    pub fn clear(&mut self) {
+        self.kind = None;
+        self.remaining = 0.0;
     }
 }
 
@@ -92,7 +110,7 @@ impl Plugin for ItemPlugin {
     fn build(&self, app: &mut App) {
         app.add_message::<ItemPicked>().add_systems(
             FixedUpdate,
-            (pickup_items, tick_item_spawners)
+            (pickup_items, tick_item_buffs, tick_item_spawners)
                 .chain()
                 .after(crate::player::apply_player_physics)
                 .in_set(crate::state::GameSet::Physics)
@@ -131,8 +149,8 @@ fn pickup_items(
         }) else {
             continue;
         };
-        let replaced = carried.0;
-        carried.0 = Some(kind);
+        let replaced = carried.kind;
+        carried.pick(kind);
         match spawner.as_mut() {
             Some(spawner) => {
                 // 生成器：隐藏并开始 1.5 s 重生倒计时，不销毁实体。
@@ -169,6 +187,21 @@ fn pickup_items(
                 String::new()
             }
         );
+    }
+}
+
+/// buff 持续时间倒计时：耗尽后自动清除（固定步，主机权威）。
+fn tick_item_buffs(mut players: Query<(&PlayerId, &mut CarriedItem)>) {
+    for (id, mut carried) in &mut players {
+        let Some(kind) = carried.kind else {
+            continue;
+        };
+        carried.remaining -= FIXED_DT;
+        if carried.remaining > 0.0 {
+            continue;
+        }
+        carried.clear();
+        info!("玩家 {} 道具效果结束：{}", id.0, kind.id());
     }
 }
 
@@ -325,8 +358,12 @@ mod tests {
             .run_system_once(pickup_items)
             .expect("拾取系统");
         assert_eq!(
-            app.world().get::<CarriedItem>(player).unwrap().0,
+            app.world().get::<CarriedItem>(player).unwrap().kind,
             Some(ItemKind::Speed)
+        );
+        assert_eq!(
+            app.world().get::<CarriedItem>(player).unwrap().remaining,
+            ITEM_DURATION_SECS
         );
         assert!(app.world().get_entity(speed).is_err(), "道具实体应销毁");
         assert!(app.world().resource::<PickedZones>().0.contains(&1));
@@ -338,8 +375,35 @@ mod tests {
             .run_system_once(pickup_items)
             .expect("拾取系统");
         assert_eq!(
-            app.world().get::<CarriedItem>(player).unwrap().0,
+            app.world().get::<CarriedItem>(player).unwrap().kind,
             Some(ItemKind::DoubleJump)
         );
+        assert_eq!(
+            app.world().get::<CarriedItem>(player).unwrap().remaining,
+            ITEM_DURATION_SECS,
+            "覆盖拾取重置 buff 时间"
+        );
+    }
+
+    /// buff 到期后自动清除。
+    #[test]
+    fn item_buff_expires_after_its_duration() {
+        use bevy::ecs::system::RunSystemOnce;
+
+        let mut app = App::new();
+        app.world_mut().spawn((
+            PlayerId(0),
+            CarriedItem {
+                kind: Some(ItemKind::Speed),
+                remaining: FIXED_DT * 0.5,
+            },
+        ));
+        app.world_mut()
+            .run_system_once(tick_item_buffs)
+            .expect("buff 倒计时");
+        let mut query = app.world_mut().query::<&CarriedItem>();
+        let item = query.single(app.world()).unwrap();
+        assert_eq!(item.kind, None, "到期后必须清除道具");
+        assert_eq!(item.remaining, 0.0);
     }
 }

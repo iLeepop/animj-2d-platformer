@@ -177,7 +177,7 @@ pub enum ItemKind {
 - 角色**同一时刻至多携带一个道具**；再次拾取直接覆盖，不叠加（`01` §1.5）。
 - `item` 实体在拾取后销毁；`item_spawner` 生成的实体拾取后隐藏，`ITEM_RESPAWN_SECS = 1.5` 秒后重新生成。
 - 道具贴图：`sprite: Some("sprites/items/speed.png")`（相对 `assets/` 的 PNG）。未设置时按类型用占位色块。
-- 死亡**不清空**当前道具；避免一次性道具被消耗后无法继续。
+- 死亡会**清除**当前道具 buff（`01` §1.5）。
 - 具体倍率归 `06` §6.12；这里是 RON 枚举名（`item: Some(SuperJump)`）。
 
 ## 3.6 完整示例

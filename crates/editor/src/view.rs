@@ -208,7 +208,14 @@ fn ensure_projection(
 
     if roots.is_empty() {
         for index in 0..session.doc.rooms.len() {
-            spawn_room(&mut commands, &session.doc, &image, &layout, index as u32);
+            spawn_room(
+                &mut commands,
+                &session.doc,
+                &image,
+                &layout,
+                &mut images,
+                index as u32,
+            );
         }
         state.revision = Some(session.doc_revision);
         state.room = Some(session.current_room);
@@ -225,17 +232,25 @@ fn ensure_projection(
             commands.entity(entity).despawn();
         }
     }
-    spawn_room(&mut commands, &session.doc, &image, &layout, index);
+    spawn_room(
+        &mut commands,
+        &session.doc,
+        &image,
+        &layout,
+        &mut images,
+        index,
+    );
     state.revision = Some(session.doc_revision);
     state.room = Some(session.current_room);
 }
 
-/// 一个房间的投影：瓦片 sprite（图集）+ 实体色块（尺寸 = 判定尺寸）。
+/// 一个房间的投影：瓦片 sprite（图集）+ 实体色块/道具贴图（尺寸 = 判定尺寸）。
 fn spawn_room(
     commands: &mut Commands,
     doc: &level_format::Level,
     image: &Handle<Image>,
     layout: &Handle<TextureAtlasLayout>,
+    images: &mut Assets<Image>,
     index: u32,
 ) {
     let Some(room) = doc.rooms.get(index as usize) else {
@@ -295,8 +310,9 @@ fn spawn_room(
 
     for spec in &room.entities {
         // 出生点也必须可见（否则"加了但看不见"）：32×32 青色标记
+        let item_like = matches!(spec.kind.as_str(), "item" | "item_spawner");
         let size = match spec.kind.as_str() {
-            "fruit" => Vec2::splat(game::config::physics::PICKUP_SIZE),
+            "fruit" | "item" | "item_spawner" => Vec2::splat(game::config::physics::PICKUP_SIZE),
             "player_spawn" => Vec2::splat(32.0),
             _ => spec
                 .size
@@ -306,14 +322,31 @@ fn spawn_room(
         let local = Vec2::new(spec.at.0 as f32, spec.at.1 as f32);
         let world = game::coords::room_local_to_world(col, row, rows, local);
         let color = match spec.kind.as_str() {
-            "exit" => Color::srgb(0.30, 0.85, 0.42),
+            "goal" => Color::srgb(0.30, 0.85, 0.42),
             "fruit" => Color::srgb(0.92, 0.36, 0.55),
             "checkpoint" => game::checkpoint::ZONE_COLOR,
             "player_spawn" => Color::srgb(0.35, 0.85, 0.95),
+            "item" | "item_spawner" => spec
+                .item
+                .map(game::player::items::item_color)
+                .unwrap_or(Color::srgb(0.9, 0.9, 0.4)),
             _ => Color::srgb(0.9, 0.9, 0.4),
         };
+        let sprite = if item_like {
+            spec.sprite
+                .as_deref()
+                .and_then(|path| game::render::tiles::load_image(path, images))
+                .map(|handle| {
+                    let mut sprite = Sprite::from_image(handle);
+                    sprite.custom_size = Some(Vec2::splat(level_format::TILE_PX as f32));
+                    sprite
+                })
+                .unwrap_or_else(|| Sprite::from_color(color, size))
+        } else {
+            Sprite::from_color(color, size)
+        };
         commands.spawn((
-            Sprite::from_color(color, size),
+            sprite,
             Anchor::BOTTOM_CENTER,
             Transform::from_xyz(
                 world.x - center.x,

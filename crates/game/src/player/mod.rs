@@ -190,7 +190,7 @@ pub fn apply_player_physics(
         };
         // 道具只修正本玩家本步的参数副本（`06` §6.12）。
         let mut cfg = base_cfg;
-        items::apply_item_to_physics(&mut cfg, carried.0);
+        items::apply_item_to_physics(&mut cfg, carried.kind);
         let mut out = StepOutcome::default();
         step_with_players(
             &cfg,

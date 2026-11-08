@@ -27,7 +27,11 @@ fn main() {
             drive_demo_room.run_if(resource_exists::<editor::session::EditorSession>),
         )
         .add_systems(Update, drive_demo_collision)
-        .add_systems(Update, drive_demo_player);
+        .add_systems(Update, drive_demo_player)
+        .add_systems(
+            Update,
+            drive_demo_item.run_if(resource_exists::<editor::session::EditorSession>),
+        );
 
     // 编辑态看整张地图（`08` §8.1.4）。
     app.insert_resource(game::render::tiles::RoomCulling(false));
@@ -63,6 +67,8 @@ struct Cli {
     demo_collision: Option<String>,
     /// 冒烟：第 10 帧切到「玩家」标签页并设一个演示用玩家碰撞（不写盘）。
     demo_player: bool,
+    /// 冒烟：第 10 帧选中当前房间第一个 item 类实体并设置贴图，验证右栏属性。
+    demo_item: bool,
 }
 
 impl Cli {
@@ -77,6 +83,7 @@ impl Cli {
                 "--demo-room" => cli.demo_room = args.next(),
                 "--demo-collision" => cli.demo_collision = args.next(),
                 "--demo-player" => cli.demo_player = true,
+                "--demo-item" => cli.demo_item = true,
                 other => eprintln!("忽略未知参数：{other}"),
             }
         }
@@ -258,6 +265,34 @@ fn drive_demo_player(
         collision.clamp();
     }
     println!("[demo-player] 已切到「玩家」标签页并设置演示碰撞");
+}
+
+/// `--demo-item`：选中当前房间第一个 item 类实体并设置演示贴图，便于截图检查属性面板。
+fn drive_demo_item(
+    cli: Res<Cli>,
+    tick: Res<FrameTick>,
+    mut session: Option<ResMut<editor::session::EditorSession>>,
+    mut done: Local<bool>,
+) {
+    if !cli.demo_item || *done || tick.0 < 10 {
+        return;
+    }
+    let Some(session) = session.as_mut() else {
+        return;
+    };
+    *done = true;
+    session.entity_kind = "item_spawner".to_string();
+    session.entity_item = level_format::ItemKind::Speed;
+    session.entity_sprite = Some("sprites/items/speed.png".to_string());
+    session.selected_entity = session
+        .room()
+        .entities
+        .iter()
+        .position(|spec| matches!(spec.kind.as_str(), "item" | "item_spawner"));
+    println!(
+        "[demo-item] 已选中实体 {:?}，贴图 = {:?}",
+        session.selected_entity, session.entity_sprite
+    );
 }
 
 fn exit_on_frames_limit(cli: Res<Cli>, tick: Res<FrameTick>, mut exit: MessageWriter<AppExit>) {

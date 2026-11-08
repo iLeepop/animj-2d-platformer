@@ -67,6 +67,8 @@ pub struct EditorSession {
     pub entity_kind: String,
     /// `entity_kind == "item"` 时放置的道具类型。
     pub entity_item: level_format::ItemKind,
+    /// 放置 item 类实体时使用的贴图（相对 assets/ 的 PNG）。
+    pub entity_sprite: Option<String>,
     /// 面板里选中的房间实体下标。
     pub selected_entity: Option<usize>,
     /// 状态栏文字（保存结果、拦截原因等）。
@@ -102,6 +104,7 @@ impl EditorSession {
             brush_char: '#',
             entity_kind: "fruit".to_string(),
             entity_item: level_format::ItemKind::SuperJump,
+            entity_sprite: None,
             selected_entity: None,
             status: String::new(),
             doc_revision: 0,

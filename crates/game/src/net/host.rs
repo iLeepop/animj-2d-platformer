@@ -423,7 +423,8 @@ pub fn broadcast_snapshot(
             vy: motion.0.vel.y,
             grounded: motion.0.grounded,
             facing_right: facing.0,
-            item: item.0,
+            item: item.kind,
+            item_remaining: item.remaining,
             air_jumps_used: motion.0.air_jumps_used,
             finish: run.as_ref().and_then(|run| run.time_of(*id)),
             // 主机自己控制的玩家没有上行输入；远程玩家回带最后收到的序号。
