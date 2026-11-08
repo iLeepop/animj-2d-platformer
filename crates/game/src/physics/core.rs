@@ -218,7 +218,7 @@ pub fn overlaps_tile_kind(world: &dyn TileWorld, aabb: Aabb, expand: f32, kind: 
                 continue;
             }
             let mut hit = false;
-            for_each_part(world, tx, ty, |part| {
+            for_each_part(world, tx, ty, |part, _| {
                 if probe_overlaps(&probe, &part, GEOM_EPS_LOCAL) {
                     hit = true;
                 }
@@ -270,18 +270,22 @@ pub(crate) fn tile_range(eps: f32, aabb: &Aabb) -> (i32, i32, i32, i32) {
 
 /// 遍历一格的实际碰撞块（世界像素）；`TileParts::Full` 展开为整格。
 ///
-/// 这是物理内核接触**自定义碰撞范围**的唯一入口：轴分离、支撑探测与传感器都经过它，
-/// 因此未自定义的瓦片（`Full`）与旧行为逐位一致。
-fn for_each_part(world: &dyn TileWorld, tx: i32, ty: i32, mut visit: impl FnMut(Aabb)) {
+/// `visit(part, custom)` 的 `custom`：`false` = 整格（旧的不变量修复路径，§6.4.9）；
+/// `true` = 关卡调色板自定义块（需要更严格的“本步越过面”判定，防止提前吸附）。
+/// 这是物理内核接触**自定义碰撞范围**的唯一入口：轴分离、支撑探测与传感器都经过它。
+fn for_each_part(world: &dyn TileWorld, tx: i32, ty: i32, mut visit: impl FnMut(Aabb, bool)) {
     let origin = Vec2::new(tx as f32 * TILE, ty as f32 * TILE);
     match world.tile_parts(tx, ty) {
-        TileParts::Full => visit(Aabb {
-            min: origin,
-            max: origin + Vec2::splat(TILE),
-        }),
+        TileParts::Full => visit(
+            Aabb {
+                min: origin,
+                max: origin + Vec2::splat(TILE),
+            },
+            false,
+        ),
         TileParts::Parts(parts) => {
             for part in parts {
-                visit(part.translate(origin));
+                visit(part.translate(origin), true);
             }
         }
     }
@@ -352,9 +356,14 @@ fn move_x(
             if !world.tile(tx, ty).is_solid() {
                 continue;
             }
-            for_each_part(world, tx, ty, |part| {
+            for_each_part(world, tx, ty, |part, _| {
                 // 自定义碰撞块可能只占格子的一部分：竖直方向不重叠就不挡路
                 if !vertical_overlap(&new, &part, cfg.geom_eps) {
+                    return;
+                }
+                // 也必须与移动后的盒子**水平重叠**：`tile_range` 只保证格子被擦到，
+                // 同一个格子里的块可能还在很远的右侧/左侧；否则会把身体瞬移到它的面上。
+                if !horizontal_overlap(&new, &part, cfg.geom_eps) {
                     return;
                 }
                 push(if dx > 0.0 {
@@ -419,25 +428,35 @@ fn move_y(
             if matches!(kind, TileKind::Empty | TileKind::Hazard) {
                 continue;
             }
-            for_each_part(world, tx, ty, |part| {
+            for_each_part(world, tx, ty, |part, custom| {
                 // 自定义碰撞块可能只占格子的一部分：水平方向不重叠就不挡路
                 if !horizontal_overlap(&new, &part, cfg.geom_eps) {
                     return;
                 }
                 // 只接受本步**真正越过**的面：整格时 `tile_range` 已保证脚底/头顶在格子内，
                 // 自定义块则可能还在面外几个像素——此时取它的顶面/底面会把身体提前吸过去。
-                // 同时排除“块完全在身体另一侧”的情形（旧的方向过滤）。
-                if dy < 0.0
-                    && (prev.max.y <= part.min.y + cfg.geom_eps
-                        || new.min.y >= part.max.y - cfg.geom_eps)
-                {
-                    return;
+                // 自定义块额外要求身体在面的正确一侧：下落时身体顶部在块顶之上，
+                // 上升时身体底部在块底之下；否则会把从下方/上方嵌进来的身体吸到面上。
+                if dy < 0.0 {
+                    let wrong_side = if custom {
+                        prev.max.y <= part.max.y - cfg.geom_eps
+                    } else {
+                        // 整格保留旧的“身体不在块下方”条件：埋入地板的修复依赖它（§6.4.9）
+                        prev.max.y <= part.min.y + cfg.geom_eps
+                    };
+                    if wrong_side || new.min.y >= part.max.y - cfg.geom_eps {
+                        return;
+                    }
                 }
-                if dy > 0.0
-                    && (prev.min.y >= part.max.y - cfg.geom_eps
-                        || new.max.y <= part.min.y + cfg.geom_eps)
-                {
-                    return;
+                if dy > 0.0 {
+                    let wrong_side = if custom {
+                        prev.min.y >= part.min.y + cfg.geom_eps
+                    } else {
+                        prev.min.y >= part.max.y - cfg.geom_eps
+                    };
+                    if wrong_side || new.max.y <= part.min.y + cfg.geom_eps {
+                        return;
+                    }
                 }
                 let top = part.max.y;
                 let bottom = part.min.y;
@@ -534,7 +553,7 @@ pub(crate) fn nearest_standable_top_below(
             if !world.tile(tx, ty).is_standable() {
                 continue;
             }
-            for_each_part(world, tx, ty, |part| {
+            for_each_part(world, tx, ty, |part, _| {
                 if !horizontal_overlap_probe(probe_min_x, probe_max_x, &part) {
                     return;
                 }

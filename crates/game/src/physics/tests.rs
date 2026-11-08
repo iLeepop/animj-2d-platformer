@@ -1353,6 +1353,56 @@ fn custom_solid_part_stops_at_its_own_face() {
     assert_box_invariant(&body, "撞到半格实心");
 }
 
+/// 同一格内、远在身体前方的自定义块不得把身体瞬移到它的面上（实机 bug 回归）。
+#[test]
+fn custom_solid_part_far_ahead_does_not_teleport_the_body() {
+    let cfg = DEFAULT_PHYSICS;
+    let mut world = PartsWorld::new(16, 8);
+    world.fill_row(0, TileKind::Solid);
+    world.set(4, 1, TileKind::Solid);
+    // 格子 (4,1) 的世界 x = 128..160；只保留右半格 144..160
+    world.set_parts(4, 1, vec![tile_part(16.0, 0.0, 16.0, 32.0)]);
+
+    // 站在地面上，身体 x = 110..130；本步只向右移动约 0.17 px
+    let mut body = Body::at_center(Vec2::new(120.0, TILE + PLAYER_SIZE.y / 2.0));
+    body.grounded = true; // 只测水平轴：避免重力位移干扰
+    let mut out = StepOutcome::default();
+    step(
+        &cfg,
+        &world,
+        &mut body,
+        StepInput {
+            move_x: 1,
+            ..Default::default()
+        },
+        &mut out,
+    );
+    assert!(
+        body.aabb.max.x < 135.0,
+        "不得被瞬移到右半格的左面 144：max.x = {}",
+        body.aabb.max.x
+    );
+
+    // 继续走：应该正常走到 144 才停下，而不是提前跳过去
+    for _ in 0..120 {
+        step(
+            &cfg,
+            &world,
+            &mut body,
+            StepInput {
+                move_x: 1,
+                ..Default::default()
+            },
+            &mut out,
+        );
+    }
+    assert!(
+        (body.aabb.max.x - 144.0).abs() < 1e-3,
+        "最终应停在块面 144：max.x = {}",
+        body.aabb.max.x
+    );
+}
+
 /// Y 方向过滤：碰撞块在移动前身体的**上方**且不重叠时，下落不得把身体瞬移到块顶。
 #[test]
 fn custom_solid_part_above_the_body_does_not_snap_it_up() {
@@ -1376,6 +1426,31 @@ fn custom_solid_part_above_the_body_does_not_snap_it_up() {
         "必须落在地面顶面 32，而不是被上方的块吸到 64：min.y = {}",
         body.aabb.min.y
     );
+}
+
+/// 悬空实心块下方：身体顶部尚未高过块顶时，下落不得被向上吸到块顶。
+#[test]
+fn custom_solid_part_does_not_suck_the_body_up_from_below() {
+    let cfg = DEFAULT_PHYSICS;
+    let mut world = PartsWorld::new(16, 8);
+    world.fill_row(0, TileKind::Solid); // 地面顶面 32
+    world.set(3, 1, TileKind::Solid);
+    // 格子 (3,1) 的世界 y = 32..64；实心块只在上半格 48..64
+    world.set_parts(3, 1, vec![tile_part(0.0, 16.0, 32.0, 16.0)]);
+
+    // 脚底 34（略高于地面），头顶 62 伸进了上方块（48..64）
+    let mut body = Body::at_center(Vec2::new(3.0 * TILE + 16.0, 34.0 + PLAYER_SIZE.y / 2.0));
+    body.grounded = false;
+    body.airborne_since = 7;
+    let mut out = StepOutcome::default();
+    step(&cfg, &world, &mut body, StepInput::default(), &mut out);
+
+    assert!(
+        (body.aabb.min.y - TILE).abs() < 1e-3,
+        "必须落在地面顶面 32，不得被吸到上方块顶 64：min.y = {}",
+        body.aabb.min.y
+    );
+    assert!(body.grounded);
 }
 
 /// 下落时脚底尚未到达碰撞块顶面：本步只能正常下落，不得被吸到块顶（实机 bug 回归）。

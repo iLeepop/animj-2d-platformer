@@ -426,6 +426,9 @@ fn move_x(aabb, dx, world, out) {
         if !world.tile(tx, ty).is_solid() { continue; }
         for part in parts_of(world, tx, ty) {          // 缺省 = 整格；自定义 = 栅格块（§6.6.5）
             if !vertical_overlap(new, part) { continue; }   // ★ 块只占半格时，竖直不重叠就不挡路
+            // ★ 也必须与**移动后的盒子**水平重叠：`tile_range` 只保证格子被擦到，
+            //   同格内的块可能还在很远的右侧/左侧；否则会瞬移到它的面上（实机 bug，§6.9 T25k）
+            if !horizontal_overlap(new, part) { continue; }
             let face = if dx > 0.0 { part.min.x } else { part.max.x };
             // ★ 只认**前方**的面：身体已经越过的（重叠态）不参与夹取
             let ahead = if dx > 0.0 { face >= prev.max.x - GEOM_EPS }
@@ -460,14 +463,21 @@ fn move_y(aabb, dy, world, prev_foot, out) {
     let mut resolved = false;
     for ty in ty0..=ty1 { for tx in tx0..=tx1 {
         let kind = world.tile(tx, ty);
-        for part in parts_of(world, tx, ty) {
+        for (part, custom) in parts_of(world, tx, ty) {
             if !horizontal_overlap(new, part) { continue; }   // ★ 自定义块只占半格时按水平范围过滤
             // ★ 只认本步**真正越过**的面：自定义块可能还在脚底/头顶之外几像素，
-            //   直接取它的顶面/底面会把身体提前吸过去（实机 bug 回归，§6.9 T25i）
-            if dy < 0.0 && (prev.max.y <= part.min.y + GEOM_EPS
-                            || new.min.y >= part.max.y - GEOM_EPS) { continue; }
-            if dy > 0.0 && (prev.min.y >= part.max.y - GEOM_EPS
-                            || new.max.y <= part.min.y + GEOM_EPS) { continue; }
+            //   直接取它的顶面/底面会把身体提前吸过去（实机 bug 回归，§6.9 T25i）。
+            //   整格保留旧条件（埋入地板的修复依赖它）；自定义块还要求身体在面的正确一侧。
+            if dy < 0.0 {
+                let wrong_side = if custom { prev.max.y <= part.max.y - GEOM_EPS }
+                                else        { prev.max.y <= part.min.y + GEOM_EPS };
+                if wrong_side || new.min.y >= part.max.y - GEOM_EPS { continue; }
+            }
+            if dy > 0.0 {
+                let wrong_side = if custom { prev.min.y >= part.min.y + GEOM_EPS }
+                                else        { prev.min.y >= part.max.y - GEOM_EPS };
+                if wrong_side || new.max.y <= part.min.y + GEOM_EPS { continue; }
+            }
             let top = part.max.y;  let bottom = part.min.y;
             match kind {
                 Solid => {
@@ -1087,11 +1097,16 @@ transform.translation = (render_pos.x, render_pos.y, Z)        // Z 由 07 给�
 - **T25c 自己的顶面**：只占下半格的 `Solid` 块让角色落在 `格底 + 16`。
 - **T25d Hazard 区域**：危险块只占格子中间 16×16 时，身体压在空白半边不触发，压在其中才触发。
 - **T25e OneWay 范围**：只有右半格可站；左半格直接穿过并落到下方地面。
-- **T25f 方向过滤**：块在移动前身体的上方（下落）或下方（上升）且不相交时，其顶面/底面不是本次行进面，
-  不得把身体瞬移过去（`prev.max.y <= part.min.y + eps` / `prev.min.y >= part.max.y − eps` 跳过）。
+- **T25f 方向过滤**：自定义块在移动前身体的另一侧且不相交时，其顶面/底面不是本次行进面，
+  不得把身体瞬移过去（整格保留旧条件；自定义块要求身体顶部/底部在面的正确一侧）。
 - **T25g 适配层映射**：`LevelTiles` 把文件朝向的下半格矩形映射为物理局部 `y ∈ [0, 16)`；真实物理落地 `min.y == 16`。
 - **T25h V17**：实体压在自定义 `Solid` 的空白半边时**不**报 V17；压在碰撞块上才报（`03` §3.7）。
 - **T25i 接触前不吸附（实机 bug 回归）**：脚底/头顶尚未越过碰撞块顶面/底面时，本步只能按正常位移移动，
   不得被 `move_y` 或支撑探测瞬移到块上；零位移（`grounded`）时也一样。
 - **T25j 容差带仍落地**：块顶落在 `CONTACT_TOLERANCE` 之内时必须正常吸附、`out.landed == true` 且 `grounded == true`，
   防止修复变成“永不落地”。
+- **T25k 水平远面不瞬移（实机 bug 回归）**：格子只被身体擦到、但块还在同格很远一侧时，
+  `move_x` 不得把身体瞬移到块的面上。典型：`平地` 地块只保留右半格碰撞，身体在格子左缘时被瞬移到 `格左+16`。
+  判据是块必须与**移动后的盒子水平重叠**。
+- **T25l 从下方/上方嵌入不吸附**：身体顶部尚未高过自定义块顶（下落）或底部尚未低于块底（上升）时，
+  不得被吸到块顶/块底；整格埋入地板的修复（R1/R2）不受影响。
