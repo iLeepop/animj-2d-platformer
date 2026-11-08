@@ -454,6 +454,9 @@ pub struct EntitySpec {
     /// `None` = 运行时使用按道具类型着色的 12×12 占位块。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sprite: Option<String>,
+    /// 贴图内的 32×32 格索引（列主序）；`None` = 第 0 格。仅 item 类实体有效。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sprite_cell: Option<u32>,
 }
 
 /// 可拾取道具的**能力类型**。见 `docs/03-level-format.md` §3.4、`docs/06-physics-and-movement.md` §6.12。

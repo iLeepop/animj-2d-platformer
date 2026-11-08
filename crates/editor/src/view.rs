@@ -214,6 +214,7 @@ fn ensure_projection(
                 &image,
                 &layout,
                 &mut images,
+                &mut layouts,
                 index as u32,
             );
         }
@@ -238,6 +239,7 @@ fn ensure_projection(
         &image,
         &layout,
         &mut images,
+        &mut layouts,
         index,
     );
     state.revision = Some(session.doc_revision);
@@ -251,6 +253,7 @@ fn spawn_room(
     image: &Handle<Image>,
     layout: &Handle<TextureAtlasLayout>,
     images: &mut Assets<Image>,
+    layouts: &mut Assets<TextureAtlasLayout>,
     index: u32,
 ) {
     let Some(room) = doc.rooms.get(index as usize) else {
@@ -337,7 +340,20 @@ fn spawn_room(
                 .as_deref()
                 .and_then(|path| game::render::tiles::load_image(path, images))
                 .map(|handle| {
-                    let mut sprite = Sprite::from_image(handle);
+                    let columns = images
+                        .get(&handle)
+                        .map(|image| (image.width() / level_format::TILE_PX as u32).max(1))
+                        .unwrap_or(1);
+                    let layout = layouts.add(TextureAtlasLayout::from_grid(
+                        UVec2::splat(level_format::TILE_PX as u32),
+                        columns,
+                        1,
+                        None,
+                        None,
+                    ));
+                    let index = (spec.sprite_cell.unwrap_or(0) as usize) % columns as usize;
+                    let mut sprite =
+                        Sprite::from_atlas_image(handle, TextureAtlas { layout, index });
                     sprite.custom_size = Some(Vec2::splat(level_format::TILE_PX as f32));
                     sprite
                 })

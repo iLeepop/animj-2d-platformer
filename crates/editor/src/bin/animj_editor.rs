@@ -272,6 +272,7 @@ fn drive_demo_item(
     cli: Res<Cli>,
     tick: Res<FrameTick>,
     mut session: Option<ResMut<editor::session::EditorSession>>,
+    mut window: Option<ResMut<editor::ui::ItemTextureWindow>>,
     mut done: Local<bool>,
 ) {
     if !cli.demo_item || *done || tick.0 < 10 {
@@ -289,8 +290,11 @@ fn drive_demo_item(
         .entities
         .iter()
         .position(|spec| matches!(spec.kind.as_str(), "item" | "item_spawner"));
+    if let Some(window) = window.as_mut() {
+        window.open = true;
+    }
     println!(
-        "[demo-item] 已选中实体 {:?}，贴图 = {:?}",
+        "[demo-item] 已选中实体 {:?}，贴图 = {:?}，打开 32×32 框选窗口",
         session.selected_entity, session.entity_sprite
     );
 }

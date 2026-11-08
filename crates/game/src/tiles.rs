@@ -239,6 +239,7 @@ mod tests {
                         id: None,
                         item: None,
                         sprite: None,
+                        sprite_cell: None,
                     },
                     level_format::EntitySpec {
                         kind: "goal".to_string(),
@@ -247,6 +248,7 @@ mod tests {
                         id: None,
                         item: None,
                         sprite: None,
+                        sprite_cell: None,
                     },
                 ],
             }],
@@ -292,6 +294,7 @@ mod tests {
                     id: None,
                     item: None,
                     sprite: None,
+                    sprite_cell: None,
                 },
                 level_format::EntitySpec {
                     kind: "goal".to_string(),
@@ -300,6 +303,7 @@ mod tests {
                     id: None,
                     item: None,
                     sprite: None,
+                    sprite_cell: None,
                 },
             ],
         };
@@ -393,6 +397,7 @@ mod tests {
                     id: None,
                     item: None,
                     sprite: None,
+                    sprite_cell: None,
                 },
                 level_format::EntitySpec {
                     kind: "goal".to_string(),
@@ -401,6 +406,7 @@ mod tests {
                     id: None,
                     item: None,
                     sprite: None,
+                    sprite_cell: None,
                 },
             ],
         };

@@ -663,7 +663,7 @@ fn self_check(
     tileset: Option<Res<Tileset>>,
     cameras: CameraQuery,
     snap_targets: Query<&Transform, With<PixelSnap>>,
-    sprites: Query<&Sprite, Without<game::player::PlayerMotion>>,
+    sprites: Query<(&Sprite, Option<&game::room::RoomZone>), Without<game::player::PlayerMotion>>,
     tiles: Option<Res<LevelTiles>>,
     loaded: Option<Res<LoadedLevel>>,
     current: Option<Res<CurrentRoom>>,
@@ -811,7 +811,7 @@ fn self_check(
     });
     let actual_tiles = sprites
         .iter()
-        .filter(|sprite| sprite.texture_atlas.is_some())
+        .filter(|(sprite, zone)| sprite.texture_atlas.is_some() && zone.is_none())
         .count();
     check(
         &format!("tile sprites == level data ({expected_tiles:?} vs {actual_tiles})"),

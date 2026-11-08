@@ -34,6 +34,7 @@ fn entity(kind: &str, at: (i32, i32)) -> EntitySpec {
         id: None,
         item: None,
         sprite: None,
+        sprite_cell: None,
     }
 }
 
@@ -129,6 +130,7 @@ fn featureful_level() -> Level {
             id: Some("f1".to_string()),
             item: None,
             sprite: None,
+            sprite_cell: None,
         },
         entity("fruit", (272, 464)),
     ]);
@@ -143,6 +145,7 @@ fn featureful_level() -> Level {
             id: Some("super_jump".to_string()),
             item: Some(ItemKind::SuperJump),
             sprite: None,
+            sprite_cell: None,
         },
         EntitySpec {
             kind: "item".to_string(),
@@ -151,6 +154,7 @@ fn featureful_level() -> Level {
             id: Some("speed".to_string()),
             item: Some(ItemKind::Speed),
             sprite: Some("sprites/items/speed.png".to_string()),
+            sprite_cell: Some(2),
         },
     ]);
     item_room.name = Some("c".to_string());
@@ -175,6 +179,7 @@ fn featureful_level() -> Level {
                 id: None,
                 item: Some(ItemKind::DoubleJump),
                 sprite: None,
+                sprite_cell: None,
             }]),
         ],
     }
@@ -509,6 +514,7 @@ fn write_read_round_trip() {
         id: Some(String::new()),
         item: None,
         sprite: None,
+        sprite_cell: None,
     }];
 
     for level in [
@@ -1036,6 +1042,7 @@ fn v24_item_field_matches_kind() {
         id: None,
         item: Some(ItemKind::Speed),
         sprite: None,
+        sprite_cell: None,
     });
     let issues = issues_of(&level, "V24");
     assert_eq!(issues.len(), 1);
@@ -1461,6 +1468,7 @@ fn v19_rejects_bad_palette_entries() {
                     id: None,
                     item: None,
                     sprite: None,
+                    sprite_cell: None,
                 },
                 level_format::EntitySpec {
                     kind: "goal".into(),
@@ -1469,6 +1477,7 @@ fn v19_rejects_bad_palette_entries() {
                     id: None,
                     item: None,
                     sprite: None,
+                    sprite_cell: None,
                 },
             ],
         }],

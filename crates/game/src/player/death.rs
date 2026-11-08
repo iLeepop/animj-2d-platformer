@@ -209,6 +209,7 @@ mod tests {
                     id: None,
                     item: None,
                     sprite: None,
+                    sprite_cell: None,
                 });
             }
             if let Some(at) = checkpoint_at {
@@ -219,6 +220,7 @@ mod tests {
                     id: None,
                     item: None,
                     sprite: None,
+                    sprite_cell: None,
                 });
             }
             Room {

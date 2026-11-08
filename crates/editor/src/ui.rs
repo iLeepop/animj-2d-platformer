@@ -18,9 +18,17 @@ use crate::view::{ERROR_COLOR, EditorViewFlags, GRID_COLOR, HOVER_COLOR, ROOM_BO
 
 pub struct EditorUiPlugin;
 
+/// 道具贴图框选窗口的开关（右栏「预览/框选」按钮打开）。
+#[derive(Resource, Default)]
+pub struct ItemTextureWindow {
+    pub open: bool,
+}
+
 impl Plugin for EditorUiPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<BottomHeight>()
+            .init_resource::<ItemTextureWindow>()
+            .init_resource::<crate::tile_tool::ItemTexture>()
             .add_systems(
                 EguiPrimaryContextPass,
                 install_cjk_font.in_set(crate::EditorUiSet::Panels),
@@ -590,6 +598,7 @@ fn right_panel(
     ui: &mut egui::Ui,
     session: &mut EditorSession,
     picker: &mut crate::tile_tool::AssetPickerState,
+    window: &mut ItemTextureWindow,
 ) {
     egui::Panel::right("animj_editor_right").show(ui, |ui| {
         egui::ScrollArea::vertical()
@@ -665,7 +674,11 @@ fn right_panel(
                         if ui.small_button("清除").clicked() {
                             session.entity_sprite = None;
                         }
+                        if ui.small_button("预览/框选").clicked() {
+                            window.open = true;
+                        }
                     });
+                    ui.label(format!("贴图格 #{}", session.entity_sprite_cell));
                     if changed {
                         session.entity_sprite = level_format::normalize_asset_path(&sprite);
                     }
@@ -758,7 +771,11 @@ fn right_panel(
                             if ui.small_button("清除").clicked() {
                                 session.set_entity_sprite(index, None);
                             }
+                            if ui.small_button("预览/框选").clicked() {
+                                window.open = true;
+                            }
                         });
+                        ui.label(format!("贴图格 #{}", spec.sprite_cell.unwrap_or(0)));
                         if changed {
                             session.set_entity_sprite(index, Some(sprite));
                         }
@@ -771,6 +788,133 @@ fn right_panel(
                 }
             });
     });
+}
+
+/// 选中实体（若为 item 类）或放置笔刷的道具贴图来源。
+#[derive(Clone, Copy)]
+enum ItemSpriteTarget {
+    Brush,
+    Entity(usize),
+}
+
+/// 「预览/框选」窗口：显示整张道具贴图，按固定 32×32 网格点击选格。
+fn item_texture_window(
+    ctx: &egui::Context,
+    session: &mut EditorSession,
+    window: &mut ItemTextureWindow,
+    store: &mut crate::tile_tool::ItemTexture,
+    images: &mut Assets<Image>,
+) {
+    if !window.open {
+        return;
+    }
+    let selected = session.selected_entity.and_then(|index| {
+        session
+            .room()
+            .entities
+            .get(index)
+            .filter(|spec| matches!(spec.kind.as_str(), "item" | "item_spawner"))
+            .map(|spec| (index, spec.sprite.clone(), spec.sprite_cell.unwrap_or(0)))
+    });
+    let brush_item = matches!(session.entity_kind.as_str(), "item" | "item_spawner");
+    let (target, path, cell) = match selected {
+        Some((index, path, cell)) => (ItemSpriteTarget::Entity(index), path, cell),
+        None if brush_item => (
+            ItemSpriteTarget::Brush,
+            session.entity_sprite.clone(),
+            session.entity_sprite_cell,
+        ),
+        None => {
+            let mut open = true;
+            egui::Window::new("道具贴图（32×32 框选）")
+                .open(&mut open)
+                .show(ctx, |ui| {
+                    ui.label("先选中一个 item / item_spawner 实体，或把实体笔刷切到 item。");
+                });
+            window.open = open;
+            return;
+        }
+    };
+    let Some(path) = path.filter(|path| !path.trim().is_empty()) else {
+        let mut open = true;
+        egui::Window::new("道具贴图（32×32 框选）")
+            .open(&mut open)
+            .show(ctx, |ui| {
+                ui.label("先在该实体的「贴图」输入框选择 PNG。");
+            });
+        window.open = open;
+        return;
+    };
+    if !crate::tile_tool::ensure_item_texture(ctx, images, &path, store) {
+        let mut open = true;
+        egui::Window::new("道具贴图（32×32 框选）")
+            .open(&mut open)
+            .show(ctx, |ui| {
+                ui.colored_label(egui::Color32::RED, format!("贴图加载失败：{path}"));
+            });
+        window.open = open;
+        return;
+    }
+    let Some(texture) = store.texture.clone() else {
+        return;
+    };
+    let sheet = store.size;
+    let cell_px = 32.0_f32;
+    let cols = (sheet.x / cell_px).round().max(1.0) as usize;
+    let rows = (sheet.y / cell_px).round().max(1.0) as usize;
+    let mut open = true;
+    egui::Window::new("道具贴图（32×32 框选）")
+        .open(&mut open)
+        .resizable(false)
+        .show(ctx, |ui| {
+            ui.label(format!("{path}  ·  {cols}×{rows} 格  ·  当前格 #{cell}"));
+            let scale = (520.0 / sheet.x).clamp(0.25, 4.0);
+            let response = ui.add(
+                egui::Image::new(egui::load::SizedTexture::new(texture.id(), sheet))
+                    .fit_to_exact_size(sheet * scale)
+                    .sense(egui::Sense::click()),
+            );
+            let rect = response.rect;
+            if response.clicked()
+                && let Some(pos) = response.interact_pointer_pos()
+            {
+                let local = (pos - rect.min) / scale;
+                let col = ((local.x / cell_px).floor() as isize).clamp(0, cols as isize - 1) as u32;
+                let row = ((local.y / cell_px).floor() as isize).clamp(0, rows as isize - 1) as u32;
+                let index = row * cols as u32 + col;
+                match target {
+                    ItemSpriteTarget::Brush => session.entity_sprite_cell = index,
+                    ItemSpriteTarget::Entity(entity) => {
+                        session.set_entity_sprite_cell(entity, index);
+                    }
+                }
+            }
+            // 固定 32×32 网格 + 当前格高亮
+            let painter = ui.painter();
+            let grid = egui::Stroke::new(1.0, egui::Color32::from_gray(90));
+            for col in 0..=cols {
+                let x = rect.min.x + col as f32 * cell_px * scale;
+                painter.line_segment([egui::pos2(x, rect.min.y), egui::pos2(x, rect.max.y)], grid);
+            }
+            for row in 0..=rows {
+                let y = rect.min.y + row as f32 * cell_px * scale;
+                painter.line_segment([egui::pos2(rect.min.x, y), egui::pos2(rect.max.x, y)], grid);
+            }
+            let cur = cell as usize;
+            let (cur_col, cur_row) = (cur % cols, cur / cols);
+            let cur_rect = egui::Rect::from_min_size(
+                rect.min + egui::vec2(cur_col as f32, cur_row as f32) * cell_px * scale,
+                egui::vec2(cell_px, cell_px) * scale,
+            );
+            painter.rect_stroke(
+                cur_rect,
+                0.0,
+                egui::Stroke::new(2.0, egui::Color32::YELLOW),
+                egui::StrokeKind::Inside,
+            );
+            ui.label("点击任意 32×32 格即可设为该道具的贴图格。");
+        });
+    window.open = open;
 }
 
 /// 底部栏：保存/试玩/撤销/重做 + 路径；标签页与外部改动提示同行；
@@ -1060,6 +1204,15 @@ fn background_panel(
     }
 }
 
+/// 道具贴图 UI 的资源集合（`panels` 参数已接近 Bevy 的元组上限，合并为一组）。
+#[derive(bevy::ecs::system::SystemParam)]
+pub struct ItemUiParams<'w> {
+    pub picker: ResMut<'w, crate::tile_tool::AssetPickerState>,
+    pub window: ResMut<'w, ItemTextureWindow>,
+    pub texture: ResMut<'w, crate::tile_tool::ItemTexture>,
+    pub images: ResMut<'w, Assets<Image>>,
+}
+
 /// 面板系统：一个根 Ui 上按 顶 → 底 → 左 → 右 显示四个面板。
 fn panels(
     mut contexts: EguiContexts,
@@ -1074,7 +1227,7 @@ fn panels(
     mut tile_tool: ResMut<TileTool>,
     mut bottom_tab: ResMut<BottomTab>,
     mut bottom_height: ResMut<BottomHeight>,
-    mut picker: ResMut<crate::tile_tool::AssetPickerState>,
+    mut item_ui: ItemUiParams,
     mut player_collision: ResMut<PlayerCollision>,
     mut player_edit: ResMut<PlayerEdit>,
 ) -> Result {
@@ -1103,10 +1256,22 @@ fn panels(
         &mut player_edit,
         &mut bottom_tab,
         &mut bottom_height,
-        &mut picker,
+        &mut item_ui.picker,
     );
     left_panel(&mut root, &mut session, &tile_texture);
-    right_panel(&mut root, &mut session, &mut picker);
+    right_panel(
+        &mut root,
+        &mut session,
+        &mut item_ui.picker,
+        &mut item_ui.window,
+    );
+    item_texture_window(
+        ctx,
+        &mut session,
+        &mut item_ui.window,
+        &mut item_ui.texture,
+        &mut item_ui.images,
+    );
     Ok(())
 }
 

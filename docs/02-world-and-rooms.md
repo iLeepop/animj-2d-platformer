@@ -106,7 +106,7 @@ sequenceDiagram
   L->>V: 解析出的 Level
   V-->>L: Ok / Err(字段级错误)
   L->>W: 生成瓦片实体（仅非空瓦片）
-  L->>W: 生成实体列表（goal / item / fruit / checkpoint）
+  L->>W: 生成实体列表（goal / item / item_spawner / fruit / checkpoint）
   L->>W: 放置玩家到出生点（存档点或 player_spawn 房间）
   L->>P: 按 cols*rows 初始化 RoomProgress
   L->>P: 按 LoadMode 恢复进度（Continue/Auto）或清零（NewGame）
@@ -120,7 +120,7 @@ sequenceDiagram
 | 实体类 | 生命周期 | 理由 |
 |---|---|---|
 | 瓦片 sprite | 关卡加载时一次性生成（仅非空瓦片），关卡卸载时销毁 | 静态 |
-| `goal` / `item` / `fruit` / `checkpoint` 等房间实体 | 关卡加载时生成，常驻；可拾取实体（`item` / `fruit`）被拾取后销毁 | 房间无缝，任何时刻都可能在视野附近 |
+| `goal` / `item` / `item_spawner` / `fruit` / `checkpoint` 等房间实体 | 关卡加载时生成，常驻；可拾取实体（`item` / `fruit`）被拾取后销毁，生成器道具隐藏后重生 | 房间无缝，任何时刻都可能在视野附近 |
 | 玩家 | 关卡加载时生成，死亡时重置位置而非销毁重建 | 死亡时清除道具 buff，实体保留 |
 | 粒子和临时特效 | 播放完毕即销毁 | 一次性 |
 

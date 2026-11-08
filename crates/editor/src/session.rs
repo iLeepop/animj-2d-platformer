@@ -69,6 +69,8 @@ pub struct EditorSession {
     pub entity_item: level_format::ItemKind,
     /// 放置 item 类实体时使用的贴图（相对 assets/ 的 PNG）。
     pub entity_sprite: Option<String>,
+    /// 放置 item 类实体时使用的 32×32 贴图格。
+    pub entity_sprite_cell: u32,
     /// 面板里选中的房间实体下标。
     pub selected_entity: Option<usize>,
     /// 状态栏文字（保存结果、拦截原因等）。
@@ -105,6 +107,7 @@ impl EditorSession {
             entity_kind: "fruit".to_string(),
             entity_item: level_format::ItemKind::SuperJump,
             entity_sprite: None,
+            entity_sprite_cell: 0,
             selected_entity: None,
             status: String::new(),
             doc_revision: 0,
@@ -292,6 +295,21 @@ impl EditorSession {
         self.begin_edit();
         entry.collision = collision;
         self.doc.palette = palette;
+        true
+    }
+
+    /// 设置某个实体的道具贴图格（32×32 网格的列主序索引）。
+    pub fn set_entity_sprite_cell(&mut self, index: usize, cell: u32) -> bool {
+        let Some(spec) = self.room_mut().entities.get_mut(index) else {
+            return false;
+        };
+        if spec.sprite_cell == Some(cell) {
+            return false;
+        }
+        self.begin_edit();
+        if let Some(spec) = self.room_mut().entities.get_mut(index) {
+            spec.sprite_cell = Some(cell);
+        }
         true
     }
 
@@ -675,6 +693,7 @@ mod tests {
             id: None,
             item: None,
             sprite: None,
+            sprite_cell: None,
         });
         let mut second = level.rooms[0].clone();
         second.entities[0].at = (200, 200);
@@ -716,6 +735,7 @@ mod tests {
             id: None,
             item: None,
             sprite: None,
+            sprite_cell: None,
         });
         let mut session = EditorSession::new(level, None);
         session.begin_edit();
@@ -738,6 +758,7 @@ mod tests {
             id: None,
             item: Some(session.entity_item),
             sprite: None,
+            sprite_cell: None,
         };
         session.room_mut().entities.push(spec.clone());
         assert_eq!(
@@ -753,6 +774,28 @@ mod tests {
         assert_eq!(session.room().entities[0].item, None);
     }
 
+    /// 道具贴图格：写入 / 清除 / 撤销。
+    #[test]
+    fn item_sprite_cell_edits_go_through_snapshot() {
+        let mut level = sample_level();
+        level.rooms[0].entities.push(level_format::EntitySpec {
+            kind: "item".into(),
+            at: (96, 96),
+            size: None,
+            id: None,
+            item: Some(level_format::ItemKind::Speed),
+            sprite: Some("sprites/items/speed.png".into()),
+            sprite_cell: None,
+        });
+        let mut session = EditorSession::new(level, None);
+        assert!(session.set_entity_sprite_cell(0, 7));
+        assert_eq!(session.room().entities[0].sprite_cell, Some(7));
+        assert!(session.set_entity_sprite_cell(0, 3));
+        assert_eq!(session.room().entities[0].sprite_cell, Some(3));
+        assert!(session.undo());
+        assert_eq!(session.room().entities[0].sprite_cell, Some(7));
+    }
+
     /// 道具贴图：路径 normalize 后写入；清除 = None。
     #[test]
     fn item_sprite_edits_go_through_snapshot() {
@@ -764,6 +807,7 @@ mod tests {
             id: None,
             item: Some(level_format::ItemKind::Speed),
             sprite: None,
+            sprite_cell: None,
         });
         let mut session = EditorSession::new(level, None);
         assert!(session.set_entity_sprite(0, Some("assets/sprites/items/speed.png".into())));
@@ -791,6 +835,7 @@ mod tests {
             id: None,
             item: None,
             sprite: None,
+            sprite_cell: None,
         });
         let mut session = EditorSession::new(level, None);
         let boxes = session.entity_boxes();
@@ -872,6 +917,7 @@ mod tests {
             id: None,
             item: None,
             sprite: None,
+            sprite_cell: None,
         };
         // 起始房间：2 个 spawn、2 个 goal、1 个 fruit
         level.rooms[0].entities = vec![
@@ -921,6 +967,7 @@ mod tests {
             id: None,
             item: None,
             sprite: None,
+            sprite_cell: None,
         });
         let mut session = EditorSession::new(level, None);
         let before = session.doc.rooms[1].entities.len();

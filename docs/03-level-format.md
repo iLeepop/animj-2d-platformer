@@ -59,6 +59,7 @@ pub struct EntitySpec {
     pub id: Option<String>,      // 可选稳定标识，供编辑器与后续逻辑引用
     pub item: Option<ItemKind>,  // 仅 item / item_spawner 时有效（V24）
     pub sprite: Option<String>,  // 道具贴图（相对 assets/ 的 PNG）；仅 item 类有效（V25）
+    pub sprite_cell: Option<u32>,// 贴图内 32×32 格索引（列主序）；None = 第 0 格
 }
 ```
 
@@ -176,7 +177,7 @@ pub enum ItemKind {
 
 - 角色**同一时刻至多携带一个道具**；再次拾取直接覆盖，不叠加（`01` §1.5）。
 - `item` 实体在拾取后销毁；`item_spawner` 生成的实体拾取后隐藏，`ITEM_RESPAWN_SECS = 1.5` 秒后重新生成。
-- 道具贴图：`sprite: Some("sprites/items/speed.png")`（相对 `assets/` 的 PNG）。未设置时按类型用占位色块。
+- 道具贴图：`sprite: Some("sprites/items/speed.png")`（相对 `assets/` 的 PNG）+ `sprite_cell` 选择贴图内固定的 32×32 格（列主序，`None` = 第 0 格）。未设置时按类型用占位色块。
 - 死亡会**清除**当前道具 buff（`01` §1.5）。
 - 具体倍率归 `06` §6.12；这里是 RON 枚举名（`item: Some(SuperJump)`）。
 
@@ -318,7 +319,7 @@ pub fn validate(level: &Level) -> Vec<LevelIssue>
 | V22 | `palette[*].collision` 实际不生效：`behavior == None`，或栅格化后不覆盖任何像素中心 | Warning |
 | V23 | 全关卡 `goal` 实体数 `== 1` | Error |
 | V24 | `kind == "item" / "item_spawner"` 必须带 `item` 字段；其它 `kind` 不得带 `item` | Error |
-| V25 | `sprite` 仅 `item` / `item_spawner` 可设置；必须是相对 `assets/` 的 `.png` 路径 | Error |
+| V25 | `sprite` 仅 `item` / `item_spawner` 可设置；必须是相对 `assets/` 的 `.png` 路径；`sprite_cell` 为 32×32 网格的列主序索引（越界时运行时按贴图列数取模） | Error |
 
 > **V7–V11 已移除**：房间目标机制与装饰品奖励在 v3 删除。编号不复用，避免与历史错误输出混淆。
 >
@@ -344,4 +345,4 @@ pub fn validate(level: &Level) -> Vec<LevelIssue>
 | `2`（校验放宽） | 2026-10-19 | **移除 V7**（`goals` 非空）：每房至少一个目标改为纯设计约束；空列表运行时永不通关 |
 | `2`（增补） | 2026-11-08 | `palette[]` 新增可选字段 `collision`（§3.9，V21/V22）；**不升版本**，旧文件读取为 `None`（整格） |
 | `3` | 2026-11-08 | **破坏性**：删除房间级 `goals` / `reward`；新增全关卡唯一 `goal` 终点（V23）与 `item` 道具实体 + `ItemKind`（V24）；旧文件迁移时 `exit` → `goal`、丢弃目标/奖励字段 |
-| `3`（增补） | 2026-11-08 | 新增 `item_spawner` 实体与 `sprite` 可选字段（V24/V25）；旧文件 `sprite` 缺省 = 占位色块 |
+| `3`（增补） | 2026-11-08 | 新增 `item_spawner` 实体与 `sprite` / `sprite_cell` 可选字段（V24/V25）；旧文件缺省 = 占位色块 / 第 0 格 |

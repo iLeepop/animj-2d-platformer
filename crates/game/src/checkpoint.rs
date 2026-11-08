@@ -198,6 +198,7 @@ mod tests {
                     id: None,
                     item: None,
                     sprite: None,
+                    sprite_cell: None,
                 }],
             }],
         }

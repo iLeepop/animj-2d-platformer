@@ -374,7 +374,12 @@ pub(crate) fn hot_reload_level(
 ///
 /// 视觉默认是占位色块；`item` / `item_spawner` 的 `sprite` 字段可指定相对 `assets/` 的 PNG（`03` V25）。
 /// 生成器道具用同一个 [`crate::player::items::SpawnerItem`] 标记，被拾取后隐藏并在 1.5 s 后重新显示。
-fn spawn_room_entities(commands: &mut Commands, level: &Level, assets: &AssetServer) {
+fn spawn_room_entities(
+    commands: &mut Commands,
+    level: &Level,
+    images: &mut Assets<Image>,
+    layouts: &mut Assets<TextureAtlasLayout>,
+) {
     let (cols, rows) = (level.grid.cols, level.grid.rows);
     let mut zone_id = 0u32;
     for (index, room) in level.rooms.iter().enumerate() {
@@ -412,14 +417,26 @@ fn spawn_room_entities(commands: &mut Commands, level: &Level, assets: &AssetSer
                 // 存档点单独一层：可能与终点/果实重叠（`00` §0.4 禁止共享 Z）。
                 RoomZoneKind::Checkpoint => (crate::checkpoint::ZONE_COLOR, z::CHECKPOINT),
             };
-            let sprite = match (&kind, &spec.sprite, assets) {
-                (RoomZoneKind::Item(_), Some(path), assets) => {
+            let sprite = match (&kind, &spec.sprite) {
+                (RoomZoneKind::Item(_), Some(path)) => {
                     match level_format::normalize_asset_path(path)
-                        .filter(|path| crate::assets::texture_stamp(path).is_some())
+                        .and_then(|path| crate::render::tiles::load_image(&path, images))
                     {
-                        Some(path) => {
-                            let handle = assets.load(path.clone());
-                            let mut sprite = Sprite::from_image(handle);
+                        Some(image) => {
+                            let columns = images
+                                .get(&image)
+                                .map(|image| (image.width() / level_format::TILE_PX as u32).max(1))
+                                .unwrap_or(1);
+                            let layout = layouts.add(TextureAtlasLayout::from_grid(
+                                UVec2::splat(level_format::TILE_PX as u32),
+                                columns,
+                                1,
+                                None,
+                                None,
+                            ));
+                            let index = (spec.sprite_cell.unwrap_or(0) as usize) % columns as usize;
+                            let mut sprite =
+                                Sprite::from_atlas_image(image, TextureAtlas { layout, index });
                             // 真贴图按 32×32 显示；判定盒仍是 12×12（`03` §3.4）。
                             sprite.custom_size = Some(Vec2::splat(level_format::TILE_PX as f32));
                             sprite
@@ -457,7 +474,8 @@ fn spawn_room_entities(commands: &mut Commands, level: &Level, assets: &AssetSer
 pub(crate) fn sync_room_entities(
     mut commands: Commands,
     loaded: Option<Res<LoadedLevel>>,
-    assets: Res<AssetServer>,
+    mut images: ResMut<Assets<Image>>,
+    mut layouts: ResMut<Assets<TextureAtlasLayout>>,
     old: Query<Entity, With<RoomZone>>,
 ) {
     let Some(loaded) = loaded else {
@@ -466,7 +484,7 @@ pub(crate) fn sync_room_entities(
     for entity in &old {
         commands.entity(entity).despawn();
     }
-    spawn_room_entities(&mut commands, &loaded.level, &assets);
+    spawn_room_entities(&mut commands, &loaded.level, &mut images, &mut layouts);
 }
 
 #[cfg(test)]

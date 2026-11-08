@@ -8,6 +8,52 @@ use level_format::{Behavior, CollisionShape, MAX_COLLISION_VERTICES, PaletteEntr
 
 use crate::session::EditorSession;
 
+/// 已注册到 egui 的**道具贴图**（32×32 网格；用于框选与预览）。
+#[derive(Resource, Default)]
+pub struct ItemTexture {
+    pub path: Option<String>,
+    pub stamp: Option<std::time::SystemTime>,
+    pub texture: Option<egui::TextureHandle>,
+    pub size: egui::Vec2,
+}
+
+/// 按路径同步加载道具贴图并上传到 egui；路径与 mtime 都未变时复用。
+pub fn ensure_item_texture(
+    ctx: &egui::Context,
+    images: &mut Assets<Image>,
+    path: &str,
+    store: &mut ItemTexture,
+) -> bool {
+    let stamp = game::assets::texture_stamp(path);
+    if store.path.as_deref() == Some(path) && store.stamp == stamp && store.texture.is_some() {
+        return true;
+    }
+    store.path = Some(path.to_string());
+    store.stamp = stamp;
+    store.texture = None;
+    let Some(handle) = game::render::tiles::load_image(path, images) else {
+        return false;
+    };
+    let Some(image) = images.get(&handle) else {
+        return false;
+    };
+    let (width, height) = (image.width() as usize, image.height() as usize);
+    let Some(data) = image.data.as_ref() else {
+        return false;
+    };
+    let pixels: Vec<[u8; 4]> = data
+        .chunks_exact(4)
+        .map(|px| [px[0], px[1], px[2], px[3]])
+        .collect();
+    if pixels.len() != width * height {
+        return false;
+    }
+    let color = egui::ColorImage::from_rgba_unmultiplied([width, height], &pixels.concat());
+    store.texture = Some(ctx.load_texture("item_sheet", color, egui::TextureOptions::NEAREST));
+    store.size = egui::vec2(width as f32, height as f32);
+    true
+}
+
 /// 已注册到 egui 的**关卡瓦片图集**纹理（内置图集或关卡自带 `tileset`）。
 #[derive(Resource, Default)]
 pub struct TileTexture(pub Option<egui::TextureHandle>);

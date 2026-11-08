@@ -1178,6 +1178,6 @@ transform.translation = (render_pos.x, render_pos.y, Z)        // Z 由 07 给�
   - 一次性 `item`：销毁实体并记录 `PickedZones`。
   - `item_spawner` 生成的道具：实体保留并 `Visibility::Hidden`，`SpawnerItem.respawn_left = 1.5`；倒计时结束后重新激活/可见（`config/item.rs`）。
 - buff 到期：固定步递减，归零后清除道具（主机权威；客户端由快照同步剩余时间）。
-- 贴图：`EntitySpec.sprite` 指定 PNG 时按 32×32 显示；未指定时使用按类型着色的 12×12 占位块。判定盒始终是 `PICKUP_SIZE`。
+- 贴图：`EntitySpec.sprite` 指定 PNG 时，按 `sprite_cell` 选中的 32×32 格显示；未指定时使用按类型着色的 12×12 占位块。判定盒始终是 `PICKUP_SIZE`。
 - **死亡清除**道具 buff（`player/death.rs`），避免死亡后继续享受限时能力（`01` §1.5）。
 - 不写存档，不进网络持久状态；联机快照带 `item` 供客户端预测，并带未激活生成器集合供客户端同步可见性。
