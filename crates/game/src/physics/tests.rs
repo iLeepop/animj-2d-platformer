@@ -1378,6 +1378,101 @@ fn custom_solid_part_above_the_body_does_not_snap_it_up() {
     );
 }
 
+/// 下落时脚底尚未到达碰撞块顶面：本步只能正常下落，不得被吸到块顶（实机 bug 回归）。
+#[test]
+fn custom_solid_part_does_not_suck_the_body_down_before_contact() {
+    let cfg = DEFAULT_PHYSICS;
+    let mut world = PartsWorld::new(16, 8);
+    world.set(3, 1, TileKind::Solid);
+    // 格子 (3,1) 的世界 y = 32..64；只保留下半格 32..48（顶面 48）
+    world.set_parts(3, 1, vec![tile_part(0.0, 0.0, 32.0, 16.0)]);
+
+    // 脚底 60（在格子上半部的空区），离块顶 48 还有 12 px
+    let mut body = Body::at_center(Vec2::new(3.0 * TILE + 16.0, 60.0 + PLAYER_SIZE.y / 2.0));
+    body.grounded = false;
+    body.airborne_since = 7;
+    let mut out = StepOutcome::default();
+    step(&cfg, &world, &mut body, StepInput::default(), &mut out);
+
+    let expected = 60.0 - 0.5 * FALL_GRAVITY * FIXED_DT * FIXED_DT;
+    assert!(
+        (body.aabb.min.y - expected).abs() < 1e-3,
+        "本步只该下落 {} px，不得被吸到 48：min.y = {}",
+        0.5 * FALL_GRAVITY * FIXED_DT * FIXED_DT,
+        body.aabb.min.y
+    );
+    assert!(!out.landed, "尚未接触块顶，不得判定落地");
+    assert!(!body.grounded);
+}
+
+/// 零位移（grounded）时支撑探测也不得把角色吸到格内较低的碰撞块顶。
+#[test]
+fn grounded_body_is_not_sucked_down_by_a_custom_part() {
+    let cfg = DEFAULT_PHYSICS;
+    let mut world = PartsWorld::new(16, 8);
+    world.set(3, 1, TileKind::Solid);
+    world.set_parts(3, 1, vec![tile_part(0.0, 0.0, 32.0, 16.0)]);
+
+    let mut body = Body::at_center(Vec2::new(3.0 * TILE + 16.0, 60.0 + PLAYER_SIZE.y / 2.0));
+    body.grounded = true;
+    let mut out = StepOutcome::default();
+    step(&cfg, &world, &mut body, StepInput::default(), &mut out);
+
+    assert_eq!(body.aabb.min.y, 60.0, "脚底位置不得被支撑探测改变");
+    assert!(!body.grounded, "脚下 12 px 处没有可站面，本步应开始下落");
+}
+
+/// 上升时头顶尚未到达碰撞块底面：不得被拉上去贴住块底。
+#[test]
+fn custom_solid_part_does_not_pull_the_head_up_before_contact() {
+    let cfg = DEFAULT_PHYSICS;
+    let mut world = PartsWorld::new(16, 8);
+    world.set(3, 1, TileKind::Solid);
+    // 格子 (3,1) 的世界 y = 32..64；上方 16 px 是实心块（48..64）
+    world.set_parts(3, 1, vec![tile_part(0.0, 16.0, 32.0, 16.0)]);
+
+    // 头顶 40，离块底 48 还有 8 px；给一个向上速度
+    let mut body = Body::at_center(Vec2::new(3.0 * TILE + 16.0, 12.0 + PLAYER_SIZE.y / 2.0));
+    body.vel.y = 100.0;
+    body.grounded = false;
+    body.airborne_since = 7;
+    let mut out = StepOutcome::default();
+    step(&cfg, &world, &mut body, StepInput::default(), &mut out);
+
+    let expected_max =
+        12.0 + PLAYER_SIZE.y + 0.5 * (100.0 + (100.0 - GRAVITY * FIXED_DT)) * FIXED_DT;
+    assert!(
+        (body.aabb.max.y - expected_max).abs() < 1e-3,
+        "头顶尚未碰到块底，不得被拉上去：max.y = {}",
+        body.aabb.max.y
+    );
+    assert!(!out.head_bumped);
+}
+
+/// 块顶落在 `CONTACT_TOLERANCE` 之内时仍必须正常吸附（不能把修复做成“永不落地”）。
+#[test]
+fn custom_solid_part_within_contact_tolerance_still_lands() {
+    let cfg = DEFAULT_PHYSICS;
+    let mut world = PartsWorld::new(16, 8);
+    world.set(3, 1, TileKind::Solid);
+    // 块顶 = 58，脚底 = 60，间距 2 px < CONTACT_TOLERANCE
+    world.set_parts(3, 1, vec![tile_part(0.0, 16.0, 32.0, 10.0)]);
+
+    let mut body = Body::at_center(Vec2::new(3.0 * TILE + 16.0, 60.0 + PLAYER_SIZE.y / 2.0));
+    body.grounded = false;
+    body.airborne_since = 7;
+    let mut out = StepOutcome::default();
+    step(&cfg, &world, &mut body, StepInput::default(), &mut out);
+
+    assert!(
+        (body.aabb.min.y - 58.0).abs() < 1e-3,
+        "容差带内必须吸附到块顶 58：min.y = {}",
+        body.aabb.min.y
+    );
+    assert!(out.landed);
+    assert!(body.grounded);
+}
+
 /// Y 分离必须落在碰撞块自己的顶面：只占下半格（局部 y 0..16）的实心块 ⇒ 落地高度 16。
 #[test]
 fn custom_solid_part_has_its_own_landing_top() {

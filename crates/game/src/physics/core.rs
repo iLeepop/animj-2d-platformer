@@ -424,13 +424,19 @@ fn move_y(
                 if !horizontal_overlap(&new, &part, cfg.geom_eps) {
                     return;
                 }
-                // 方向性过滤：块完全在移动前身体的**下方**（下落时）或**上方**（上升时）时，
-                // 它的顶面/底面不是本次行进要撞的面（否则会把身体瞬移到块上/下）。
-                // 整格碰撞时这些情形已被 `tile_range` 排除，只有格内自定义块才会遇到。
-                if dy < 0.0 && prev.max.y <= part.min.y + cfg.geom_eps {
+                // 只接受本步**真正越过**的面：整格时 `tile_range` 已保证脚底/头顶在格子内，
+                // 自定义块则可能还在面外几个像素——此时取它的顶面/底面会把身体提前吸过去。
+                // 同时排除“块完全在身体另一侧”的情形（旧的方向过滤）。
+                if dy < 0.0
+                    && (prev.max.y <= part.min.y + cfg.geom_eps
+                        || new.min.y >= part.max.y - cfg.geom_eps)
+                {
                     return;
                 }
-                if dy > 0.0 && prev.min.y >= part.max.y - cfg.geom_eps {
+                if dy > 0.0
+                    && (prev.min.y >= part.max.y - cfg.geom_eps
+                        || new.max.y <= part.min.y + cfg.geom_eps)
+                {
                     return;
                 }
                 let top = part.max.y;
@@ -533,8 +539,9 @@ pub(crate) fn nearest_standable_top_below(
                     return;
                 }
                 let top = part.max.y;
-                // 排除「已穿透当前行」的情形：只认可不高于脚底的顶面
-                if top <= aabb.min.y + eps {
+                // 只认可脚底下方 `CONTACT_TOLERANCE` 之内的顶面：整格时行范围已经隐含了这一点，
+                // 自定义块的顶面可以在格内任意高度，必须显式加下界（与其他玩家分支一致）。
+                if top <= aabb.min.y + eps && top >= aabb.min.y - cfg.contact_tolerance {
                     best = Some(best.map_or(top, |b: f32| b.max(top)));
                 }
             });

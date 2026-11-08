@@ -455,12 +455,19 @@ fn move_x(aabb, dx, world, out) {
 
 ```
 fn move_y(aabb, dy, world, prev_foot, out) {
+    let prev = aabb;
     let mut new = aabb.translate(vec2(0, dy));
     let mut resolved = false;
     for ty in ty0..=ty1 { for tx in tx0..=tx1 {
         let kind = world.tile(tx, ty);
         for part in parts_of(world, tx, ty) {
             if !horizontal_overlap(new, part) { continue; }   // ★ 自定义块只占半格时按水平范围过滤
+            // ★ 只认本步**真正越过**的面：自定义块可能还在脚底/头顶之外几像素，
+            //   直接取它的顶面/底面会把身体提前吸过去（实机 bug 回归，§6.9 T25i）
+            if dy < 0.0 && (prev.max.y <= part.min.y + GEOM_EPS
+                            || new.min.y >= part.max.y - GEOM_EPS) { continue; }
+            if dy > 0.0 && (prev.min.y >= part.max.y - GEOM_EPS
+                            || new.max.y <= part.min.y + GEOM_EPS) { continue; }
             let top = part.max.y;  let bottom = part.min.y;
             match kind {
                 Solid => {
@@ -491,8 +498,11 @@ fn nearest_standable_top_below(aabb, world) -> Option<f32> {
     //   y ∈ [aabb.min.y − CONTACT_TOLERANCE, aabb.min.y]            // 距离 ∈ [0, CONTACT_TOLERANCE]
     //   ⇒ 瓦片行 ty ∈ [floor((min.y − CONTACT_TOLERANCE) / TILE_PX), floor((min.y − GEOM_EPS) / TILE_PX)]
     // 对每行的可站立瓦片，遍历其碰撞块（缺省 = 整格）：只取与探针带水平重叠的块，
-    // 使其 top = part.max.y，过滤 top ≤ aabb.min.y + GEOM_EPS
-    // （排除"已穿透当前行"的情形），答案为剩下的 top 之最大值。
+    // 使其 top = part.max.y，并过滤 `top ∈ [aabb.min.y − CONTACT_TOLERANCE, aabb.min.y + GEOM_EPS]`：
+    //   - 上界排除"已穿透当前行"的情形；
+    //   - 下界是**自定义碰撞块必须显式加**的：整格时行范围已隐含这一点，
+    //     而块顶可以在格内任意高度，不加下界会把身体吸到几十像素以下的块顶（§6.9 T25i）。
+    // 答案为剩下的 top 之最大值。
 }
 ```
 
@@ -1081,3 +1091,7 @@ transform.translation = (render_pos.x, render_pos.y, Z)        // Z 由 07 给�
   不得把身体瞬移过去（`prev.max.y <= part.min.y + eps` / `prev.min.y >= part.max.y − eps` 跳过）。
 - **T25g 适配层映射**：`LevelTiles` 把文件朝向的下半格矩形映射为物理局部 `y ∈ [0, 16)`；真实物理落地 `min.y == 16`。
 - **T25h V17**：实体压在自定义 `Solid` 的空白半边时**不**报 V17；压在碰撞块上才报（`03` §3.7）。
+- **T25i 接触前不吸附（实机 bug 回归）**：脚底/头顶尚未越过碰撞块顶面/底面时，本步只能按正常位移移动，
+  不得被 `move_y` 或支撑探测瞬移到块上；零位移（`grounded`）时也一样。
+- **T25j 容差带仍落地**：块顶落在 `CONTACT_TOLERANCE` 之内时必须正常吸附、`out.landed == true` 且 `grounded == true`，
+  防止修复变成“永不落地”。
