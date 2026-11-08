@@ -36,7 +36,7 @@ impl Behavior {
     }
 }
 
-/// 调色板条目：字符 → 名称 + 行为 + 贴图格（32×32、行主序、`tileset_columns` 列）。
+/// 调色板条目：字符 → 名称 + 行为 + 贴图格 + 可选碰撞形状（32×32、行主序、`tileset_columns` 列）。
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct PaletteEntry {
@@ -44,6 +44,222 @@ pub struct PaletteEntry {
     pub name: String,
     pub behavior: Behavior,
     pub cell: u32,
+    /// 自定义碰撞范围（`03` §3.9）。`None` = 整格 32×32；`Some` = 瓦片内简单多边形。
+    /// 仅对 `Solid` / `OneWay` / `Hazard` 生效；`None` 行为不使用。
+    ///
+    /// `skip_serializing_if`：默认值不写盘，旧关卡保存后不会多出无意义的 `collision: None`。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub collision: Option<CollisionShape>,
+}
+
+/// 碰撞多边形的顶点数上限（`03` §3.9 / V21）。
+pub const MAX_COLLISION_VERTICES: usize = 32;
+
+/// 瓦片碰撞多边形：顶点为**瓦片局部像素**，原点 = 瓦片左上角，+Y 向下，取值 `0..=TILE_PX`。
+///
+/// 物理不直接使用连续多边形：加载时按**像素中心**栅格化为轴对齐块（[`CollisionShape::raster_parts`]），
+/// 因此斜边呈像素阶梯——与 `06` §6.4.7「不做连续斜坡」的既有决策一致。
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct CollisionShape {
+    pub vertices: Vec<(i32, i32)>,
+}
+
+/// 碰撞多边形栅格化后的轴对齐块（瓦片局部像素，原点 = 左上角，+Y 向下）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CollisionPart {
+    pub x: i32,
+    pub y: i32,
+    pub w: i32,
+    pub h: i32,
+}
+
+impl CollisionShape {
+    /// 整格矩形的顶点（与 `None` 等价，供编辑器从默认值起步）。
+    pub fn full() -> Self {
+        Self {
+            vertices: vec![(0, 0), (TILE_PX, 0), (TILE_PX, TILE_PX), (0, TILE_PX)],
+        }
+    }
+
+    /// 由左上角与宽高构造矩形顶点（编辑器预设用）。
+    pub fn rectangle(x: i32, y: i32, w: i32, h: i32) -> Self {
+        Self {
+            vertices: vec![(x, y), (x + w, y), (x + w, y + h), (x, y + h)],
+        }
+    }
+
+    /// 按像素中心采样（奇偶规则）把多边形栅格化为轴对齐块，并把上下相邻的同一水平段合并。
+    ///
+    /// 返回的坐标与顶点同一朝向（原点左上、+Y 向下）。完全落在像素点之外的多边形返回空 `Vec`。
+    pub fn raster_parts(&self) -> Vec<CollisionPart> {
+        const N: usize = TILE_PX as usize;
+        let mut mask = [[false; N]; N];
+        for (py, row) in mask.iter_mut().enumerate() {
+            for (px, inside) in row.iter_mut().enumerate() {
+                *inside = point_in_polygon(&self.vertices, px as f64 + 0.5, py as f64 + 0.5);
+            }
+        }
+
+        // 逐行取水平段（半开区间 [x0, x1)），再把上下完全相同的段合并成矩形。
+        let mut parts = Vec::new();
+        // (x0, x1, 起始行)
+        let mut open: Vec<(i32, i32, i32)> = Vec::new();
+        for (py, row) in mask.iter().enumerate() {
+            let mut runs: Vec<(i32, i32)> = Vec::new();
+            let mut px = 0;
+            while px < N {
+                if !row[px] {
+                    px += 1;
+                    continue;
+                }
+                let start = px;
+                while px < N && row[px] {
+                    px += 1;
+                }
+                runs.push((start as i32, px as i32));
+            }
+
+            for &(x0, x1, y_start) in &open {
+                if !runs.contains(&(x0, x1)) {
+                    parts.push(CollisionPart {
+                        x: x0,
+                        y: y_start,
+                        w: x1 - x0,
+                        h: py as i32 - y_start,
+                    });
+                }
+            }
+            let mut next = Vec::new();
+            for &(x0, x1) in &runs {
+                let y_start = open
+                    .iter()
+                    .find(|(a, b, _)| *a == x0 && *b == x1)
+                    .map(|(_, _, y_start)| *y_start)
+                    .unwrap_or(py as i32);
+                next.push((x0, x1, y_start));
+            }
+            open = next;
+        }
+        for (x0, x1, y_start) in open {
+            parts.push(CollisionPart {
+                x: x0,
+                y: y_start,
+                w: x1 - x0,
+                h: N as i32 - y_start,
+            });
+        }
+        parts
+    }
+
+    /// 多边形结构是否可被物理使用（顶点数/范围/重复点/面积/自交）。返回全部问题。
+    ///
+    /// 规则编号与严重度由 [`crate::validate`] 的 V21 负责；此处只给人类可读的原因。
+    pub fn geometry_errors(&self) -> Vec<String> {
+        let mut errors = Vec::new();
+        let n = self.vertices.len();
+        if n < 3 {
+            errors.push(format!("顶点数 {n}，至少需要 3 个"));
+        }
+        if n > MAX_COLLISION_VERTICES {
+            errors.push(format!("顶点数 {n} 超过上限 {MAX_COLLISION_VERTICES}"));
+        }
+        for (index, (x, y)) in self.vertices.iter().enumerate() {
+            if !(0..=TILE_PX).contains(x) || !(0..=TILE_PX).contains(y) {
+                errors.push(format!(
+                    "顶点 {index} ({x}, {y}) 超出瓦片范围 0..={TILE_PX}"
+                ));
+            }
+        }
+        for i in 0..n {
+            for j in (i + 1)..n {
+                if self.vertices[i] == self.vertices[j] {
+                    errors.push(format!("顶点 {i} 与顶点 {j} 重合"));
+                }
+            }
+        }
+        if n >= 3 {
+            let doubled_area: i64 = (0..n)
+                .map(|i| {
+                    let (x0, y0) = self.vertices[i];
+                    let (x1, y1) = self.vertices[(i + 1) % n];
+                    x0 as i64 * y1 as i64 - x1 as i64 * y0 as i64
+                })
+                .sum();
+            if doubled_area == 0 {
+                errors.push("多边形面积为 0".to_string());
+            }
+        }
+        if n >= 4 {
+            for i in 0..n {
+                let a = self.vertices[i];
+                let b = self.vertices[(i + 1) % n];
+                for j in (i + 1)..n {
+                    if j == i || j == (i + 1) % n || (j + 1) % n == i {
+                        continue; // 相邻边共享端点
+                    }
+                    let c = self.vertices[j];
+                    let d = self.vertices[(j + 1) % n];
+                    if segments_intersect(a, b, c, d) {
+                        errors.push(format!("边 {i} 与边 {j} 自交"));
+                    }
+                }
+            }
+        }
+        errors
+    }
+}
+
+/// 点是否在多边形内（奇偶规则；用于栅格化）。
+fn point_in_polygon(vertices: &[(i32, i32)], x: f64, y: f64) -> bool {
+    let n = vertices.len();
+    if n < 3 {
+        return false;
+    }
+    let mut inside = false;
+    let mut j = n - 1;
+    for i in 0..n {
+        let (xi, yi) = (vertices[i].0 as f64, vertices[i].1 as f64);
+        let (xj, yj) = (vertices[j].0 as f64, vertices[j].1 as f64);
+        if (yi > y) != (yj > y) && x < (xj - xi) * (y - yi) / (yj - yi) + xi {
+            inside = !inside;
+        }
+        j = i;
+    }
+    inside
+}
+
+/// 二维叉积的符号（`i64` 足够：坐标 ≤ 32）。
+fn orient(a: (i32, i32), b: (i32, i32), c: (i32, i32)) -> i64 {
+    let ab = ((b.0 - a.0) as i64, (b.1 - a.1) as i64);
+    let ac = ((c.0 - a.0) as i64, (c.1 - a.1) as i64);
+    ab.0 * ac.1 - ab.1 * ac.0
+}
+
+/// `p` 是否落在共线的 `q`–`r` 线段上。
+fn on_segment(q: (i32, i32), p: (i32, i32), r: (i32, i32)) -> bool {
+    p.0 >= q.0.min(r.0) && p.0 <= q.0.max(r.0) && p.1 >= q.1.min(r.1) && p.1 <= q.1.max(r.1)
+}
+
+/// 两线段是否相交（含共线重叠与端点接触）。
+fn segments_intersect(a: (i32, i32), b: (i32, i32), c: (i32, i32), d: (i32, i32)) -> bool {
+    let o1 = orient(a, b, c);
+    let o2 = orient(a, b, d);
+    let o3 = orient(c, d, a);
+    let o4 = orient(c, d, b);
+    if o1 == 0 && on_segment(a, c, b) {
+        return true;
+    }
+    if o2 == 0 && on_segment(a, d, b) {
+        return true;
+    }
+    if o3 == 0 && on_segment(c, a, d) {
+        return true;
+    }
+    if o4 == 0 && on_segment(c, b, d) {
+        return true;
+    }
+    (o1 > 0) != (o2 > 0) && (o3 > 0) != (o4 > 0)
 }
 
 /// 贴图切分列数的默认值（`03` §3.9）。
@@ -133,24 +349,28 @@ impl Level {
                 name: "solid".into(),
                 behavior: Behavior::Solid,
                 cell: 0,
+                collision: None,
             },
             PaletteEntry {
                 char: '=',
                 name: "oneway".into(),
                 behavior: Behavior::OneWay,
                 cell: 1,
+                collision: None,
             },
             PaletteEntry {
                 char: '^',
                 name: "spike".into(),
                 behavior: Behavior::Hazard,
                 cell: 2,
+                collision: None,
             },
             PaletteEntry {
                 char: '*',
                 name: "decor".into(),
                 behavior: Behavior::None,
                 cell: 3,
+                collision: None,
             },
         ]
     }
@@ -319,5 +539,154 @@ mod path_tests {
         assert_eq!(super::columns_from_sheet_width(192), 6);
         assert_eq!(super::columns_from_sheet_width(256), 8);
         assert_eq!(super::columns_from_sheet_width(10), 1);
+    }
+}
+
+#[cfg(test)]
+mod collision_tests {
+    use super::{CollisionPart, CollisionShape, TILE_PX};
+
+    #[test]
+    fn full_tile_rasterizes_to_one_part() {
+        assert_eq!(
+            CollisionShape::full().raster_parts(),
+            vec![CollisionPart {
+                x: 0,
+                y: 0,
+                w: TILE_PX,
+                h: TILE_PX,
+            }]
+        );
+        // 反向绕序（顺时针）必须得到同一结果：奇偶规则与绕序无关
+        let mut reversed = CollisionShape::full();
+        reversed.vertices.reverse();
+        assert_eq!(
+            reversed.raster_parts(),
+            CollisionShape::full().raster_parts()
+        );
+    }
+
+    #[test]
+    fn rectangle_rasterizes_to_exact_bounds() {
+        let parts = CollisionShape::rectangle(0, 16, 32, 16).raster_parts();
+        assert_eq!(
+            parts,
+            vec![CollisionPart {
+                x: 0,
+                y: 16,
+                w: 32,
+                h: 16,
+            }]
+        );
+        // 右半格
+        let parts = CollisionShape::rectangle(16, 0, 16, 32).raster_parts();
+        assert_eq!(
+            parts,
+            vec![CollisionPart {
+                x: 16,
+                y: 0,
+                w: 16,
+                h: 32,
+            }]
+        );
+    }
+
+    /// 直角三角形栅格化后面积 ≈ 半个瓦片（像素中心采样产生少量取整误差）。
+    #[test]
+    fn triangle_rasterizes_to_about_half_the_tile() {
+        let shape = CollisionShape {
+            vertices: vec![(0, 0), (TILE_PX, 0), (0, TILE_PX)],
+        };
+        let parts = shape.raster_parts();
+        assert!(!parts.is_empty());
+        let area: i32 = parts.iter().map(|part| part.w * part.h).sum();
+        assert!(
+            (400..=550).contains(&area),
+            "三角碰撞块面积 {area} 应接近 512"
+        );
+        // 斜边像素化：至少存在两个宽度不同的水平段（纯矩形不可能）
+        assert!(
+            parts
+                .iter()
+                .map(|part| (part.y, part.w))
+                .collect::<Vec<_>>()
+                .windows(2)
+                .any(|pair| pair[0].1 != pair[1].1)
+                || parts.len() > 1,
+            "斜边应产生阶梯或分段：{parts:?}"
+        );
+    }
+
+    /// 面积为正但窄到不含任何像素中心的薄片：栅格化结果为空（V22 的输入）。
+    #[test]
+    fn sliver_without_pixel_centres_rasterizes_empty() {
+        let shape = CollisionShape {
+            vertices: vec![(0, 0), (1, 0), (0, 1)],
+        };
+        assert!(shape.raster_parts().is_empty());
+        assert!(shape.geometry_errors().is_empty(), "结构本身合法");
+    }
+
+    #[test]
+    fn geometry_errors_report_bad_polygons() {
+        let too_few = CollisionShape {
+            vertices: vec![(0, 0), (1, 1)],
+        };
+        assert!(
+            too_few
+                .geometry_errors()
+                .iter()
+                .any(|error| error.contains("至少需要 3"))
+        );
+
+        let out_of_range = CollisionShape {
+            vertices: vec![(0, 0), (33, 0), (0, 1)],
+        };
+        assert!(
+            out_of_range
+                .geometry_errors()
+                .iter()
+                .any(|error| error.contains("超出瓦片范围"))
+        );
+
+        let duplicate = CollisionShape {
+            vertices: vec![(0, 0), (8, 0), (0, 0)],
+        };
+        assert!(
+            duplicate
+                .geometry_errors()
+                .iter()
+                .any(|error| error.contains("重合"))
+        );
+
+        let zero_area = CollisionShape {
+            vertices: vec![(0, 0), (8, 0), (16, 0)],
+        };
+        assert!(
+            zero_area
+                .geometry_errors()
+                .iter()
+                .any(|error| error.contains("面积为 0"))
+        );
+
+        // 蝴蝶结：非相邻边相交
+        let bowtie = CollisionShape {
+            vertices: vec![(0, 0), (32, 32), (32, 0), (0, 32)],
+        };
+        assert!(
+            bowtie
+                .geometry_errors()
+                .iter()
+                .any(|error| error.contains("自交")),
+            "{:?}",
+            bowtie.geometry_errors()
+        );
+
+        assert!(CollisionShape::full().geometry_errors().is_empty());
+        assert!(
+            CollisionShape::rectangle(0, 16, 32, 16)
+                .geometry_errors()
+                .is_empty()
+        );
     }
 }

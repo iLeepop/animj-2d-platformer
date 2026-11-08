@@ -3,9 +3,9 @@
 //! 测试只使用 crate 的公共 API（`tests/` 是独立 crate），因此也顺带验证了导出面。
 
 use level_format::{
-    Background, BackgroundLayer, EntitySpec, Goal, Grid, LEGEND, Level, LevelError, LevelIssue,
-    MAX_BACKGROUND_LAYERS, RENDERABLE_TILE_KINDS, ROOM_PX, ROOM_TILES, Room, RoomCoord, Severity,
-    TILE_PX, TileKind, VERSION, name_matches_file, read, room_index, validate, write,
+    Background, BackgroundLayer, CollisionShape, EntitySpec, Goal, Grid, LEGEND, Level, LevelError,
+    LevelIssue, MAX_BACKGROUND_LAYERS, RENDERABLE_TILE_KINDS, ROOM_PX, ROOM_TILES, Room, RoomCoord,
+    Severity, TILE_PX, TileKind, VERSION, name_matches_file, read, room_index, validate, write,
 };
 
 // ---------------------------------------------------------------- 构造辅助
@@ -1470,18 +1470,21 @@ fn v19_rejects_bad_palette_entries() {
                 name: "air".into(),
                 behavior: level_format::Behavior::None,
                 cell: 0,
+                collision: None,
             },
             level_format::PaletteEntry {
                 char: 'x',
                 name: "".into(),
                 behavior: level_format::Behavior::Solid,
                 cell: 1,
+                collision: None,
             },
             level_format::PaletteEntry {
                 char: 'x',
                 name: "dup".into(),
                 behavior: level_format::Behavior::Solid,
                 cell: 2,
+                collision: None,
             },
         ],
         background: None,
@@ -1593,5 +1596,130 @@ fn v20_rejects_bad_background_layers() {
             .filter(|issue| issue.message.contains("超出 0..=100"))
             .count(),
         2
+    );
+}
+
+// ---------- 瓦片自定义碰撞范围（`03` §3.9 / V21 / V22）----------
+
+/// 在最小合法关卡上物化内置调色板并追加一个自定义地块（字符 `S`，贴图格 4）。
+fn level_with_custom_tile(
+    behavior: level_format::Behavior,
+    collision: Option<CollisionShape>,
+) -> Level {
+    let mut level = valid_level();
+    level.palette = Level::builtin_palette();
+    level.palette.push(level_format::PaletteEntry {
+        char: 'S',
+        name: "custom".into(),
+        behavior,
+        cell: 4,
+        collision,
+    });
+    level
+}
+
+#[test]
+fn v21_rejects_bad_collision_geometry() {
+    // 非零面积的蝴蝶结：边 0 与边 2 相交（避免“面积为 0”先命中）
+    let bowtie = CollisionShape {
+        vertices: vec![(0, 0), (32, 32), (32, 0), (0, 16)],
+    };
+    let level = level_with_custom_tile(level_format::Behavior::Solid, Some(bowtie));
+    let v21 = issues_of(&level, "V21");
+    assert!(!v21.is_empty(), "{:?}", validate(&level));
+    assert!(v21.iter().all(|issue| issue.severity == Severity::Error));
+    assert_eq!(v21[0].path, "palette[4].collision");
+    assert!(
+        v21.iter().any(|issue| issue.message.contains("自交")),
+        "{v21:?}"
+    );
+
+    let too_few = CollisionShape {
+        vertices: vec![(0, 0), (8, 8)],
+    };
+    let level = level_with_custom_tile(level_format::Behavior::Solid, Some(too_few));
+    assert!(
+        issues_of(&level, "V21")
+            .iter()
+            .any(|issue| issue.message.contains("至少需要 3"))
+    );
+
+    // 合法形状不报 V21（其余规则也不受影响）
+    let level = level_with_custom_tile(
+        level_format::Behavior::Solid,
+        Some(CollisionShape::rectangle(0, 16, 32, 16)),
+    );
+    assert!(issues_of(&level, "V21").is_empty());
+    assert!(issues_of(&level, "V22").is_empty());
+}
+
+#[test]
+fn v22_warns_when_collision_shape_is_inert() {
+    // 结构合法但窄到不覆盖任何像素中心 ⇒ 实际没有碰撞区域
+    let sliver = CollisionShape {
+        vertices: vec![(0, 0), (1, 0), (0, 1)],
+    };
+    let level = level_with_custom_tile(level_format::Behavior::Solid, Some(sliver));
+    let v22 = issues_of(&level, "V22");
+    assert_eq!(v22.len(), 1, "{:?}", validate(&level));
+    assert_eq!(v22[0].severity, Severity::Warning);
+    assert_eq!(v22[0].path, "palette[4].collision");
+
+    // 行为为「无」时碰撞范围不会生效
+    let level = level_with_custom_tile(level_format::Behavior::None, Some(CollisionShape::full()));
+    let v22 = issues_of(&level, "V22");
+    assert_eq!(v22.len(), 1, "{:?}", validate(&level));
+    assert!(v22[0].message.contains("不会生效"), "{}", v22[0].message);
+}
+
+/// V17 必须按**实际碰撞范围**判定：实体压在自定义 Solid 的空白半格上不算卡进实心。
+#[test]
+fn v17_uses_custom_collision_bounds() {
+    let mut level = level_with_custom_tile(
+        level_format::Behavior::Solid,
+        Some(CollisionShape::rectangle(0, 16, 32, 16)),
+    );
+    // 让右边界那一格（列 15）成为自定义地块，并把 exit 移到只和它相交的位置。
+    let mut chars: Vec<char> = level.rooms[0].tiles[15].chars().collect();
+    chars[15] = 'S';
+    level.rooms[0].tiles[15] = chars.into_iter().collect();
+    level.rooms[0].entities[1].at = (500, 465);
+
+    // 碰撞只在下半格（文件 y 496..512），实体 y 449..481 不与之重叠。
+    assert!(
+        issues_of(&level, "V17").is_empty(),
+        "{:?}",
+        validate(&level)
+    );
+
+    // 换成上半格（文件 y 480..496）后与实体重叠，必须告警。
+    level.palette[4].collision = Some(CollisionShape::rectangle(0, 0, 32, 16));
+    let v17 = issues_of(&level, "V17");
+    assert_eq!(v17.len(), 1, "{:?}", validate(&level));
+    assert_eq!(v17[0].severity, Severity::Warning);
+}
+
+/// `collision` 是可选字段：旧文件（无此字段）读成 None；写盘只在 Some 时出现。
+#[test]
+fn collision_field_round_trips_and_defaults_to_none() {
+    let mut level = level_with_custom_tile(
+        level_format::Behavior::Solid,
+        Some(CollisionShape::rectangle(0, 16, 32, 16)),
+    );
+    level.rooms[0].tiles[15] = "S".repeat(ROOM_TILES);
+    let text = write(&level);
+    assert!(text.contains("collision: Some("), "{text}");
+    assert_eq!(read(&text), Ok(level.clone()), "碰撞范围必须无损往返");
+
+    // 全部为 None 时不得写出 `collision`（旧关卡保存后不多出无意义行）
+    let mut plain = valid_level();
+    plain.palette = Level::builtin_palette();
+    let text = write(&plain);
+    assert!(!text.contains("collision:"), "{text}");
+    let parsed = read(&text).expect("无 collision 字段必须可读");
+    assert!(
+        parsed.palette.iter().all(|entry| entry.collision.is_none()),
+        "{:?}",
+        parsed.palette
     );
 }

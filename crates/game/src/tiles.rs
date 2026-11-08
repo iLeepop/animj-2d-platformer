@@ -3,10 +3,12 @@
 //! 索引约定：`ty = 0` 是房间**底行**（+Y 向上），与 `00` §0.3 的瓦片坐标一致；
 //! 翻转逻辑只在 `level_format::Room::tile_at` 里实现一次。
 
+use std::sync::Arc;
+
 use bevy::prelude::*;
 use level_format::{Level, ROOM_TILES, Room, TILE_PX, TileKind, room_index};
 
-use crate::physics::{TileKind as PhysTileKind, TileWorld};
+use crate::physics::{Aabb, TileKind as PhysTileKind, TileParts, TileWorld};
 
 /// 单个房间的瓦片快照（16×16，`ty = 0` 为底行）。
 #[derive(Clone)]
@@ -14,13 +16,22 @@ pub struct RoomTiles {
     kinds: [TileKind; ROOM_TILES * ROOM_TILES],
     /// 每个格子的图集贴图格（`None` = 不渲染）。
     cells: [Option<u32>; ROOM_TILES * ROOM_TILES],
+    /// 每个格子的自定义碰撞块（瓦片局部、相对格子左下角、+Y 向上）；`None` = 整格。
+    ///
+    /// 同一调色板字符在所有格子上共享一份 `Arc`（形状由地块类型决定，`03` §3.9）。
+    parts: [Option<Arc<[Aabb]>>; ROOM_TILES * ROOM_TILES],
 }
 
 impl RoomTiles {
-    /// 由房间 + 关卡调色板构建（`03` §3.9）：行为走 `Behavior`，渲染走 `cell`。
+    /// 由房间 + 关卡调色板构建（`03` §3.9）：行为走 `Behavior`，渲染走 `cell`，碰撞走 `collision`。
     fn from_room(room: &Room, level: &Level) -> Self {
         let mut kinds = [TileKind::Air; ROOM_TILES * ROOM_TILES];
         let mut cells = [None; ROOM_TILES * ROOM_TILES];
+        let mut parts: [Option<Arc<[Aabb]>>; ROOM_TILES * ROOM_TILES] =
+            std::array::from_fn(|_| None);
+        // 调色板按字符缓存：同一地块的碰撞形状只栅格化一次
+        let palette = level.palette();
+        let mut shape_cache: Vec<(char, Option<Arc<[Aabb]>>)> = Vec::new();
         for file_row in 0..ROOM_TILES {
             let ty = ROOM_TILES - 1 - file_row;
             let Some(line) = room.tiles.get(file_row) else {
@@ -30,7 +41,7 @@ impl RoomTiles {
                 if ch == '.' {
                     continue;
                 }
-                let Some(entry) = level.entry_of(ch) else {
+                let Some(entry) = palette.iter().find(|entry| entry.char == ch) else {
                     continue;
                 };
                 let kind = match entry.behavior {
@@ -39,11 +50,39 @@ impl RoomTiles {
                     level_format::Behavior::Hazard => TileKind::Spike,
                     level_format::Behavior::None => TileKind::Decor,
                 };
-                kinds[ty * ROOM_TILES + tx] = kind;
-                cells[ty * ROOM_TILES + tx] = Some(entry.cell);
+                let index = ty * ROOM_TILES + tx;
+                kinds[index] = kind;
+                cells[index] = Some(entry.cell);
+                parts[index] = match shape_cache.iter().find(|(cached, _)| *cached == ch) {
+                    Some((_, shape)) => shape.clone(),
+                    None => {
+                        let shape = entry.collision.as_ref().map(|collision| {
+                            let local: Vec<Aabb> = collision
+                                .raster_parts()
+                                .into_iter()
+                                .map(|part| {
+                                    // 文件朝向（原点左上、+Y 向下）→ 物理朝向（原点左下、+Y 向上）
+                                    let min_y = (TILE_PX - (part.y + part.h)) as f32;
+                                    let max_y = (TILE_PX - part.y) as f32;
+                                    Aabb {
+                                        min: Vec2::new(part.x as f32, min_y),
+                                        max: Vec2::new((part.x + part.w) as f32, max_y),
+                                    }
+                                })
+                                .collect();
+                            Arc::<[Aabb]>::from(local)
+                        });
+                        shape_cache.push((ch, shape.clone()));
+                        shape
+                    }
+                };
             }
         }
-        Self { kinds, cells }
+        Self {
+            kinds,
+            cells,
+            parts,
+        }
     }
 
     /// 该格的图集贴图格（`None` = 不渲染）。
@@ -52,6 +91,14 @@ impl RoomTiles {
             return None;
         }
         self.cells[ty * ROOM_TILES + tx]
+    }
+
+    /// 该格的碰撞块；`None` = 使用整格（未自定义）。
+    pub fn parts(&self, tx: usize, ty: usize) -> Option<&[Aabb]> {
+        if tx >= ROOM_TILES || ty >= ROOM_TILES {
+            return None;
+        }
+        self.parts[ty * ROOM_TILES + tx].as_deref()
     }
 
     /// 房间局部瓦片坐标 → 瓦片类型。越界返回 `Air`。
@@ -111,14 +158,13 @@ impl LevelTiles {
     }
 }
 
-/// 供物理内核使用的**只读**瓦片视图（`06` §6.6）。
-///
-/// 坐标是**全局**瓦片坐标（原点 = 地图左下角，+Y 向上）；房间映射按 `06` §6.6.4 的整数公式。
-/// `LevelTiles` 常驻全部房间（`02` §2.4：本阶段不做逻辑层房间激活），因此相邻房间天然返回真实数据。
-impl TileWorld for LevelTiles {
-    fn tile(&self, tx: i32, ty: i32) -> PhysTileKind {
+impl LevelTiles {
+    /// 全局瓦片坐标 → `(房间, 房间局部 tx, 房间局部 ty)`；地图外或 `grid` 外返回 `None`。
+    ///
+    /// 房间映射的整数公式见 `06` §6.6.4。
+    fn room_cell(&self, tx: i32, ty: i32) -> Option<(&RoomTiles, usize, usize)> {
         if tx < 0 || ty < 0 {
-            return PhysTileKind::Solid; // 地图外 = 硬墙
+            return None;
         }
         let (cols, rows) = self.grid;
         let col = tx.div_euclid(ROOM_TILES as i32);
@@ -126,19 +172,39 @@ impl TileWorld for LevelTiles {
         let row_from_bottom = ty.div_euclid(ROOM_TILES as i32);
         let bottom = ty.rem_euclid(ROOM_TILES as i32);
         if col >= cols as i32 || row_from_bottom >= rows as i32 {
-            return PhysTileKind::Solid; // grid 范围外
+            return None;
         }
         let row = rows as i32 - 1 - row_from_bottom;
-        match self
-            .room(col as u32, row as u32)
-            .map(|room| room.get(left as usize, bottom as usize))
-        {
-            Some(TileKind::Solid) => PhysTileKind::Solid,
-            Some(TileKind::OneWay) => PhysTileKind::OneWay,
-            Some(TileKind::Spike) => PhysTileKind::Hazard,
+        let room = self.room(col as u32, row as u32)?;
+        Some((room, left as usize, bottom as usize))
+    }
+}
+
+/// 供物理内核使用的**只读**瓦片视图（`06` §6.6）。
+///
+/// 坐标是**全局**瓦片坐标（原点 = 地图左下角，+Y 向上）；房间映射按 `06` §6.6.4 的整数公式。
+/// `LevelTiles` 常驻全部房间（`02` §2.4：本阶段不做逻辑层房间激活），因此相邻房间天然返回真实数据。
+impl TileWorld for LevelTiles {
+    fn tile(&self, tx: i32, ty: i32) -> PhysTileKind {
+        let Some((room, left, bottom)) = self.room_cell(tx, ty) else {
+            return PhysTileKind::Solid; // 地图外 / grid 外 = 硬墙
+        };
+        match room.get(left, bottom) {
+            TileKind::Solid => PhysTileKind::Solid,
+            TileKind::OneWay => PhysTileKind::OneWay,
+            TileKind::Spike => PhysTileKind::Hazard,
             // `Air` 与 `Decor` 对物理都是空
-            Some(TileKind::Air) | Some(TileKind::Decor) => PhysTileKind::Empty,
-            None => PhysTileKind::Solid,
+            TileKind::Air | TileKind::Decor => PhysTileKind::Empty,
+        }
+    }
+
+    fn tile_parts(&self, tx: i32, ty: i32) -> TileParts<'_> {
+        match self
+            .room_cell(tx, ty)
+            .and_then(|(room, left, bottom)| room.parts(left, bottom))
+        {
+            Some(parts) => TileParts::Parts(parts),
+            None => TileParts::Full,
         }
     }
 }
@@ -437,24 +503,28 @@ mod tests {
                 name: "stone".into(),
                 behavior: Behavior::Solid,
                 cell: 5,
+                collision: None,
             },
             PaletteEntry {
                 char: 'g',
                 name: "grass".into(),
                 behavior: Behavior::None,
                 cell: 7,
+                collision: None,
             },
             PaletteEntry {
                 char: 'p',
                 name: "plank".into(),
                 behavior: Behavior::OneWay,
                 cell: 2,
+                collision: None,
             },
             PaletteEntry {
                 char: 'h',
                 name: "hurt".into(),
                 behavior: Behavior::Hazard,
                 cell: 9,
+                collision: None,
             },
         ];
         // 底行用自定义实心；再放一格台阶/危险/装饰
@@ -471,6 +541,66 @@ mod tests {
         assert_eq!(tiles.room(0, 0).unwrap().cell(14, 1), Some(9));
         // 空格的贴图格为 None
         assert_eq!(tiles.room(0, 0).unwrap().cell(1, 5), None);
+    }
+
+    /// v2：自定义地块的碰撞范围转成瓦片局部的轴对齐块，并参与真实物理（`03` §3.9）。
+    #[test]
+    fn v2_custom_collision_drives_tile_parts_and_physics() {
+        use crate::config::physics::{DEFAULT_PHYSICS, PLAYER_SIZE};
+        use crate::physics::{
+            Body, StepInput, StepOutcome, TileKind as Phys, TileParts, TileWorld,
+        };
+        use level_format::{Behavior, CollisionShape, PaletteEntry};
+
+        let mut level = one_room_level();
+        level.palette = Level::builtin_palette();
+        level.palette.push(PaletteEntry {
+            char: 'S',
+            name: "half".into(),
+            behavior: Behavior::Solid,
+            cell: 4,
+            // 文件朝向：只占瓦片下半格（y 16..32）⇒ 物理局部 y 0..16
+            collision: Some(CollisionShape::rectangle(0, 16, 32, 16)),
+        });
+        let mut chars: Vec<char> = level.rooms[0].tiles[15].chars().collect();
+        chars[3] = 'S';
+        level.rooms[0].tiles[15] = chars.into_iter().collect();
+
+        let tiles = LevelTiles::from_level(&level);
+        assert_eq!(tiles.tile(3, 0), Phys::Solid);
+        match tiles.tile_parts(3, 0) {
+            TileParts::Parts(parts) => assert_eq!(
+                parts,
+                &[Aabb {
+                    min: Vec2::new(0.0, 0.0),
+                    max: Vec2::new(32.0, 16.0),
+                }],
+                "下半格必须映射为局部 y 0..16"
+            ),
+            TileParts::Full => panic!("自定义碰撞范围不得退化为整格"),
+        }
+        // 未自定义的 `#` 仍是整格
+        assert_eq!(tiles.tile_parts(0, 0), TileParts::Full);
+
+        // 真实物理：落在半格实心上时脚底 = 16（而不是整格顶面 32）
+        let mut body = Body::at_center(Vec2::new(3.0 * TILE_PX as f32 + 16.0, 200.0));
+        let mut out = StepOutcome::default();
+        for _ in 0..120 {
+            crate::physics::step(
+                &DEFAULT_PHYSICS,
+                &tiles,
+                &mut body,
+                StepInput::default(),
+                &mut out,
+            );
+        }
+        assert!(body.grounded);
+        assert!(
+            (body.aabb.min.y - 16.0).abs() < 1e-3,
+            "脚底必须贴合半格顶面 16：min.y = {}",
+            body.aabb.min.y
+        );
+        assert!((body.aabb.size() - PLAYER_SIZE).length() < 1e-3);
     }
 
     /// T20 跨房间 / 越界查询（`06` §6.9）：房界外侧 1 格返回**相邻房间的真实瓦片**；`grid` 外恒为 `Solid`。

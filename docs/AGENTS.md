@@ -118,7 +118,7 @@ Bevy 0.17 → 0.20 之间发生了大量破坏性重命名（buffered event 体�
 | 局域网房间搜索（M8） | 主机运行中，另开 `animj.exe --demo online --seconds 6`（或菜单进「联机游戏」） | 日志 `联机：开始搜索局域网房间（UDP 42345）` 与 `发现房间：animj LAN（world_01，1/4）@ …`；列表出现可点击房间；0 panic |
 | 存档点 | `cargo game -- --demo checkpoint --frames 3000`，随后 `cargo game -- --frames 30` | 第一次日志出现 `存档点已设置` 与 `角色死亡：回到存档点`；第二次出现 `读档：…存档点已恢复` 且玩家从存档点位置开始；`cargo test -p game` 覆盖激活/失效回退/存档往返 |
 | 房间 / 条件 / 奖励（M4+） | `cargo test -p game`（`room::tests::m4_pipeline_*`）+ `cargo game -- --demo walk --frames 3000` | 无头链路：拾取→通关→授奖（幂等）→`GameComplete` 全绿；真实 App 里走过出口出现 `房间 … 通关（N/M）` 且自检 11/11 PASS。⚠️ **不要用 `--demo hop` 当判据**：脚本输入无法可靠地跳过错落在地面的出口、也无法从平台右缘避开尖刺 |
-| 编辑器 | `cargo test -p editor` + `cargo editor -- --frames 90 --screenshot target/editor` + `cargo editor -- --frames 140 --demo-play` | 单测全绿（撤销/保存/索引/实体按房间管理/实体命中与拖动/**外部改动确认/另存为**）；退出码 0、无 panic、截图非空；**试玩往返**日志出现 `试玩往返后编辑缓冲一致 = true（dirty = false）`，且 `--demo-play` 注入右移后日志 `试玩诊断：… 投影误差 ≤ 0.5px`（证明试玩时贴图跟随物理位置） |
+| 编辑器 | `cargo test -p editor` + `cargo editor -- --frames 90 --screenshot target/editor` + `cargo editor -- --frames 140 --demo-play` + `cargo editor -- --frames 90 --demo-collision '#' --screenshot target/editor_collision` | 单测全绿（撤销/保存/索引/实体按房间管理/实体命中与拖动/**外部改动确认/另存为**/地块碰撞范围编辑）；退出码 0、无 panic、截图非空；**试玩往返**日志出现 `试玩往返后编辑缓冲一致 = true（dirty = false）`，且 `--demo-play` 注入右移后日志 `试玩诊断：… 投影误差 ≤ 0.5px`（证明试玩时贴图跟随物理位置）；`--demo-collision` 截图里「碰撞范围」面板可见（整格/自定义多边形按钮、顶点计数、绿色栅格碰撞块） |
 | 依赖 / Cargo 配置 | `cargo build-all` | 全绿；`09` 已同步 |
 | 仅文档 | 交叉引用自查（§ 编号存在、无自相矛盾） | — |
 

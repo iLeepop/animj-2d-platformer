@@ -7,7 +7,7 @@ use bevy::math::Vec2;
 
 use super::aabb::Aabb;
 use super::core::{TILE, overlaps_tile_kind, step, step_with_players, substep_count};
-use super::tile::{TileKind, TileWorld};
+use super::tile::{TileKind, TileParts, TileWorld};
 use super::{Body, StepInput, StepOutcome};
 use crate::config::physics::*;
 
@@ -1196,4 +1196,265 @@ fn other_player_blocks_jumping_through() {
         );
     }
     assert_box_invariant(&body, "撞到上方玩家");
+}
+
+// ---------- 自定义瓦片碰撞范围（`03` §3.9）----------
+
+/// 带逐格碰撞块的测试世界：`parts` 是瓦片局部坐标（相对格子左下角，+Y 向上）。
+struct PartsWorld {
+    grid: Vec<TileKind>,
+    parts: Vec<Option<Vec<Aabb>>>,
+    cols: i32,
+    rows: i32,
+}
+
+impl PartsWorld {
+    fn new(cols: i32, rows: i32) -> Self {
+        let len = (cols * rows) as usize;
+        Self {
+            grid: vec![TileKind::Empty; len],
+            parts: vec![None; len],
+            cols,
+            rows,
+        }
+    }
+
+    fn index(&self, tx: i32, ty: i32) -> usize {
+        (ty * self.cols + tx) as usize
+    }
+
+    fn set(&mut self, tx: i32, ty: i32, kind: TileKind) {
+        let index = self.index(tx, ty);
+        self.grid[index] = kind;
+    }
+
+    fn set_parts(&mut self, tx: i32, ty: i32, parts: Vec<Aabb>) {
+        let index = self.index(tx, ty);
+        self.parts[index] = Some(parts);
+    }
+
+    fn fill_row(&mut self, ty: i32, kind: TileKind) {
+        for tx in 0..self.cols {
+            self.set(tx, ty, kind);
+        }
+    }
+}
+
+impl TileWorld for PartsWorld {
+    fn tile(&self, tx: i32, ty: i32) -> TileKind {
+        if tx < 0 || ty < 0 || tx >= self.cols || ty >= self.rows {
+            return TileKind::Solid;
+        }
+        self.grid[self.index(tx, ty)]
+    }
+
+    fn tile_parts(&self, tx: i32, ty: i32) -> TileParts<'_> {
+        if tx < 0 || ty < 0 || tx >= self.cols || ty >= self.rows {
+            return TileParts::Full;
+        }
+        match &self.parts[self.index(tx, ty)] {
+            Some(parts) => TileParts::Parts(parts),
+            None => TileParts::Full,
+        }
+    }
+}
+
+fn tile_part(x: f32, y: f32, w: f32, h: f32) -> Aabb {
+    Aabb {
+        min: Vec2::new(x, y),
+        max: Vec2::new(x + w, y + h),
+    }
+}
+
+/// X 分离必须只在碰撞块与身体**竖直重叠**时阻挡：只有格子顶部 4 px 的实心块
+/// 不会挡住贴地行走的身体（整格实心会挡住）。
+#[test]
+fn custom_solid_part_does_not_block_when_vertically_clear() {
+    let cfg = DEFAULT_PHYSICS;
+    let mut world = PartsWorld::new(16, 8);
+    world.fill_row(0, TileKind::Solid);
+    world.set(5, 1, TileKind::Solid);
+    // 格子 (5,1) 的世界 y = 32..64；只保留顶部 4 px（局部 y 28..32）
+    world.set_parts(5, 1, vec![tile_part(0.0, 28.0, 32.0, 4.0)]);
+
+    let mut body = Body::at_center(Vec2::new(100.0, TILE + PLAYER_SIZE.y / 2.0));
+    let mut out = StepOutcome::default();
+    for _ in 0..80 {
+        step(
+            &cfg,
+            &world,
+            &mut body,
+            StepInput {
+                move_x: 1,
+                ..Default::default()
+            },
+            &mut out,
+        );
+    }
+    assert!(
+        body.aabb.min.x > 5.0 * TILE,
+        "身体竖直方向不与碰撞块重叠，必须能走过该格：min.x = {}",
+        body.aabb.min.x
+    );
+
+    // 对照：整格实心会挡住
+    let mut full = PartsWorld::new(16, 8);
+    full.fill_row(0, TileKind::Solid);
+    full.set(5, 1, TileKind::Solid);
+    let mut blocked = Body::at_center(Vec2::new(100.0, TILE + PLAYER_SIZE.y / 2.0));
+    for _ in 0..80 {
+        step(
+            &cfg,
+            &full,
+            &mut blocked,
+            StepInput {
+                move_x: 1,
+                ..Default::default()
+            },
+            &mut out,
+        );
+    }
+    assert!(
+        (blocked.aabb.max.x - 5.0 * TILE).abs() < 1e-3,
+        "整格实心必须把身体挡在格子左面：max.x = {}",
+        blocked.aabb.max.x
+    );
+}
+
+/// X 分离必须停在碰撞块自己的面上：只占右半格（局部 x 16..32）的实心块 ⇒ 停在 176 而不是 160。
+#[test]
+fn custom_solid_part_stops_at_its_own_face() {
+    let cfg = DEFAULT_PHYSICS;
+    let mut world = PartsWorld::new(16, 8);
+    world.fill_row(0, TileKind::Solid);
+    world.set(5, 1, TileKind::Solid);
+    world.set_parts(5, 1, vec![tile_part(16.0, 0.0, 16.0, 32.0)]);
+
+    let mut body = Body::at_center(Vec2::new(100.0, TILE + PLAYER_SIZE.y / 2.0));
+    let mut out = StepOutcome::default();
+    for _ in 0..120 {
+        step(
+            &cfg,
+            &world,
+            &mut body,
+            StepInput {
+                move_x: 1,
+                ..Default::default()
+            },
+            &mut out,
+        );
+    }
+    assert!(
+        (body.aabb.max.x - (5.0 * TILE + 16.0)).abs() < 1e-3,
+        "必须停在碰撞块左面 176：max.x = {}",
+        body.aabb.max.x
+    );
+    assert_eq!(out.hit_wall_x, 1);
+    assert_box_invariant(&body, "撞到半格实心");
+}
+
+/// Y 方向过滤：碰撞块在移动前身体的**上方**且不重叠时，下落不得把身体瞬移到块顶。
+#[test]
+fn custom_solid_part_above_the_body_does_not_snap_it_up() {
+    let cfg = DEFAULT_PHYSICS;
+    let mut world = PartsWorld::new(16, 8);
+    world.fill_row(0, TileKind::Solid);
+    world.set(5, 1, TileKind::Solid);
+    // 格子 (5,1) 的顶部 4 px：世界 y 60..64，恰好贴着头顶但不相交
+    world.set_parts(5, 1, vec![tile_part(0.0, 28.0, 32.0, 4.0)]);
+
+    // 站在地面上（y 32..60），给一个向下速度让本步进入地板
+    let mut body = Body::at_center(Vec2::new(5.0 * TILE + 16.0, TILE + PLAYER_SIZE.y / 2.0));
+    body.vel = Vec2::new(0.0, -MAX_FALL_SPEED);
+    body.grounded = false;
+    body.airborne_since = 7;
+    let mut out = StepOutcome::default();
+    step(&cfg, &world, &mut body, StepInput::default(), &mut out);
+
+    assert!(
+        (body.aabb.min.y - TILE).abs() < 1e-3,
+        "必须落在地面顶面 32，而不是被上方的块吸到 64：min.y = {}",
+        body.aabb.min.y
+    );
+}
+
+/// Y 分离必须落在碰撞块自己的顶面：只占下半格（局部 y 0..16）的实心块 ⇒ 落地高度 16。
+#[test]
+fn custom_solid_part_has_its_own_landing_top() {
+    let cfg = DEFAULT_PHYSICS;
+    let mut world = PartsWorld::new(16, 8);
+    world.set(3, 0, TileKind::Solid);
+    world.set_parts(3, 0, vec![tile_part(0.0, 0.0, 32.0, 16.0)]);
+
+    let mut body = Body::at_center(Vec2::new(3.0 * TILE + 16.0, 200.0));
+    let mut out = StepOutcome::default();
+    for _ in 0..120 {
+        step(&cfg, &world, &mut body, StepInput::default(), &mut out);
+    }
+    assert!(body.grounded, "必须站在自定义实心块上");
+    assert!(
+        (body.aabb.min.y - 16.0).abs() < 1e-3,
+        "脚底必须贴合碰撞块顶面 16：min.y = {}",
+        body.aabb.min.y
+    );
+    assert_box_invariant(&body, "落在半格实心上");
+}
+
+/// Hazard 传感器只看多边形区域：身体压在危险格子的空白半边时不触发。
+#[test]
+fn custom_hazard_part_only_triggers_inside_the_polygon() {
+    let mut world = PartsWorld::new(16, 16);
+    world.set(6, 3, TileKind::Hazard);
+    // 格子 (6,3) 的世界 x = 192..224、y = 96..128；危险块只占中间 16×16。
+    world.set_parts(6, 3, vec![tile_part(8.0, 8.0, 16.0, 16.0)]);
+
+    let inside =
+        Aabb::from_center_size(Vec2::new(6.0 * TILE + 16.0, 3.0 * TILE + 16.0), PLAYER_SIZE);
+    assert!(
+        overlaps_tile_kind(&world, inside, 0.0, TileKind::Hazard),
+        "压在危险块上必须触发"
+    );
+
+    // 身体整体在危险块左侧：不触发（整格判定会误报）
+    let outside =
+        Aabb::from_center_size(Vec2::new(6.0 * TILE - 10.0, 3.0 * TILE + 16.0), PLAYER_SIZE);
+    assert!(
+        !overlaps_tile_kind(&world, outside, 0.0, TileKind::Hazard),
+        "压在空白半边不得触发"
+    );
+}
+
+/// OneWay 的碰撞块同样按自己的范围生效：只有右半格可站。
+#[test]
+fn custom_oneway_part_is_only_standable_under_it() {
+    let cfg = DEFAULT_PHYSICS;
+    let mut world = PartsWorld::new(16, 8);
+    world.fill_row(0, TileKind::Solid);
+    world.set(5, 2, TileKind::OneWay);
+    world.set_parts(5, 2, vec![tile_part(16.0, 0.0, 16.0, 32.0)]);
+
+    // 左半格：穿过平台，落到地面（顶面 32）
+    let mut left = Body::at_center(Vec2::new(5.0 * TILE, 200.0));
+    let mut out = StepOutcome::default();
+    for _ in 0..120 {
+        step(&cfg, &world, &mut left, StepInput::default(), &mut out);
+    }
+    assert!(left.grounded);
+    assert!(
+        (left.aabb.min.y - 32.0).abs() < 1e-3,
+        "左半格应穿过单向平台落到地面：min.y = {}",
+        left.aabb.min.y
+    );
+
+    // 右半格：站在平台顶面（ty = 2 ⇒ 顶面 96）
+    let mut right = Body::at_center(Vec2::new(5.0 * TILE + 24.0, 200.0));
+    for _ in 0..120 {
+        step(&cfg, &world, &mut right, StepInput::default(), &mut out);
+    }
+    assert!(right.grounded);
+    assert!(
+        (right.aabb.min.y - 96.0).abs() < 1e-3,
+        "右半格应站在单向平台上：min.y = {}",
+        right.aabb.min.y
+    );
 }

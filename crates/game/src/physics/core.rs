@@ -6,7 +6,7 @@ use bevy::math::Vec2;
 use level_format::TILE_PX;
 
 use super::aabb::Aabb;
-use super::tile::{TileKind, TileWorld};
+use super::tile::{TileKind, TileParts, TileWorld};
 use crate::config::physics::{COYOTE_STEPS, PLAYER_SIZE, PhysicsConfig};
 
 /// 瓦片边长（px）的 `f32` 形式。数值权威来源是 `00` §0.3。
@@ -197,14 +197,38 @@ pub fn step_with_players(
     }
 }
 
-/// 传感器查询：把 `aabb` 按 `expand` 调整后，是否与 `kind` 类别的瓦片相交。
+/// 传感器查询：把 `aabb` 按 `expand` 调整后，是否与 `kind` 类别的瓦片**实际碰撞块**相交。
 ///
 /// `expand > 0` = **外扩**（拾取判定，手感慷慨）；`expand < 0` = **内缩**（Hazard 判定，擦边不算死）。
+/// 自定义碰撞范围（`03` §3.9）参与判定：Hazard 只在其多边形区域内致死。
 /// 见 `06` §6.5.3 / §6.5.4。
 pub fn overlaps_tile_kind(world: &dyn TileWorld, aabb: Aabb, expand: f32, kind: TileKind) -> bool {
     let probe = aabb.inset(-expand);
+    // 内缩超过半尺寸时矩形反向：不可能与任何东西相交（避免 tile_range 语义歧义）
+    if probe.min.x >= probe.max.x || probe.min.y >= probe.max.y {
+        return false;
+    }
     let (tx0, tx1, ty0, ty1) = tile_range(GEOM_EPS_LOCAL, &probe);
-    tx0 <= tx1 && ty0 <= ty1 && world.any_kind_in(tx0, ty0, tx1, ty1, kind)
+    if tx0 > tx1 || ty0 > ty1 {
+        return false;
+    }
+    for ty in ty0..=ty1 {
+        for tx in tx0..=tx1 {
+            if world.tile(tx, ty) != kind {
+                continue;
+            }
+            let mut hit = false;
+            for_each_part(world, tx, ty, |part| {
+                if probe_overlaps(&probe, &part, GEOM_EPS_LOCAL) {
+                    hit = true;
+                }
+            });
+            if hit {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// `overlaps_tile_kind` 只做几何相交，容差与 `PhysicsConfig` 无关，因此这里用常量（= `GEOM_EPS`）。
@@ -242,6 +266,50 @@ pub(crate) fn tile_range(eps: f32, aabb: &Aabb) -> (i32, i32, i32, i32) {
         (aabb.min.y / TILE).floor() as i32,
         ((aabb.max.y - eps) / TILE).floor() as i32,
     )
+}
+
+/// 遍历一格的实际碰撞块（世界像素）；`TileParts::Full` 展开为整格。
+///
+/// 这是物理内核接触**自定义碰撞范围**的唯一入口：轴分离、支撑探测与传感器都经过它，
+/// 因此未自定义的瓦片（`Full`）与旧行为逐位一致。
+fn for_each_part(world: &dyn TileWorld, tx: i32, ty: i32, mut visit: impl FnMut(Aabb)) {
+    let origin = Vec2::new(tx as f32 * TILE, ty as f32 * TILE);
+    match world.tile_parts(tx, ty) {
+        TileParts::Full => visit(Aabb {
+            min: origin,
+            max: origin + Vec2::splat(TILE),
+        }),
+        TileParts::Parts(parts) => {
+            for part in parts {
+                visit(part.translate(origin));
+            }
+        }
+    }
+}
+
+/// 探针矩形与碰撞块是否重叠。
+///
+/// 上/右边界各让 `eps`：与 [`tile_range`] 的 `max - eps` 语义一致（面精确贴合不算重叠）。
+fn probe_overlaps(probe: &Aabb, part: &Aabb, eps: f32) -> bool {
+    probe.min.x < part.max.x
+        && part.min.x <= probe.max.x - eps
+        && probe.min.y < part.max.y
+        && part.min.y <= probe.max.y - eps
+}
+
+/// X 轴分离用：移动后的盒子与碰撞块在 **Y** 上是否重叠（上界让 `eps`）。
+fn vertical_overlap(aabb: &Aabb, part: &Aabb, eps: f32) -> bool {
+    aabb.min.y < part.max.y && part.min.y <= aabb.max.y - eps
+}
+
+/// Y 轴分离用：移动后的盒子与碰撞块在 **X** 上是否重叠（右界让 `eps`）。
+fn horizontal_overlap(aabb: &Aabb, part: &Aabb, eps: f32) -> bool {
+    aabb.min.x < part.max.x && part.min.x <= aabb.max.x - eps
+}
+
+/// 支撑探测用：探针带（已向内收 `eps`）与碰撞块在 X 上是否重叠（闭开区间，不再额外让 `eps`）。
+fn horizontal_overlap_probe(probe_min_x: f32, probe_max_x: f32, part: &Aabb) -> bool {
+    probe_min_x < part.max.x && part.min.x <= probe_max_x
 }
 
 /// X 轴分离（先解 X，见 `06` §6.4.3）。
@@ -284,10 +352,16 @@ fn move_x(
             if !world.tile(tx, ty).is_solid() {
                 continue;
             }
-            push(if dx > 0.0 {
-                tx as f32 * TILE // 墙的左面
-            } else {
-                (tx + 1) as f32 * TILE // 墙的右面
+            for_each_part(world, tx, ty, |part| {
+                // 自定义碰撞块可能只占格子的一部分：竖直方向不重叠就不挡路
+                if !vertical_overlap(&new, &part, cfg.geom_eps) {
+                    return;
+                }
+                push(if dx > 0.0 {
+                    part.min.x // 墙的左面
+                } else {
+                    part.max.x // 墙的右面
+                });
             });
         }
     }
@@ -341,24 +415,43 @@ fn move_y(
     let mut head_bottom: Option<f32> = None;
     for ty in ty0..=ty1 {
         for tx in tx0..=tx1 {
-            let top = (ty + 1) as f32 * TILE;
-            let bottom = ty as f32 * TILE;
-            match world.tile(tx, ty) {
-                TileKind::Solid => {
-                    if dy < 0.0 {
-                        land_top = Some(land_top.map_or(top, |t: f32| t.max(top)));
-                    } else {
-                        head_bottom = Some(head_bottom.map_or(bottom, |b: f32| b.min(bottom)));
-                    }
-                }
-                // 单向平台：仅三条件同时成立时在 Y 轴阻挡（§6.4.5）
-                TileKind::OneWay => {
-                    if dy < 0.0 && prev_foot >= top - cfg.geom_eps && new.min.y < top {
-                        land_top = Some(land_top.map_or(top, |t: f32| t.max(top)));
-                    }
-                }
-                TileKind::Empty | TileKind::Hazard => {}
+            let kind = world.tile(tx, ty);
+            if matches!(kind, TileKind::Empty | TileKind::Hazard) {
+                continue;
             }
+            for_each_part(world, tx, ty, |part| {
+                // 自定义碰撞块可能只占格子的一部分：水平方向不重叠就不挡路
+                if !horizontal_overlap(&new, &part, cfg.geom_eps) {
+                    return;
+                }
+                // 方向性过滤：块完全在移动前身体的**下方**（下落时）或**上方**（上升时）时，
+                // 它的顶面/底面不是本次行进要撞的面（否则会把身体瞬移到块上/下）。
+                // 整格碰撞时这些情形已被 `tile_range` 排除，只有格内自定义块才会遇到。
+                if dy < 0.0 && prev.max.y <= part.min.y + cfg.geom_eps {
+                    return;
+                }
+                if dy > 0.0 && prev.min.y >= part.max.y - cfg.geom_eps {
+                    return;
+                }
+                let top = part.max.y;
+                let bottom = part.min.y;
+                match kind {
+                    TileKind::Solid => {
+                        if dy < 0.0 {
+                            land_top = Some(land_top.map_or(top, |t: f32| t.max(top)));
+                        } else {
+                            head_bottom = Some(head_bottom.map_or(bottom, |b: f32| b.min(bottom)));
+                        }
+                    }
+                    // 单向平台：仅三条件同时成立时在 Y 轴阻挡（§6.4.5）
+                    TileKind::OneWay => {
+                        if dy < 0.0 && prev_foot >= top - cfg.geom_eps && new.min.y < top {
+                            land_top = Some(land_top.map_or(top, |t: f32| t.max(top)));
+                        }
+                    }
+                    TileKind::Empty | TileKind::Hazard => {}
+                }
+            });
         }
     }
 
@@ -435,11 +528,16 @@ pub(crate) fn nearest_standable_top_below(
             if !world.tile(tx, ty).is_standable() {
                 continue;
             }
-            let top = (ty + 1) as f32 * TILE;
-            // 排除「已穿透当前行」的情形：只认可不高于脚底的顶面
-            if top <= aabb.min.y + eps {
-                best = Some(best.map_or(top, |b: f32| b.max(top)));
-            }
+            for_each_part(world, tx, ty, |part| {
+                if !horizontal_overlap_probe(probe_min_x, probe_max_x, &part) {
+                    return;
+                }
+                let top = part.max.y;
+                // 排除「已穿透当前行」的情形：只认可不高于脚底的顶面
+                if top <= aabb.min.y + eps {
+                    best = Some(best.map_or(top, |b: f32| b.max(top)));
+                }
+            });
         }
     }
     // 站在其他玩家头上（`06` §6.4.10）：与瓦片同一条容差带。

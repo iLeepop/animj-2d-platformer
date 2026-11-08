@@ -25,7 +25,8 @@ fn main() {
         .add_systems(
             Update,
             drive_demo_room.run_if(resource_exists::<editor::session::EditorSession>),
-        );
+        )
+        .add_systems(Update, drive_demo_collision);
 
     // 编辑态看整张地图（`08` §8.1.4）。
     app.insert_resource(game::render::tiles::RoomCulling(false));
@@ -57,6 +58,8 @@ struct Cli {
     demo_play: bool,
     /// 冒烟：第 10 帧切到该房间（`col,row`），验证相机与叠加层跟随。
     demo_room: Option<String>,
+    /// 冒烟：第 10 帧选中该字符的地块，并给它一个演示用多边形碰撞（不写盘）。
+    demo_collision: Option<String>,
 }
 
 impl Cli {
@@ -69,6 +72,7 @@ impl Cli {
                 "--screenshot" => cli.screenshot = args.next(),
                 "--demo-play" => cli.demo_play = true,
                 "--demo-room" => cli.demo_room = args.next(),
+                "--demo-collision" => cli.demo_collision = args.next(),
                 other => eprintln!("忽略未知参数：{other}"),
             }
         }
@@ -182,6 +186,49 @@ fn drive_demo_room(
     // 只发请求，**不自己移动相机**：验证 `focus_camera_on_request` 这条真实路径
     session.goto_room(col, row);
     let _ = (camera, col, row);
+}
+
+/// `--demo-collision <char>`：选中该字符的地块并给它一个演示多边形，便于截图检查碰撞编辑面板。
+///
+/// 只改内存中的 `doc`（会标脏、会进 undo），绝不写盘；用于验证 `08` §8.5.7 B 的面板与预览。
+fn drive_demo_collision(
+    cli: Res<Cli>,
+    tick: Res<FrameTick>,
+    mut session: Option<ResMut<editor::session::EditorSession>>,
+    mut tool: Option<ResMut<editor::tile_tool::TileTool>>,
+    mut bottom_height: Option<ResMut<editor::ui::BottomHeight>>,
+    mut done: Local<bool>,
+) {
+    if *done || tick.0 < 10 {
+        return;
+    }
+    let Some(target) = cli.demo_collision.as_deref().and_then(|s| s.chars().next()) else {
+        return;
+    };
+    let (Some(session), Some(tool)) = (session.as_mut(), tool.as_mut()) else {
+        return;
+    };
+    *done = true;
+    let palette = session.doc.palette();
+    let Some(index) = palette.iter().position(|entry| entry.char == target) else {
+        eprintln!("[demo-collision] 调色板里没有字符 {target:?}");
+        return;
+    };
+    tool.selected = Some(index);
+    // 抬高底栏，让碰撞编辑面板进入截图（仅 demo）
+    if let Some(height) = bottom_height.as_mut() {
+        height.0 = 480.0;
+    }
+    if palette[index].collision.is_none() {
+        let shape = level_format::CollisionShape {
+            vertices: vec![(0, 32), (32, 32), (20, 10), (12, 10)],
+        };
+        session.set_palette_collision(index, Some(shape));
+    }
+    println!(
+        "[demo-collision] 选中地块 {target:?}（palette[{index}]），dirty = {}",
+        session.dirty
+    );
 }
 
 fn exit_on_frames_limit(cli: Res<Cli>, tick: Res<FrameTick>, mut exit: MessageWriter<AppExit>) {

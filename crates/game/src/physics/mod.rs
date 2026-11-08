@@ -10,4 +10,4 @@ pub mod tile;
 
 pub use aabb::Aabb;
 pub use core::{Body, StepInput, StepOutcome, TILE, overlaps_tile_kind, step, step_with_players};
-pub use tile::{TileKind, TileWorld};
+pub use tile::{TileKind, TileParts, TileWorld};

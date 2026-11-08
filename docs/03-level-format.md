@@ -84,6 +84,8 @@ pub struct EntitySpec {
 > ✅ **渲染与物理已接入（2026-10-18）**：`RoomTiles` 由关卡调色板构建——`behavior` 决定物理类别
 > （`Solid/OneWay/Hazard/None`），`cell` 决定图集格；关卡带 `tileset` 时按 `tileset_columns` 建图集
 > （行数 = `ceil((max_cell+1)/columns)`），否则用内置图集。单测覆盖"自定义 `S` 实心可碰撞 + 贴图格正确"。
+> ✅ **自定义碰撞范围（2026-11-08）**：`PaletteEntry.collision` 可选字段 + V21/V22；物理按栅格块求解，
+> 编辑器面板可画/拖顶点（`08` §8.5.7 B）。示例关卡未使用该字段，读取为 `None`。
 
 
 
@@ -98,7 +100,9 @@ pub struct EntitySpec {
     palette: [
         (char: '#', name: "stone",  behavior: Solid,  cell: 0),
         (char: '=', name: "wood",   behavior: OneWay, cell: 3),
-        (char: '^', name: "spikes", behavior: Hazard, cell: 5),
+        (char: '^', name: "spikes", behavior: Hazard, cell: 5,
+         // 可选：碰撞范围只占瓦片下半格（瓦片局部像素，左上原点，+Y 向下）
+         collision: Some((vertices: [(0, 16), (32, 16), (32, 32), (0, 32)]))),
         (char: 'g', name: "grass",  behavior: None,   cell: 7),
     ],
     grid: (cols: 10, rows: 3),
@@ -112,8 +116,10 @@ pub struct EntitySpec {
 | 版本 | `version: 2`。v1 文件由 `migrate.rs` 自动迁移（补 `tileset: None`、`palette` = 内置 4 条、`tileset_columns: 8`） |
 | `palette` 唯一性 | `char` 唯一且不得为 `.`（空气固定）；`name` 非空；`cell` 在贴图范围内（由编辑器/加载器检查，校验器只看结构） |
 | `behavior` | 只允许 4 种；**新增行为 = 破坏性变更**，必须同时改 `06` 的物理内核与本节 |
-| 渲染 | 瓦片按 `cell` 从 `tileset` 取图；`tileset: None` ⇒ 用内置 `assets/sprites/tiles/tileset.png` 与内置 palette（等价 v1 外观） |
-| 校验 | V6 改为"字符 ∈ palette"；新增 **V19**：`palette` 字符唯一、非 `.`、`name` 非空 |
+| `collision` | **可选**（`None`/缺省 = 整格 32×32）。`vertices` 是 3..=32 个顶点的**简单多边形**，坐标为瓦片局部像素：原点 = 瓦片左上角、+Y 向下，取值 `0..=32`。同一字符在任意房间共享同一碰撞范围 |
+| `collision` 的物理语义 | 物理按**像素中心**把多边形栅格化为轴对齐块（斜边呈像素阶梯，见 `06` §6.4.7 / §6.6.5）；`Solid` 阻挡与可站立、`OneWay` 只在其覆盖范围上可站、`Hazard` 只在其覆盖范围内致死。`None` 行为不使用该字段（V22） |
+| 渲染 | 瓦片按 `cell` 从 `tileset` 取图；`tileset: None` ⇒ 用内置 `assets/sprites/tiles/tileset.png` 与内置 palette（等价 v1 外观）。碰撞范围不影响渲染 |
+| 校验 | V6 改为"字符 ∈ palette"；**V19**：`palette` 字符唯一、非 `.`、`name` 非空；**V21**：`collision` 结构非法；**V22**：`collision` 实际不生效（Warning） |
 | 存档兼容 | `SaveData` 只依赖 `level_name` + `grid`，与 palette 无关 |
 
 ## 3.10 背景视差（v2 可选字段）
@@ -282,7 +288,7 @@ pub fn validate(level: &Level) -> Vec<LevelIssue>
 
 - `path` 格式：结构字段用 `rooms[13].goals[1].count`；瓦片类问题用 `rooms[3].tiles[12]`；实体类问题用 `rooms[7].entities[2].at`。
 - 校验必须是**纯函数**：不读文件、不依赖 Bevy，可直接单测。规则实现必须遍历全部房间，**不得**在第一个错误处返回。
-- 规则编号（`V1`…`V20`；`V7` 已移除且不复用）是对外契约：错误消息必须带上编号，便于文档、编辑器高亮与 CI 输出互相定位。
+- 规则编号（`V1`…`V22`；`V7` 已移除且不复用）是对外契约：错误消息必须带上编号，便于文档、编辑器高亮与 CI 输出互相定位。
 
 | # | 规则 | 严重度 |
 |---|---|---|
@@ -302,10 +308,12 @@ pub fn validate(level: &Level) -> Vec<LevelIssue>
 | V14 | `kind` 在 §3.4 注册表中 | Error |
 | V15 | 房间 `spawn` 若为 `Some`，坐标满足 V13 的范围 | Error |
 | V16 | 房间 `name` 若为 `Some`，全关卡唯一；`start` 的 `col < cols && row < rows` | Error |
-| V17 | 实体的 AABB（`at ± size/2`）与任何 `Solid` 瓦片重叠 | Warning |
+| V17 | 实体的 AABB（`at ± size/2`）与任何 `Solid` 瓦片的**实际碰撞范围**重叠（有 `collision` 时按多边形栅格化结果，否则整格） | Warning |
 | V18 | 相邻房间边界不连续（一侧 `Solid`、另一侧 `Air`，形成单像素墙） | Warning |
 | V19 | `palette`：`char` 唯一且非 `.`；`name` 非空 | Error |
 | V20 | `background`：`layers.len() <= 3`；每层 `image` 非空；`scroll_x/y <= 100` | Error |
+| V21 | `palette[*].collision` 结构非法：顶点数不在 `3..=32`、坐标超出 `0..=32`、顶点重合、面积为 0、或边自交 | Error |
+| V22 | `palette[*].collision` 实际不生效：`behavior == None`，或栅格化后不覆盖任何像素中心 | Warning |
 
 > **V7 已移除**（曾规定 `goals` 非空）：房间目标数量属于关卡设计，不由代码校验；编号不复用，避免与历史错误输出混淆。
 >
@@ -329,3 +337,4 @@ pub fn validate(level: &Level) -> Vec<LevelIssue>
 | `2` | 2026-10-18 | 关卡自带贴图 `tileset`/`tileset_columns` + 地块调色板 `palette`（§3.9） |
 | `2`（增补） | 2026-10-19 | 新增可选字段 `background`（§3.10，V20）；**不升版本**，旧文件读取为 `None` |
 | `2`（校验放宽） | 2026-10-19 | **移除 V7**（`goals` 非空）：每房至少一个目标改为纯设计约束；空列表运行时永不通关 |
+| `2`（增补） | 2026-11-08 | `palette[]` 新增可选字段 `collision`（§3.9，V21/V22）；**不升版本**，旧文件读取为 `None`（整格） |

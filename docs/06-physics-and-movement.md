@@ -410,6 +410,9 @@ ty1 = floor((max.y − GEOM_EPS) / TILE_PX)
   这就是「零 skin」策略：不需要给 AABB 加 0.01 px 的偏移量，像素风下取整后的渲染位置与碰撞面完全对齐。
 - 迭代顺序：`ty` 外层、`tx` 内层，**遍历全部重叠格**再取极值（不能"命中即返回"，否则 2 格高的墙会漏解）。
 - 角色单次查询覆盖格数 ≤ `(⌈20/32⌉+1) × (⌈28/32⌉+1) = 2 × 2 = 4` 格（`PLAYER_SIZE` 见 §6.2.4）。
+- **格内碰撞几何**由 `TileWorld::tile_parts` 给出（§6.6.1）：缺省 = 整格 32×32；关卡调色板自定义碰撞范围时
+  （`03` §3.9）是若干轴对齐块。块必在所属格子内，因此「候选格」仍用上面的范围查询，只是每格再遍历自己的块。
+  未自定义的瓦片走 `TileParts::Full`，与旧实现逐位一致。
 
 ### 6.4.3 X 轴分离（先解 X）
 
@@ -421,12 +424,15 @@ fn move_x(aabb, dx, world, out) {
     let mut limit: Option<f32> = None;
     for ty in ty0..=ty1 { for tx in tx0..=tx1 {
         if !world.tile(tx, ty).is_solid() { continue; }
-        let face = if dx > 0.0 { tx as f32 * TILE_PX } else { (tx+1) as f32 * TILE_PX };
-        // ★ 只认**前方**的面：身体已经越过的（重叠态）不参与夹取
-        let ahead = if dx > 0.0 { face >= prev.max.x - GEOM_EPS }
-                    else        { face <= prev.min.x + GEOM_EPS };
-        if !ahead { continue; }
-        limit = Some(if dx > 0.0 { min_by(limit, face) } else { max_by(limit, face) });
+        for part in parts_of(world, tx, ty) {          // 缺省 = 整格；自定义 = 栅格块（§6.6.5）
+            if !vertical_overlap(new, part) { continue; }   // ★ 块只占半格时，竖直不重叠就不挡路
+            let face = if dx > 0.0 { part.min.x } else { part.max.x };
+            // ★ 只认**前方**的面：身体已经越过的（重叠态）不参与夹取
+            let ahead = if dx > 0.0 { face >= prev.max.x - GEOM_EPS }
+                        else        { face <= prev.min.x + GEOM_EPS };
+            if !ahead { continue; }
+            limit = Some(if dx > 0.0 { min_by(limit, face) } else { max_by(limit, face) });
+        }
     }}
     if let Some(l) = limit {
         // ★ 尺寸不变量：只夹行进侧，另一侧按 player_size 反推（整体推出，而不是压扁）
@@ -452,17 +458,21 @@ fn move_y(aabb, dy, world, prev_foot, out) {
     let mut new = aabb.translate(vec2(0, dy));
     let mut resolved = false;
     for ty in ty0..=ty1 { for tx in tx0..=tx1 {
-        match world.tile(tx, ty) {
-            Solid => {
-                let top = (ty+1) as f32 * TILE_PX;  let bottom = ty as f32 * TILE_PX;
-                // ★ 尺寸不变量：夹行进侧，另一侧反推（§6.4.9）
-                if dy < 0.0 { new.min.y = top; new.max.y = top + player_size.y; out.landed = true; }
-                else        { new.max.y = bottom; new.min.y = bottom - player_size.y; out.head_bumped = true; }
-                resolved = true;
+        let kind = world.tile(tx, ty);
+        for part in parts_of(world, tx, ty) {
+            if !horizontal_overlap(new, part) { continue; }   // ★ 自定义块只占半格时按水平范围过滤
+            let top = part.max.y;  let bottom = part.min.y;
+            match kind {
+                Solid => {
+                    // ★ 尺寸不变量：夹行进侧，另一侧反推（§6.4.9）
+                    if dy < 0.0 { new.min.y = top; new.max.y = top + player_size.y; out.landed = true; }
+                    else        { new.max.y = bottom; new.min.y = bottom - player_size.y; out.head_bumped = true; }
+                    resolved = true;
+                }
+                OneWay => { /* 见 §6.4.5：命中则 new.min.y = top、out.landed = true、resolved = true；
+                               不满足三条件时完全忽略 */ }
+                _ => {}
             }
-            OneWay => { /* 见 §6.4.5：命中则 new.min.y = top、out.landed = true、resolved = true；
-                           不满足三条件时完全忽略 */ }
-            _ => {}
         }
     }}
     // 落地吸附（CONTACT_TOLERANCE 的正业）：本子步没有任何分离时，检查脚底是否已在容差带内
@@ -480,7 +490,8 @@ fn nearest_standable_top_below(aabb, world) -> Option<f32> {
     //   x ∈ [aabb.min.x + GEOM_EPS, aabb.max.x − GEOM_EPS]
     //   y ∈ [aabb.min.y − CONTACT_TOLERANCE, aabb.min.y]            // 距离 ∈ [0, CONTACT_TOLERANCE]
     //   ⇒ 瓦片行 ty ∈ [floor((min.y − CONTACT_TOLERANCE) / TILE_PX), floor((min.y − GEOM_EPS) / TILE_PX)]
-    // 对每行的可站立瓦片取 top = (ty + 1) as f32 * TILE_PX，过滤 top ≤ aabb.min.y + GEOM_EPS
+    // 对每行的可站立瓦片，遍历其碰撞块（缺省 = 整格）：只取与探针带水平重叠的块，
+    // 使其 top = part.max.y，过滤 top ≤ aabb.min.y + GEOM_EPS
     // （排除"已穿透当前行"的情形），答案为剩下的 top 之最大值。
 }
 ```
@@ -541,6 +552,9 @@ match (nearest_standable_top_below(aabb, world), vel.y) {
 **明确不支持「按住 ↓ 主动下穿」**：需求未提；引入后 `prev_foot` 的语义要按"是否处于下穿状态"分支，
 并与土狼时间、单向平台站立状态互相干扰，收益极低。
 
+**自定义碰撞范围（`03` §3.9）**：OneWay 的可站范围同样由 `tile_parts` 决定——只有与碰撞块**水平重叠**时
+才可能满足三条件并站住；碰撞块之外的半格直接穿过。
+
 ### 6.4.6 子步进推导
 
 目标不变量：**单子步位移 < 最小实体厚度**。最小实体厚度 = 1 瓦片 = `TILE_PX`（见 `00`）= 32 px。
@@ -579,6 +593,10 @@ match (nearest_standable_top_below(aabb, world), vel.y) {
 4. **替代方案**：需要"缓坡"手感时，用**阶梯化斜坡**（连续 1 格高的小台阶）；`6.2.6` 保证 1 格台阶轻点即过，
    且 2 格可攀，因此阶梯化斜坡在现有手感参数下完全通行。
 
+> **自定义碰撞多边形不是连续斜坡**：`03` §3.9 的 `collision` 在加载时按像素中心栅格化成轴对齐块
+> （§6.6.5），接触面仍只有水平/竖直面，斜边表现为 1 px 阶梯——正是本节第 4 条推荐的「阶梯化」表达。
+> 因此 §6.4.3 / §6.4.4 的轴分离算法继续成立，**不**引入斜面法线或 SAT 求解。
+
 ### 6.4.8 复杂度预算
 
 单固定步、单角色：
@@ -590,6 +608,10 @@ match (nearest_standable_top_below(aabb, world), vel.y) {
 | 支撑探测 | 1 次（≤ 6 格） |
 | 传感器查询 | 3 次（Hazard / 拾取 / 区域，各 ≤ 4 格） |
 | **合计** | ≤ 约 30 次瓦片读取 / 步，60 Hz 下 ≈ 1800 次/s（无分配） |
+
+- 自定义碰撞范围（`03` §3.9）：单格最多 32 个栅格块（32 行各一段；上下相邻同宽段会合并，典型矩形/三角形远少于此）。
+  角色单步最多覆盖 4 格 ⇒ 单次分离/支撑/传感器查询最坏展开 `4 × 32 = 128` 块；只有被范围查询命中的格子才展开。
+  遍历仍是**零堆分配**（块存在 `LevelTiles` 里，查询只读切片）。
 
 `step()` 与全部查询函数**零堆分配**（`Aabb`/`Vec2` 皆 `Copy`，无 `Vec`）。
 
@@ -641,11 +663,16 @@ match (nearest_standable_top_below(aabb, world), vel.y) {
 | `OneWay` | 忽略 | 仅 §6.4.5 三条件成立时阻挡 | 是 | 否 |
 | `Hazard` | 忽略 | 忽略 | 否 | **是**（§6.5.3） |
 
+> 上表是**类别语义**；每类在本格内的几何范围还可以被 `03` §3.9 的 `collision` 缩小/移动。
+> 几何过滤统一由 `TileWorld::tile_parts` 提供（§6.6.1）：`Solid` 的阻挡/可站立、`OneWay` 的可站、
+> `Hazard` 的致死区域都只落在实际碰撞块上；`Empty` 没有碰撞块。
+
 ### 6.5.3 Hazard（传感器 → 死亡/重置）
 
 - **不阻挡**：`Hazard` 不参与任何轴分离。
-- **判定**：把角色 AABB **内缩** `HAZARD_INSET`（= 2 px，四边各内缩）后，与 `Hazard` 瓦片矩形求相交；
+- **判定**：把角色 AABB **内缩** `HAZARD_INSET`（= 2 px，四边各内缩）后，与 `Hazard` 瓦片的**实际碰撞块**求相交；
   任一相交即触发 ⇒ 即 `overlaps_tile_kind(world, aabb, −HAZARD_INSET, Hazard)`。
+  未自定义的地块 = 整格 32×32；自定义多边形时只在其栅格块内致死（空白半边安全）。
   内缩理由：角色擦到尖刺贴图的最外一列像素不应致死，减少"擦边即死"的挫败感。
 - **时机**：`FixedUpdate` 的 `check_hazards`，物理步**之后**执行（用本步最终 AABB）。
 - **输出**：写一条 buffered 消息 `PlayerDied`（0.20 的 buffered 消息类型是 `Message`，
@@ -701,10 +728,21 @@ impl TileKind {
     pub fn is_standable(self) -> bool;      // == Solid || OneWay
 }
 
+/// 一格的碰撞块：`Full` = 整格 32×32；`Parts` = 自定义多边形的栅格块（瓦片局部、+Y 向上）。
+pub enum TileParts<'a> {
+    Full,
+    Parts(&'a [Aabb]),
+}
+
 /// 只读瓦片视图；由 ECS 适配层实现（把房间数据包成这个接口）
 pub trait TileWorld {
     /// 全局瓦片坐标（原点 = 地图左下角，+Y 上）处的语义。
     fn tile(&self, tx: i32, ty: i32) -> TileKind;
+
+    /// 该格的碰撞块。默认 = 整格；只有调色板显式自定义碰撞范围时才返回 `Parts`。
+    fn tile_parts(&self, tx: i32, ty: i32) -> TileParts<'_> {
+        TileParts::Full
+    }
 
     /// 矩形范围内是否存在指定类别。默认朴素实现即可（≤4 格），
     /// 但允许房间实现做"边界预裁剪"优化。
@@ -716,7 +754,10 @@ pub trait TileWorld {
 
 设计要点：
 
-- **只有 `tile(tx, ty)` 是必须实现的**；其余方法都有默认实现 ⇒ 测试用 `TestWorld`（`Vec<TileKind>` + 宽高）只需实现一个方法。
+- **只有 `tile(tx, ty)` 是必须实现的**；`tile_parts` 与 `any_kind_in` 都有默认实现 ⇒ 测试用 `TestWorld`
+  （`Vec<TileKind>` + 宽高）只需实现一个方法，未自定义碰撞范围的瓦片自动是整格。
+- `tile_parts` 返回的是**瓦片局部**块（相对格子左下角、+Y 向上），由内核平移到世界坐标；
+  这样适配层可以按地块字符共享同一份 `Arc<[Aabb]>`，无需按世界坐标复制。
 - 接口**不含**任何 `&mut`、无 `Commands`、无 `Query` ⇒ 可在纯单测里构造，满足 C2。
 - `tiles_in(aabb)` 这种"返回迭代器"的写法**不进入接口**：会造成 `impl Trait` 与借用复杂度，
   而调用方只需要"范围 + 类别存在性"这一件事（`any_kind_in`），收益为零。
@@ -752,6 +793,23 @@ file_row = ROOM_TILES - 1 - lty                          // 关卡文件行号�
 
 **禁止**在物理代码里写像素级的房间算术——像素级转换一律调用 `00` 的
 `room_local_to_world` / `world_to_room`；上面的整数公式只是它在瓦片粒度上的等价形式（`00` §0.3 已固定符号约定）。
+
+### 6.6.5 自定义碰撞范围 → 世界坐标
+
+`03` §3.9 的 `palette[*].collision` 是**瓦片局部像素**多边形（原点左上、+Y 向下，`0..=32`）。
+加载期一次性转成物理可用的轴对齐块（`LevelTiles` 的 `RoomTiles.parts`）：
+
+```
+1) 栅格化：对 32×32 个像素中心 (px + 0.5, py + 0.5) 做奇偶规则点内判定 ⇒ 布尔掩码
+2) 合并：逐行取水平段，再把上下相邻且同 x 范围的段合并为矩形
+3) 朝向翻转：file y ∈ [y, y+h)  ⇒  local y ∈ [TILE_PX − (y+h), TILE_PX − y)
+4) 世界坐标：part.min/max 加上格子原点 (tx·TILE_PX, ty·TILE_PX)
+```
+
+- 步骤 1 的像素中心采样决定「斜边 = 1 px 阶梯」：这不是近似误差，而是像素风下与 `§6.4.7` 一致的**定义**。
+- 完全不含像素中心的多边形栅格为空 ⇒ 该地块实际无碰撞区域（V22 Warning）。
+- 同一调色板字符在所有格子上共享同一份块列表（`Arc<[Aabb]>`）；查询只读切片，无分配。
+- 未设置 `collision`（`None`）的地块**不进入**这条路径，按 `TileParts::Full` 处理，行为与旧版本逐位一致。
 
 ---
 
@@ -1009,3 +1067,17 @@ transform.translation = (render_pos.x, render_pos.y, Z)        // Z 由 07 给�
   - **T22** 另一个玩家挡在右边：120 步后 `aabb.max.x <= 对方.min.x + GEOM_EPS`，`hit_wall_x == 1`，尺寸不变。
   - **T23** 站在另一个玩家头上：最终 `grounded == true` 且脚底贴合对方顶面，尺寸不变。
   - **T24** 从下方起跳撞到上方玩家：每一步 `aabb.max.y <= 对方.min.y + GEOM_EPS`，尺寸不变。
+
+### T25 自定义碰撞范围（`03` §3.9，2026-11-08）
+
+用单测专用的 `PartsWorld`（`tile_parts` 返回显式块）逐条锁定几何语义：
+
+- **T25a 竖直过滤**：只有格子顶部 4 px 的 `Solid` 块不阻挡贴地行走的身体（整格实心会挡在格子左面）。
+- **T25b 自己的面**：只占右半格的 `Solid` 块把身体停在 `格左 + 16`，而不是格子左面。
+- **T25c 自己的顶面**：只占下半格的 `Solid` 块让角色落在 `格底 + 16`。
+- **T25d Hazard 区域**：危险块只占格子中间 16×16 时，身体压在空白半边不触发，压在其中才触发。
+- **T25e OneWay 范围**：只有右半格可站；左半格直接穿过并落到下方地面。
+- **T25f 方向过滤**：块在移动前身体的上方（下落）或下方（上升）且不相交时，其顶面/底面不是本次行进面，
+  不得把身体瞬移过去（`prev.max.y <= part.min.y + eps` / `prev.min.y >= part.max.y − eps` 跳过）。
+- **T25g 适配层映射**：`LevelTiles` 把文件朝向的下半格矩形映射为物理局部 `y ∈ [0, 16)`；真实物理落地 `min.y == 16`。
+- **T25h V17**：实体压在自定义 `Solid` 的空白半边时**不**报 V17；压在碰撞块上才报（`03` §3.7）。

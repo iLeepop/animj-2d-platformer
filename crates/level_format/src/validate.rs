@@ -3,7 +3,8 @@
 use crate::error::{LevelIssue, Severity};
 use crate::legend::TileKind;
 use crate::types::{
-    EntitySpec, Goal, Level, MAX_BACKGROUND_LAYERS, ROOM_PX, ROOM_TILES, Room, TILE_PX, VERSION,
+    Behavior, CollisionPart, EntitySpec, Goal, Level, MAX_BACKGROUND_LAYERS, PaletteEntry, ROOM_PX,
+    ROOM_TILES, Room, TILE_PX, VERSION,
 };
 
 /// 房间总数上限，见 `docs/03-level-format.md` §3.7 V3。
@@ -34,7 +35,7 @@ pub fn validate(level: &Level) -> Vec<LevelIssue> {
         check_entity_specs(i, room, &mut issues);
         check_room_spawn(i, room, &mut issues);
         check_room_name(i, level, &mut issues);
-        check_entity_solid_overlap(i, room, &mut issues);
+        check_entity_solid_overlap(i, room, level, &mut issues);
     }
 
     check_player_spawn(level, &mut issues);
@@ -427,11 +428,26 @@ fn tile_at_file(room: &Room, file_row: usize, col: usize) -> TileKind {
     }
 }
 
-/// V17：实体 AABB 与 `Solid` 瓦片重叠（每实体最多报一条，给出首个重叠瓦片）。
-fn check_entity_solid_overlap(i: usize, room: &Room, issues: &mut Vec<LevelIssue>) {
+/// V17：实体 AABB 与 `Solid` 瓦片的**实际碰撞范围**重叠（每实体最多报一条，给出首个重叠瓦片）。
+///
+/// v2 自定义地块可能只占瓦片的一部分（`03` §3.9 的 `collision`）：因此这里按
+/// [`crate::CollisionShape::raster_parts`] 的栅格化结果判定，而不是整格 32×32。
+fn check_entity_solid_overlap(i: usize, room: &Room, level: &Level, issues: &mut Vec<LevelIssue>) {
+    // 每个房间只克隆一次调色板：V17 会遍历 256 格，逐格 `entry_of` 会重复克隆。
+    let palette = level.palette();
+    // 每个自定义形状只栅格化一次：V17 会对每个实体重复扫描房间内的全部格子。
+    let shapes: Vec<(char, Vec<CollisionPart>)> = palette
+        .iter()
+        .filter_map(|entry| {
+            entry
+                .collision
+                .as_ref()
+                .map(|shape| (entry.char, shape.raster_parts()))
+        })
+        .collect();
     for (e, spec) in room.entities.iter().enumerate() {
         let aabb = entity_aabb(spec);
-        let Some((col, file_row)) = first_solid_overlap(room, aabb) else {
+        let Some((col, file_row)) = first_solid_overlap(&palette, &shapes, room, aabb) else {
             continue;
         };
         push(
@@ -447,18 +463,55 @@ fn check_entity_solid_overlap(i: usize, room: &Room, issues: &mut Vec<LevelIssue
     }
 }
 
+/// 取文件坐标上的原始字符（`file_row 0` = 房间最上一行）；越界返回 `None`。
+fn char_at_file(room: &Room, file_row: usize, col: usize) -> Option<char> {
+    room.tiles.get(file_row)?.chars().nth(col)
+}
+
 /// 返回与该 AABB 重叠的第一个 `Solid` 瓦片（列, 文件行）。
-fn first_solid_overlap(room: &Room, aabb: (i32, i32, i32, i32)) -> Option<(usize, usize)> {
+///
+/// `behavior` 与碰撞范围都取自关卡调色板：自定义 `Solid` 字符与部分瓦片碰撞范围都必须被正确识别。
+fn first_solid_overlap(
+    palette: &[PaletteEntry],
+    shapes: &[(char, Vec<CollisionPart>)],
+    room: &Room,
+    aabb: (i32, i32, i32, i32),
+) -> Option<(usize, usize)> {
     for file_row in 0..ROOM_TILES {
         for col in 0..ROOM_TILES {
-            if !tile_at_file(room, file_row, col).is_solid() {
+            let Some(ch) = char_at_file(room, file_row, col) else {
+                continue;
+            };
+            let Some(entry) = palette.iter().find(|entry| entry.char == ch) else {
+                continue;
+            };
+            if entry.behavior != Behavior::Solid {
                 continue;
             }
-            let min_x = col as i32 * TILE_PX;
-            let min_y = file_row as i32 * TILE_PX;
-            let tile = (min_x, min_y, min_x + TILE_PX, min_y + TILE_PX);
-            if rects_overlap(aabb, tile) {
-                return Some((col, file_row));
+            let origin_x = col as i32 * TILE_PX;
+            let origin_y = file_row as i32 * TILE_PX;
+            if entry.collision.is_some() {
+                let parts = shapes
+                    .iter()
+                    .find(|(shape_char, _)| *shape_char == ch)
+                    .map(|(_, parts)| parts.as_slice())
+                    .unwrap_or(&[]);
+                for part in parts {
+                    let tile = (
+                        origin_x + part.x,
+                        origin_y + part.y,
+                        origin_x + part.x + part.w,
+                        origin_y + part.y + part.h,
+                    );
+                    if rects_overlap(aabb, tile) {
+                        return Some((col, file_row));
+                    }
+                }
+            } else {
+                let tile = (origin_x, origin_y, origin_x + TILE_PX, origin_y + TILE_PX);
+                if rects_overlap(aabb, tile) {
+                    return Some((col, file_row));
+                }
             }
         }
     }
@@ -474,6 +527,8 @@ fn is_boundary_gap(a: TileKind, b: TileKind) -> bool {
 }
 
 /// V19：调色板自身合法——字符唯一、非 `.`、名称非空。
+///
+/// 同时检查 v2 扩展的碰撞范围：V21（结构非法，Error）与 V22（自定义形状实际不生效，Warning）。
 fn check_palette(level: &Level, issues: &mut Vec<LevelIssue>) {
     let mut seen: Vec<char> = Vec::new();
     for (index, entry) in level.palette.iter().enumerate() {
@@ -504,6 +559,33 @@ fn check_palette(level: &Level, issues: &mut Vec<LevelIssue>) {
                 &path,
                 "V19",
                 "地块名称不能为空".to_string(),
+            );
+        }
+
+        let Some(collision) = &entry.collision else {
+            continue;
+        };
+        let collision_path = format!("{path}.collision");
+        let geometry_errors = collision.geometry_errors();
+        let valid_geometry = geometry_errors.is_empty();
+        for error in geometry_errors {
+            push(issues, Severity::Error, &collision_path, "V21", error);
+        }
+        if entry.behavior == Behavior::None {
+            push(
+                issues,
+                Severity::Warning,
+                &collision_path,
+                "V22",
+                "行为为「无」，碰撞范围不会生效".to_string(),
+            );
+        } else if valid_geometry && collision.raster_parts().is_empty() {
+            push(
+                issues,
+                Severity::Warning,
+                &collision_path,
+                "V22",
+                "多边形栅格化后不覆盖任何像素中心，实际没有碰撞区域".to_string(),
             );
         }
     }

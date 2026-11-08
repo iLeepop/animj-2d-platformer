@@ -4,7 +4,7 @@
 
 use bevy::prelude::*;
 use bevy_egui::egui;
-use level_format::{Behavior, PaletteEntry};
+use level_format::{Behavior, CollisionShape, MAX_COLLISION_VERTICES, PaletteEntry};
 
 use crate::session::EditorSession;
 
@@ -51,6 +51,16 @@ pub struct TileTool {
     pub new_cell: u32,
     /// 贴图框选的起点（屏幕坐标，按 32 px 格吸附）。
     pub pick_drag_start: Option<egui::Pos2>,
+    /// 碰撞多边形顶点拖拽：拖拽中只改草稿，松开时提交为**一个** undo 步骤。
+    pub collision_drag: Option<CollisionDrag>,
+}
+
+/// 正在拖拽的碰撞多边形顶点（`08` §8.5.7 B）。
+#[derive(Debug, Clone)]
+pub struct CollisionDrag {
+    pub entry: usize,
+    pub vertex: usize,
+    pub vertices: Vec<(i32, i32)>,
 }
 
 impl Default for TileTool {
@@ -62,6 +72,7 @@ impl Default for TileTool {
             new_behavior: Behavior::Solid,
             new_cell: 4,
             pick_drag_start: None,
+            collision_drag: None,
         }
     }
 }
@@ -358,6 +369,9 @@ pub fn tile_panel(
                 session.set_palette_cell(index, cell);
             }
         });
+        ui.separator();
+        collision_editor(ui, session, tool, index, &entry, texture);
+        ui.separator();
         // 整张贴图 + 点击/拖动框选（吸附到 32×32 格，`08` §8.5.7 B）
         ui.label("选择贴图格：点击或拖动框选（吸附到 32×32）");
         let sheet = texture.map(|texture| texture.size_vec2());
@@ -484,6 +498,264 @@ pub fn tile_panel(
     });
 }
 
+/// 选中地块的碰撞范围编辑（`03` §3.9 / `08` §8.5.7 B）。
+///
+/// 顶点坐标与关卡文件一致：**瓦片局部像素，原点左上，+Y 向下**。物理按像素中心栅格化，
+/// 因此斜边呈阶梯；预览里的绿色块就是实际参与碰撞的矩形。
+fn collision_editor(
+    ui: &mut egui::Ui,
+    session: &mut EditorSession,
+    tool: &mut TileTool,
+    index: usize,
+    entry: &PaletteEntry,
+    texture: Option<&egui::TextureHandle>,
+) {
+    ui.heading("碰撞范围");
+    ui.label("顶点 = 瓦片局部像素（0..32，左上原点，+Y 向下）；物理按像素栅格化，斜边呈阶梯。");
+
+    let mut collision = entry.collision.clone();
+    ui.horizontal(|ui| {
+        if ui.button("整格（默认 32×32）").clicked() && collision.is_some() {
+            session.set_palette_collision(index, None);
+            collision = None;
+            tool.collision_drag = None;
+        }
+        if ui.button("自定义多边形").clicked() && collision.is_none() {
+            let shape = CollisionShape::full();
+            if session.set_palette_collision(index, Some(shape.clone())) {
+                collision = Some(shape);
+            }
+        }
+    });
+    let Some(mut shape) = collision else {
+        ui.label("当前使用整格碰撞；点「自定义多边形」后可编辑顶点。");
+        return;
+    };
+    if entry.behavior == Behavior::None {
+        ui.colored_label(
+            egui::Color32::YELLOW,
+            "行为为「无」：该地块不参与物理，碰撞范围不会生效。",
+        );
+    }
+
+    // 常用预设：一次点击 = 一个 undo 步骤
+    ui.horizontal_wrapped(|ui| {
+        for (label, preset) in [
+            ("下半", CollisionShape::rectangle(0, 16, 32, 16)),
+            ("上半", CollisionShape::rectangle(0, 0, 32, 16)),
+            ("左半", CollisionShape::rectangle(0, 0, 16, 32)),
+            ("右半", CollisionShape::rectangle(16, 0, 16, 32)),
+        ] {
+            if ui.small_button(label).clicked()
+                && session.set_palette_collision(index, Some(preset.clone()))
+            {
+                shape = preset;
+                tool.collision_drag = None;
+            }
+        }
+    });
+
+    let columns = session.doc.tileset_columns.max(1);
+    let sheet = texture.map(|texture| texture.size_vec2());
+    let side = ui.available_width().clamp(96.0, 180.0);
+    let (rect, response) =
+        ui.allocate_exact_size(egui::vec2(side, side), egui::Sense::click_and_drag());
+    let tile_to_screen = |x: f32, y: f32| {
+        egui::pos2(
+            rect.min.x + x / level_format::TILE_PX as f32 * side,
+            rect.min.y + y / level_format::TILE_PX as f32 * side,
+        )
+    };
+    let screen_to_tile = |pos: egui::Pos2| {
+        let x = ((pos.x - rect.min.x) / side * level_format::TILE_PX as f32)
+            .clamp(0.0, level_format::TILE_PX as f32);
+        let y = ((pos.y - rect.min.y) / side * level_format::TILE_PX as f32)
+            .clamp(0.0, level_format::TILE_PX as f32);
+        (x.round() as i32, y.round() as i32)
+    };
+    let nearest_vertex = |vertices: &[(i32, i32)], pos: egui::Pos2| -> Option<usize> {
+        vertices
+            .iter()
+            .enumerate()
+            .map(|(i, &(x, y))| (i, tile_to_screen(x as f32, y as f32).distance(pos)))
+            .filter(|(_, distance)| *distance <= 8.0)
+            .min_by(|a, b| a.1.total_cmp(&b.1))
+            .map(|(i, _)| i)
+    };
+
+    // 拖拽只改草稿；松开时一次提交（一个 undo 步骤，`08` §8.5.2）
+    let displayed = tool
+        .collision_drag
+        .as_ref()
+        .filter(|drag| drag.entry == index)
+        .map(|drag| drag.vertices.clone())
+        .unwrap_or_else(|| shape.vertices.clone());
+    if response.drag_started()
+        && let Some(pos) = response.interact_pointer_pos()
+        && let Some(vertex) = nearest_vertex(&displayed, pos)
+    {
+        tool.collision_drag = Some(CollisionDrag {
+            entry: index,
+            vertex,
+            vertices: displayed.clone(),
+        });
+    }
+    if response.dragged()
+        && let Some(drag) = tool.collision_drag.as_mut()
+        && drag.entry == index
+        && let Some(pos) = response.interact_pointer_pos()
+    {
+        drag.vertices[drag.vertex] = screen_to_tile(pos);
+    }
+    if response.drag_stopped()
+        && let Some(drag) = tool.collision_drag.take()
+        && drag.entry == index
+        && drag.vertices != shape.vertices
+        && session.set_palette_collision(
+            index,
+            Some(CollisionShape {
+                vertices: drag.vertices.clone(),
+            }),
+        )
+    {
+        shape.vertices = drag.vertices;
+    }
+
+    let displayed = tool
+        .collision_drag
+        .as_ref()
+        .filter(|drag| drag.entry == index)
+        .map(|drag| drag.vertices.clone())
+        .unwrap_or_else(|| shape.vertices.clone());
+
+    // ---- 预览：贴图 + 8 px 参考网格 + 实际栅格碰撞块 + 多边形轮廓 ----
+    if let (Some(texture), Some(sheet)) = (texture, sheet) {
+        ui.painter().image(
+            texture.id(),
+            rect,
+            cell_uv(entry.cell, columns, sheet),
+            egui::Color32::WHITE,
+        );
+    } else {
+        ui.painter()
+            .rect_filled(rect, 0.0, egui::Color32::from_gray(36));
+    }
+    for i in 0..=4 {
+        let t = i as f32 / 4.0;
+        let color = egui::Color32::from_rgba_unmultiplied(255, 255, 255, 40);
+        let stroke = egui::Stroke::new(1.0, color);
+        let offset = side * t;
+        ui.painter().line_segment(
+            [
+                egui::pos2(rect.min.x + offset, rect.min.y),
+                egui::pos2(rect.min.x + offset, rect.max.y),
+            ],
+            stroke,
+        );
+        ui.painter().line_segment(
+            [
+                egui::pos2(rect.min.x, rect.min.y + offset),
+                egui::pos2(rect.max.x, rect.min.y + offset),
+            ],
+            stroke,
+        );
+    }
+    let preview_shape = CollisionShape {
+        vertices: displayed.clone(),
+    };
+    let parts = preview_shape.raster_parts();
+    for part in &parts {
+        let min = tile_to_screen(part.x as f32, part.y as f32);
+        let max = tile_to_screen((part.x + part.w) as f32, (part.y + part.h) as f32);
+        ui.painter().rect_filled(
+            egui::Rect::from_min_max(min, max),
+            0.0,
+            egui::Color32::from_rgba_unmultiplied(80, 220, 120, 70),
+        );
+    }
+    if displayed.len() >= 2 {
+        ui.painter().add(egui::Shape::closed_line(
+            displayed
+                .iter()
+                .map(|&(x, y)| tile_to_screen(x as f32, y as f32))
+                .collect(),
+            egui::Stroke::new(2.0, egui::Color32::from_rgb(80, 220, 255)),
+        ));
+    }
+    for &(x, y) in &displayed {
+        ui.painter().circle_filled(
+            tile_to_screen(x as f32, y as f32),
+            4.0,
+            egui::Color32::from_rgb(255, 240, 130),
+        );
+    }
+
+    // 单击空白处追加一个顶点（单击已有点不追加）
+    if response.clicked()
+        && let Some(pos) = response.interact_pointer_pos()
+        && nearest_vertex(&displayed, pos).is_none()
+        && shape.vertices.len() < MAX_COLLISION_VERTICES
+    {
+        let mut vertices = shape.vertices.clone();
+        vertices.push(screen_to_tile(pos));
+        // 下一帧会从 `doc` 重新读到新顶点
+        session.set_palette_collision(index, Some(CollisionShape { vertices }));
+    }
+
+    if parts.is_empty() {
+        ui.colored_label(
+            egui::Color32::YELLOW,
+            "当前多边形不覆盖任何像素中心 ⇒ 实际没有碰撞区域。",
+        );
+    }
+    let geometry_errors = preview_shape.geometry_errors();
+    if let Some(error) = geometry_errors.first() {
+        ui.colored_label(egui::Color32::RED, error);
+    }
+    ui.label(format!(
+        "顶点 {} / {}；实际碰撞块 {} 个",
+        displayed.len(),
+        MAX_COLLISION_VERTICES,
+        parts.len()
+    ));
+
+    // ---- 顶点数值编辑 ----
+    let mut pending_vertices: Option<Vec<(i32, i32)>> = None;
+    let mut remove: Option<usize> = None;
+    for (vertex, (x, y)) in shape.vertices.iter().copied().enumerate() {
+        ui.horizontal(|ui| {
+            ui.label(format!("#{vertex}"));
+            let mut vx = x;
+            let mut vy = y;
+            let changed_x = ui
+                .add(egui::DragValue::new(&mut vx).range(0..=level_format::TILE_PX))
+                .changed();
+            let changed_y = ui
+                .add(egui::DragValue::new(&mut vy).range(0..=level_format::TILE_PX))
+                .changed();
+            if changed_x || changed_y {
+                let mut vertices = shape.vertices.clone();
+                vertices[vertex] = (vx, vy);
+                pending_vertices = Some(vertices);
+            }
+            // 少于 3 个点无法构成多边形：不允许再删
+            if shape.vertices.len() > 3 && ui.small_button("删除").clicked() {
+                remove = Some(vertex);
+            }
+        });
+    }
+    if let Some(vertex) = remove {
+        let mut vertices = shape.vertices.clone();
+        vertices.remove(vertex);
+        pending_vertices = Some(vertices);
+        tool.collision_drag = None;
+    }
+    if let Some(vertices) = pending_vertices {
+        session.set_palette_collision(index, Some(CollisionShape { vertices }));
+        tool.collision_drag = None;
+    }
+}
+
 /// 新建地块表单（底部横向面板的右栏）。
 fn new_tile_form(ui: &mut egui::Ui, session: &mut EditorSession, tool: &mut TileTool) {
     ui.heading("新建地块");
@@ -536,6 +808,7 @@ fn new_tile_form(ui: &mut egui::Ui, session: &mut EditorSession, tool: &mut Tile
             },
             behavior: tool.new_behavior,
             cell: tool.new_cell,
+            collision: None,
         });
         if added {
             tool.new_char.clear();
@@ -582,6 +855,7 @@ mod tests {
             name: "瓦片1".into(),
             behavior: Behavior::Solid,
             cell: 4,
+            collision: None,
         });
         assert_eq!(next_free_char(&session.doc), '2');
         // 用完 1..9 后进入字母段
@@ -591,6 +865,7 @@ mod tests {
                 name: String::new(),
                 behavior: Behavior::Solid,
                 cell: 4,
+                collision: None,
             });
         }
         assert_eq!(next_free_char(&session.doc), 'a');
@@ -605,6 +880,7 @@ mod tests {
             name: "dup".into(),
             behavior: Behavior::Solid,
             cell: 0,
+            collision: None,
         }));
         // `.` 是空气保留
         assert!(!session.add_palette_entry(PaletteEntry {
@@ -612,6 +888,7 @@ mod tests {
             name: "air".into(),
             behavior: Behavior::None,
             cell: 0,
+            collision: None,
         }));
         // 新字符成功，且一个 undo 步骤可回退
         assert!(session.add_palette_entry(PaletteEntry {
@@ -619,6 +896,7 @@ mod tests {
             name: "stone".into(),
             behavior: Behavior::Solid,
             cell: 5,
+            collision: None,
         }));
         assert_eq!(session.doc.behavior_of('S'), Some(Behavior::Solid));
         assert!(session.undo());
@@ -637,6 +915,47 @@ mod tests {
         assert_eq!(entry.cell, 9);
     }
 
+    /// 碰撞范围编辑：一次交互一个 undo 步骤；重复写入同一值不产生步骤；可清回整格。
+    #[test]
+    fn palette_collision_edits_are_one_undo_step() {
+        let mut session = session();
+        let index = session
+            .doc
+            .palette()
+            .iter()
+            .position(|entry| entry.char == '#')
+            .unwrap();
+        let shape = CollisionShape::rectangle(0, 16, 32, 16);
+        let undo_before = session.undo.len();
+        assert!(session.set_palette_collision(index, Some(shape.clone())));
+        assert_eq!(
+            session.undo.len(),
+            undo_before + 1,
+            "必须恰好一个 undo 步骤"
+        );
+        assert_eq!(
+            session.doc.entry_of('#').unwrap().collision,
+            Some(shape.clone())
+        );
+
+        // 幂等：同一形状再写一次不产生步骤
+        assert!(!session.set_palette_collision(index, Some(shape.clone())));
+        assert_eq!(session.undo.len(), undo_before + 1);
+
+        // 撤销回到整格
+        assert!(session.undo());
+        assert_eq!(session.doc.entry_of('#').unwrap().collision, None);
+
+        // 再设一次，然后清回整格，也可整步撤销
+        assert!(session.set_palette_collision(index, Some(shape.clone())));
+        assert!(session.set_palette_collision(index, None));
+        assert_eq!(session.doc.entry_of('#').unwrap().collision, None);
+        assert!(session.undo());
+        assert_eq!(session.doc.entry_of('#').unwrap().collision, Some(shape));
+        // 越界下标安全
+        assert!(!session.set_palette_collision(999, None));
+    }
+
     #[test]
     fn painting_a_custom_char_writes_it() {
         let mut session = session();
@@ -645,6 +964,7 @@ mod tests {
             name: "stone".into(),
             behavior: Behavior::Solid,
             cell: 5,
+            collision: None,
         });
         session.brush_char = 'S';
         session.begin_edit();

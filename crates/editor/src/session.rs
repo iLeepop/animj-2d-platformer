@@ -268,6 +268,27 @@ impl EditorSession {
         }
     }
 
+    /// 设置地块的自定义碰撞范围（`03` §3.9 / `08` §8.5.7 B）。`None` = 整格。
+    ///
+    /// 幂等：值未变化时不产生 undo 步骤。返回是否真的写入。
+    pub fn set_palette_collision(
+        &mut self,
+        index: usize,
+        collision: Option<level_format::CollisionShape>,
+    ) -> bool {
+        let mut palette = self.doc.palette();
+        let Some(entry) = palette.get_mut(index) else {
+            return false;
+        };
+        if entry.collision == collision {
+            return false;
+        }
+        self.begin_edit();
+        entry.collision = collision;
+        self.doc.palette = palette;
+        true
+    }
+
     // ---------- 房间属性 ----------
 
     pub fn set_reward(&mut self, reward: Option<String>) {
@@ -548,6 +569,7 @@ mod tests {
             name: "stone".into(),
             behavior: level_format::Behavior::Solid,
             cell: 4,
+            collision: None,
         }));
         // 内置 4 种必须仍在调色板里（这也是左栏能继续选中它们的前提）
         let palette = session.doc.palette();
