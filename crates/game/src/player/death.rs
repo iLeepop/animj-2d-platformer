@@ -197,6 +197,7 @@ mod tests {
                     at: (64, 464),
                     size: None,
                     id: None,
+                    item: None,
                 });
             }
             if let Some(at) = checkpoint_at {
@@ -205,13 +206,12 @@ mod tests {
                     at,
                     size: None,
                     id: None,
+                    item: None,
                 });
             }
             Room {
                 name: None,
                 tiles: tiles.clone(),
-                goals: vec![level_format::Goal::ReachExit],
-                reward: None,
                 spawn: None,
                 entities,
             }

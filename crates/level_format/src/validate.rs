@@ -3,7 +3,7 @@
 use crate::error::{LevelIssue, Severity};
 use crate::legend::TileKind;
 use crate::types::{
-    Behavior, CollisionPart, EntitySpec, Goal, Level, MAX_BACKGROUND_LAYERS, PaletteEntry, ROOM_PX,
+    Behavior, CollisionPart, EntitySpec, Level, MAX_BACKGROUND_LAYERS, PaletteEntry, ROOM_PX,
     ROOM_TILES, Room, TILE_PX, VERSION,
 };
 
@@ -11,10 +11,15 @@ use crate::types::{
 const MAX_ROOMS: u64 = 256;
 /// 超过该房间总数即给裁剪警告，见 `docs/03-level-format.md` §3.7 V3b 与 `docs/02-world-and-rooms.md` §2.4。
 const ROOMS_WARN_THRESHOLD: u64 = 64;
-/// v1 注册的实体 kind，见 `docs/03-level-format.md` §3.4；Roadmap 里的 kind 在 v1 会被 V14 拒绝。
-const ENTITY_KINDS: &[&str] = &["player_spawn", "exit", "fruit", "checkpoint"];
+/// 当前版本注册的实体 kind，见 `docs/03-level-format.md` §3.4。
+/// 旧版的 `exit` 由格式迁移改写成 `goal`；v3 不再接受 `exit`。
+const ENTITY_KINDS: &[&str] = &["player_spawn", "goal", "fruit", "checkpoint", "item"];
 /// 玩家出生点实体 kind，见 `docs/03-level-format.md` §3.4。
 const PLAYER_SPAWN_KIND: &str = "player_spawn";
+/// 终点实体 kind：全关卡恰好 1 个（V23）。
+const GOAL_KIND: &str = "goal";
+/// 道具实体 kind：必须带 `item` 字段（V24）。
+const ITEM_KIND: &str = "item";
 
 /// 校验关卡，返回**全部**问题（不短路）。
 ///
@@ -30,8 +35,6 @@ pub fn validate(level: &Level) -> Vec<LevelIssue> {
 
     for (i, room) in level.rooms.iter().enumerate() {
         check_tiles(i, room, level, &mut issues);
-        check_goals(i, room, &mut issues);
-        check_reward(i, level, &mut issues);
         check_entity_specs(i, room, &mut issues);
         check_room_spawn(i, room, &mut issues);
         check_room_name(i, level, &mut issues);
@@ -39,6 +42,7 @@ pub fn validate(level: &Level) -> Vec<LevelIssue> {
     }
 
     check_player_spawn(level, &mut issues);
+    check_goal_count(level, &mut issues);
     check_start(level, &mut issues);
     check_palette(level, &mut issues);
     check_background(level, &mut issues);
@@ -193,110 +197,42 @@ fn check_tiles(i: usize, room: &Room, level: &Level, issues: &mut Vec<LevelIssue
     }
 }
 
-/// 房间内某个 kind 的实体数量；与 `Collect { count: u32 }` 直接可比，故用 `u32`。
-fn count_kind(room: &Room, kind: &str) -> u32 {
-    room.entities
-        .iter()
-        .filter(|spec| spec.kind == kind)
-        .count() as u32
-}
-
-/// V8 / V9 / V10：目标列表与实体的可满足性。
-///
-/// `goals` 允许为空：**「每个房间至少一个目标」是关卡设计约束，不由代码强制**
-/// （空列表在运行时永不满足，见 `game::room::goals::evaluate`）。
-fn check_goals(i: usize, room: &Room, issues: &mut Vec<LevelIssue>) {
-    let exit_count = count_kind(room, "exit");
-    let fruit_count = count_kind(room, "fruit");
-
-    if room.goals.contains(&Goal::ReachExit) && exit_count != 1 {
-        push(
-            issues,
-            Severity::Error,
-            &format!("rooms[{i}].entities"),
-            "V8",
-            format!("含 ReachExit，要求恰好 1 个 exit 实体，实际 {exit_count} 个"),
-        );
-    }
-    if room.goals.contains(&Goal::CollectAll) && fruit_count == 0 {
-        push(
-            issues,
-            Severity::Error,
-            &format!("rooms[{i}].entities"),
-            "V9",
-            "含 CollectAll，要求至少 1 个 fruit 实体，实际 0 个",
-        );
-    }
-
-    for (goal_index, goal) in room.goals.iter().enumerate() {
-        let Goal::Collect { count } = goal else {
-            continue;
-        };
-        let path = format!("rooms[{i}].goals[{goal_index}].count");
-        if *count == 0 {
-            push(
-                issues,
-                Severity::Error,
-                &path,
-                "V10",
-                "要求 0 个果实，count 必须 >= 1",
-            );
-        } else if *count > fruit_count {
-            push(
-                issues,
-                Severity::Error,
-                &path,
-                "V10",
-                format!("要求 {count} 个果实，房间内只有 {fruit_count} 个"),
-            );
-        }
-    }
-}
-
-/// V11：`reward` 的字符集与全关卡唯一性。
-fn check_reward(i: usize, level: &Level, issues: &mut Vec<LevelIssue>) {
-    let Some(reward) = level.rooms[i].reward.as_deref() else {
-        return;
-    };
-    let path = format!("rooms[{i}].reward");
-    if !is_snake_id(reward) {
-        push(
-            issues,
-            Severity::Error,
-            &path,
-            "V11",
-            format!("'{reward}' 不匹配 ^[a-z0-9_]+$"),
-        );
-    }
-    let duplicate = level.rooms[..i]
-        .iter()
-        .position(|room| room.reward.as_deref() == Some(reward));
-    if let Some(j) = duplicate {
-        push(
-            issues,
-            Severity::Error,
-            &path,
-            "V11",
-            format!("装饰品 id '{reward}' 与 rooms[{j}].reward 重复"),
-        );
-    }
-}
-
-/// V13 / V14：实体位置、尺寸范围与 kind 注册表。
+/// V13 / V14 / V24：实体位置、尺寸范围、kind 注册表与道具字段。
 fn check_entity_specs(i: usize, room: &Room, issues: &mut Vec<LevelIssue>) {
     for (e, spec) in room.entities.iter().enumerate() {
+        let path = format!("rooms[{i}].entities[{e}]");
         if !ENTITY_KINDS.contains(&spec.kind.as_str()) {
             push(
                 issues,
                 Severity::Error,
-                &format!("rooms[{i}].entities[{e}].kind"),
+                &format!("{path}.kind"),
                 "V14",
                 format!(
-                    "未知实体 kind '{}'，v1 注册表：{}",
+                    "未知实体 kind '{}'，v3 注册表：{}",
                     spec.kind,
                     ENTITY_KINDS.join(" / ")
                 ),
             );
+        }
+        match (spec.kind.as_str(), spec.item) {
+            (ITEM_KIND, None) => push(
+                issues,
+                Severity::Error,
+                &format!("{path}.item"),
+                "V24",
+                "kind = \"item\" 必须指定道具类型 item: SuperJump / Speed / DoubleJump".to_string(),
+            ),
+            (kind, Some(item)) if kind != ITEM_KIND => push(
+                issues,
+                Severity::Error,
+                &format!("{path}.item"),
+                "V24",
+                format!(
+                    "只有 kind = \"item\" 可以带道具类型，本实体 kind = '{kind}'（{:?}）",
+                    item
+                ),
+            ),
+            _ => {}
         }
 
         let (x, y) = spec.at;
@@ -304,7 +240,7 @@ fn check_entity_specs(i: usize, room: &Room, issues: &mut Vec<LevelIssue>) {
             push(
                 issues,
                 Severity::Error,
-                &format!("rooms[{i}].entities[{e}].at"),
+                &format!("{path}.at"),
                 "V13",
                 format!("at ({x}, {y}) 超出房间范围 0..{ROOM_PX}"),
             );
@@ -316,7 +252,7 @@ fn check_entity_specs(i: usize, room: &Room, issues: &mut Vec<LevelIssue>) {
                 push(
                     issues,
                     Severity::Error,
-                    &format!("rooms[{i}].entities[{e}].size"),
+                    &format!("{path}.size"),
                     "V13",
                     format!("size ({w}, {h}) 超出范围 1..={ROOM_PX}"),
                 );
@@ -381,6 +317,25 @@ fn check_player_spawn(level: &Level, issues: &mut Vec<LevelIssue>) {
                 "全关卡 {PLAYER_SPAWN_KIND} 实体数 {}，要求恰好 1 个",
                 spawns.len()
             ),
+        );
+    }
+}
+
+/// V23：全关卡恰好 1 个 `goal`（终点）。触碰终点即获胜（`docs/01-game-design.md` §1.4）。
+fn check_goal_count(level: &Level, issues: &mut Vec<LevelIssue>) {
+    let count = level
+        .rooms
+        .iter()
+        .flat_map(|room| room.entities.iter())
+        .filter(|spec| spec.kind == GOAL_KIND)
+        .count();
+    if count != 1 {
+        push(
+            issues,
+            Severity::Error,
+            "rooms",
+            "V23",
+            format!("全关卡 {GOAL_KIND} 实体数 {count}，要求恰好 1 个"),
         );
     }
 }

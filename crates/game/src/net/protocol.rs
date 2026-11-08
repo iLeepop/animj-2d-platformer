@@ -6,9 +6,10 @@
 //!
 //! 包必须小于 [`MAX_PACKET_BYTES`]，否则接收端直接丢弃（避免 IP 分片）。
 
+use level_format::ItemKind;
 use serde::{Deserialize, Serialize};
 
-use crate::config::net::{MAX_PACKET_BYTES, PROTOCOL_VERSION, SNAPSHOT_MAX_ROOMS};
+use crate::config::net::{MAX_PACKET_BYTES, PROTOCOL_VERSION};
 
 /// 快照的二进制标签（其余消息是 `RON` 标签 + 文本）。
 const TAG_SNAPSHOT: u8 = 0x01;
@@ -25,9 +26,13 @@ pub struct PlayerSnap {
     pub vy: f32,
     pub grounded: bool,
     pub facing_right: bool,
+    /// 当前携带的道具（`None` = 空手）。
+    pub item: Option<ItemKind>,
+    /// 已用掉的空中额外起跳次数（道具「二段跳」的预测状态）。
+    pub air_jumps_used: u32,
+    /// 该玩家的通关时间（`None` = 尚未到达终点）。
+    pub finish: Option<f32>,
     /// 主机**已接收**的该玩家最后一条输入序号（客户端预测用；主机自己控制的玩家为 0）。
-    ///
-    /// 客户端用它丢弃已确认的待重放输入：序号 ≤ 该值的输入已经体现在本快照的位置里。
     pub last_input_seq: u32,
 }
 
@@ -35,9 +40,9 @@ pub struct PlayerSnap {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Snapshot {
     pub seq: u32,
+    /// 本局已进行的秒数（客户端 HUD 与结算）。
+    pub run_elapsed: f32,
     pub players: Vec<PlayerSnap>,
-    /// 已通关房间的行主序下标（关卡上限 64 房间，`01` §1.8 ⇒ 位图）。
-    pub cleared: Vec<u32>,
     /// `(房间下标, 已收集果实数)`，只包含非零项。
     pub fruits: Vec<(u32, u32)>,
     /// 已拾取并销毁的房间实体编号（`room::ZoneId`）。
@@ -126,18 +131,21 @@ pub fn decode(bytes: &[u8]) -> Option<NetMessage> {
 // ---------- 快照二进制 ----------
 //
 // 布局（全小端）：
-//   seq u32 | players u8 | [id u8, x/y/vx/vy f32, flags u8, last_input_seq u32] × n
-//   cleared u64（房间下标位图）
+//   seq u32 | run_elapsed f32 | players u8
+//   × n: [id u8, x/y/vx/vy f32, flags u8, item u8, finish u8(+f32 if 1), last_input_seq u32]
 //   fruits u8 | [(room u8, count u16)] × n
 //   picked u16 | [zone u16] × n
 //   checkpoint u8（0/1）| [col u16, row u16, x i16, y i16]
 //
+// flags: bit0 grounded，bit1 facing_right，bits2–3 air_jumps_used（夹取到 0..=3）。
+// item: 0 = 空手，1..=3 = `ItemKind::code()`。
 // 房间最大 64（`01` §1.8），果实数量 u16，实体编号 u16；越界值夹取而不是 panic。
 
 fn encode_snapshot(snapshot: &Snapshot) -> Option<Vec<u8>> {
     let mut out = Vec::with_capacity(256);
     out.push(TAG_SNAPSHOT);
     out.extend_from_slice(&snapshot.seq.to_le_bytes());
+    out.extend_from_slice(&snapshot.run_elapsed.to_le_bytes());
 
     let players = snapshot.players.len().min(u8::MAX as usize);
     out.push(players as u8);
@@ -146,18 +154,20 @@ fn encode_snapshot(snapshot: &Snapshot) -> Option<Vec<u8>> {
         for value in [player.x, player.y, player.vx, player.vy] {
             out.extend_from_slice(&value.to_le_bytes());
         }
-        let flags = u8::from(player.grounded) | (u8::from(player.facing_right) << 1);
+        let flags = u8::from(player.grounded)
+            | (u8::from(player.facing_right) << 1)
+            | ((player.air_jumps_used.min(3) as u8) << 2);
         out.push(flags);
+        out.push(player.item.map_or(0, ItemKind::code));
+        match player.finish {
+            Some(time) => {
+                out.push(1);
+                out.extend_from_slice(&time.to_le_bytes());
+            }
+            None => out.push(0),
+        }
         out.extend_from_slice(&player.last_input_seq.to_le_bytes());
     }
-
-    let mut cleared = 0u64;
-    for room in &snapshot.cleared {
-        if *room < SNAPSHOT_MAX_ROOMS as u32 {
-            cleared |= 1u64 << *room;
-        }
-    }
-    out.extend_from_slice(&cleared.to_le_bytes());
 
     let fruits = snapshot
         .fruits
@@ -225,12 +235,6 @@ impl<'a> Reader<'a> {
         Some(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
     }
 
-    fn u64(&mut self) -> Option<u64> {
-        let bytes = self.bytes.get(self.at..self.at + 8)?;
-        self.at += 8;
-        Some(u64::from_le_bytes(bytes.try_into().ok()?))
-    }
-
     fn i16(&mut self) -> Option<i16> {
         self.u16().map(|value| value as i16)
     }
@@ -243,6 +247,7 @@ impl<'a> Reader<'a> {
 fn decode_snapshot(bytes: &[u8]) -> Option<Snapshot> {
     let mut reader = Reader::new(bytes);
     let seq = reader.u32()?;
+    let run_elapsed = reader.f32()?;
     let player_count = reader.u8()? as usize;
     let mut players = Vec::with_capacity(player_count);
     for _ in 0..player_count {
@@ -252,6 +257,11 @@ fn decode_snapshot(bytes: &[u8]) -> Option<Snapshot> {
         let vx = reader.f32()?;
         let vy = reader.f32()?;
         let flags = reader.u8()?;
+        let item = ItemKind::from_code(reader.u8()?);
+        let finish = match reader.u8()? {
+            0 => None,
+            _ => Some(reader.f32()?),
+        };
         let last_input_seq = reader.u32()?;
         players.push(PlayerSnap {
             id,
@@ -261,13 +271,12 @@ fn decode_snapshot(bytes: &[u8]) -> Option<Snapshot> {
             vy,
             grounded: flags & 1 != 0,
             facing_right: flags & 2 != 0,
+            item,
+            air_jumps_used: u32::from((flags >> 2) & 3),
+            finish,
             last_input_seq,
         });
     }
-    let cleared_bits = reader.u64()?;
-    let cleared = (0..SNAPSHOT_MAX_ROOMS as u32)
-        .filter(|room| cleared_bits & (1u64 << room) != 0)
-        .collect();
 
     let fruit_count = reader.u8()? as usize;
     let mut fruits = Vec::with_capacity(fruit_count);
@@ -294,8 +303,8 @@ fn decode_snapshot(bytes: &[u8]) -> Option<Snapshot> {
     };
     Some(Snapshot {
         seq,
+        run_elapsed,
         players,
-        cleared,
         fruits,
         picked,
         checkpoint,
@@ -313,6 +322,7 @@ mod tests {
     fn snapshot() -> NetMessage {
         NetMessage::Snapshot(Snapshot {
             seq: 7,
+            run_elapsed: 12.5,
             players: vec![PlayerSnap {
                 id: 0,
                 x: 100.5,
@@ -321,9 +331,11 @@ mod tests {
                 vy: -2.0,
                 grounded: true,
                 facing_right: false,
+                item: Some(ItemKind::DoubleJump),
+                air_jumps_used: 1,
+                finish: Some(9.75),
                 last_input_seq: 123,
             }],
-            cleared: vec![0, 3],
             fruits: vec![(1, 2)],
             picked: vec![4, 5],
             checkpoint: Some((0, 0, 96, 464)),
@@ -388,11 +400,12 @@ mod tests {
         assert_eq!(decode(&bytes[..bytes.len() - 1]), None);
     }
 
-    /// 完整快照（4 玩家 + 64 房间 + 大量已拾取实体）必须留在单包上限内。
+    /// 完整快照（4 玩家 + 大量果实/实体）必须留在单包上限内。
     #[test]
     fn full_snapshot_fits_in_one_packet() {
         let message = NetMessage::Snapshot(Snapshot {
             seq: u32::MAX,
+            run_elapsed: 3599.99,
             players: (0..MAX_PLAYERS)
                 .map(|id| PlayerSnap {
                     id: id as u8,
@@ -402,10 +415,12 @@ mod tests {
                     vy: 560.0,
                     grounded: true,
                     facing_right: true,
+                    item: Some(ItemKind::SuperJump),
+                    air_jumps_used: 1,
+                    finish: Some(3599.0),
                     last_input_seq: 0,
                 })
                 .collect(),
-            cleared: (0..64).collect(),
             fruits: (0..64).map(|i| (i, 99)).collect(),
             picked: (0..256).collect(),
             checkpoint: Some((9, 2, -123, 4567)),

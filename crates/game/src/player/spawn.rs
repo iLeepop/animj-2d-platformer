@@ -207,6 +207,8 @@ pub fn spawn_player(
             id,
             PlayerMotion(body),
             PlayerStepOutcome::default(),
+            // 默认空手；道具拾取会覆盖它（`01` §1.4 / `06` §6.12）。
+            crate::player::items::CarriedItem::default(),
             // 默认朝右（`03` §3.4），由 `player::update_player_facing` 随输入更新。
             PlayerFacing::default(),
             sprite,

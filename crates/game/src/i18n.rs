@@ -25,6 +25,16 @@ impl Language {
         }
     }
 
+    /// 道具名的本地化文本（HUD / 结算共用）。
+    pub fn item_name(self, kind: level_format::ItemKind) -> &'static str {
+        let s = self.strings();
+        match kind {
+            level_format::ItemKind::SuperJump => s.item_super_jump,
+            level_format::ItemKind::Speed => s.item_speed,
+            level_format::ItemKind::DoubleJump => s.item_double_jump,
+        }
+    }
+
     /// 设置界面里显示的语言名（各语言用自己的写法）。
     pub fn self_name(self) -> &'static str {
         self.strings().self_name
@@ -81,14 +91,18 @@ pub struct Strings {
     pub save_level_not_found: &'static str,
     pub save_load_failed: &'static str,
     // HUD / 结算
-    pub decorations: &'static str,
-    pub goals: &'static str,
-    pub exit_goal: &'static str,
-    pub fruit: &'static str,
-    pub all_fruits: &'static str,
-    pub room_cleared: &'static str,
-    pub decoration_gained: &'static str,
-    pub all_rooms_cleared: &'static str,
+    pub time: &'static str,
+    pub item_gained: &'static str,
+    pub no_item: &'static str,
+    pub item_super_jump: &'static str,
+    pub item_speed: &'static str,
+    pub item_double_jump: &'static str,
+    pub player: &'static str,
+    pub finish_title: &'static str,
+    pub finish_line: &'static str,
+    pub seconds: &'static str,
+    pub unfinished: &'static str,
+    pub points: &'static str,
 }
 
 pub static ZH: Strings = Strings {
@@ -127,14 +141,18 @@ pub static ZH: Strings = Strings {
     save_version_mismatch: "存档版本不匹配",
     save_level_not_found: "存档关卡不存在",
     save_load_failed: "读档失败",
-    decorations: "装饰",
-    goals: "目标",
-    exit_goal: "出口",
-    fruit: "果实",
-    all_fruits: "全部果实",
-    room_cleared: "房间通关",
-    decoration_gained: "获得装饰品",
-    all_rooms_cleared: "全部房间通关",
+    time: "时间",
+    item_gained: "拾取",
+    no_item: "无",
+    item_super_jump: "高跳",
+    item_speed: "快跑",
+    item_double_jump: "双跳",
+    player: "玩家",
+    finish_title: "到达终点",
+    finish_line: "用时",
+    seconds: "秒",
+    unfinished: "未完成",
+    points: "分",
 };
 
 pub static EN: Strings = Strings {
@@ -173,14 +191,18 @@ pub static EN: Strings = Strings {
     save_version_mismatch: "SAVE VERSION MISMATCH",
     save_level_not_found: "SAVE LEVEL NOT FOUND",
     save_load_failed: "SAVE LOAD FAILED",
-    decorations: "decor",
-    goals: "goals",
-    exit_goal: "EXIT",
-    fruit: "FRUIT",
-    all_fruits: "ALL FRUITS",
-    room_cleared: "ROOM CLEARED",
-    decoration_gained: "DECORATION",
-    all_rooms_cleared: "ALL ROOMS CLEARED",
+    time: "TIME",
+    item_gained: "PICKUP",
+    no_item: "NONE",
+    item_super_jump: "SUPER JUMP",
+    item_speed: "SPEED",
+    item_double_jump: "DOUBLE JUMP",
+    player: "PLAYER",
+    finish_title: "FINISH",
+    finish_line: "TIME",
+    seconds: "S",
+    unfinished: "DNF",
+    points: "PTS",
 };
 
 #[cfg(test)]

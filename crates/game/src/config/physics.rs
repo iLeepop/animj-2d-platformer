@@ -73,8 +73,19 @@ pub const PLAYER_OFFSET_MAX: f32 = 64.0;
 pub const HAZARD_INSET: f32 = 2.0;
 /// 拾取判定的角色 AABB 外扩量（px）。
 pub const PICKUP_INFLATE: f32 = 2.0;
-/// 拾取物 AABB 边长（px）。
-pub const PICKUP_SIZE: f32 = 12.0;
+/// 拾取物 AABB 边长（px）。与关卡校验的默认值同源（`03` §3.4）。
+pub const PICKUP_SIZE: f32 = level_format::PICKUP_SIZE as f32;
+
+/// 道具「超级跳」：起跳初速倍率（`06` §6.12）。跳跃高度随初速平方增长。
+pub const ITEM_SUPER_JUMP_VELOCITY_MULT: f32 = 1.5;
+/// 道具「疾跑」：水平最大速度倍率。
+pub const ITEM_SPEED_MAX_MULT: f32 = 1.6;
+/// 道具「疾跑」：水平加速度与减速度倍率（避免只是"上限更高但加速很慢"）。
+pub const ITEM_SPEED_ACCEL_MULT: f32 = 1.4;
+/// 道具「二段跳」：离地后允许的额外起跳次数。
+pub const ITEM_DOUBLE_JUMP_MAX_AIR_JUMPS: u32 = 1;
+/// 道具「二段跳」：空中起跳初速相对地面起跳的倍率。
+pub const ITEM_DOUBLE_JUMP_VELOCITY_MULT: f32 = 0.9;
 
 /// 物理参数集。
 ///
@@ -94,6 +105,10 @@ pub struct PhysicsConfig {
     pub jump_cut_velocity: f32,
     pub coyote_steps: u32,
     pub jump_buffer_steps: u32,
+    /// 离地后允许的额外起跳次数（道具「二段跳」= 1，其余 0）。见 `06` §6.12。
+    pub max_air_jumps: u32,
+    /// 空中起跳初速（px/s）。见 `06` §6.12。
+    pub air_jump_velocity: f32,
     pub contact_tolerance: f32,
     pub geom_eps: f32,
     pub substep_max_distance: f32,
@@ -116,6 +131,8 @@ pub const DEFAULT_PHYSICS: PhysicsConfig = PhysicsConfig {
     jump_cut_velocity: JUMP_CUT_VELOCITY,
     coyote_steps: COYOTE_STEPS,
     jump_buffer_steps: JUMP_BUFFER_STEPS,
+    max_air_jumps: 0,
+    air_jump_velocity: JUMP_VELOCITY,
     contact_tolerance: CONTACT_TOLERANCE,
     geom_eps: GEOM_EPS,
     substep_max_distance: SUBSTEP_MAX_DISTANCE,

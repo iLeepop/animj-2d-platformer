@@ -3,9 +3,10 @@
 //! 测试只使用 crate 的公共 API（`tests/` 是独立 crate），因此也顺带验证了导出面。
 
 use level_format::{
-    Background, BackgroundLayer, CollisionShape, EntitySpec, Goal, Grid, LEGEND, Level, LevelError,
-    LevelIssue, MAX_BACKGROUND_LAYERS, RENDERABLE_TILE_KINDS, ROOM_PX, ROOM_TILES, Room, RoomCoord,
-    Severity, TILE_PX, TileKind, VERSION, name_matches_file, read, room_index, validate, write,
+    Background, BackgroundLayer, CollisionShape, EntitySpec, Grid, ItemKind, LEGEND, Level,
+    LevelError, LevelIssue, MAX_BACKGROUND_LAYERS, PICKUP_SIZE, RENDERABLE_TILE_KINDS, ROOM_PX,
+    ROOM_TILES, Room, RoomCoord, Severity, TILE_PX, TileKind, VERSION, name_matches_file, read,
+    room_index, validate, write,
 };
 
 // ---------------------------------------------------------------- 构造辅助
@@ -31,22 +32,21 @@ fn entity(kind: &str, at: (i32, i32)) -> EntitySpec {
         at,
         size: None,
         id: None,
+        item: None,
     }
 }
 
-/// 一个「密封」房间：天花板 + 地面，无房间名、无奖励、无重生点。
-fn plain_room(goals: Vec<Goal>, entities: Vec<EntitySpec>) -> Room {
+/// 一个「密封」房间：天花板 + 地面，无房间名、无重生点。
+fn plain_room(entities: Vec<EntitySpec>) -> Room {
     Room {
         name: None,
         tiles: sealed_room_tiles(),
-        goals,
-        reward: None,
         spawn: None,
         entities,
     }
 }
 
-/// 最小合法关卡：1×1，地面在第 15 行，`ReachExit` + 1 个 `player_spawn` + 1 个 `exit`。
+/// 最小合法关卡：1×1，地面在第 15 行，1 个 `player_spawn` + 1 个 `goal`。
 fn valid_level() -> Level {
     let mut tiles = air_tiles();
     tiles[15] = "#".repeat(ROOM_TILES);
@@ -62,12 +62,10 @@ fn valid_level() -> Level {
         rooms: vec![Room {
             name: None,
             tiles,
-            goals: vec![Goal::ReachExit],
-            reward: None,
             spawn: None,
             entities: vec![
                 entity("player_spawn", (64, 464)),
-                entity("exit", (448, 464)),
+                entity("goal", (448, 464)),
             ],
         }],
     }
@@ -85,14 +83,11 @@ fn valid_level_2x1() -> Level {
         palette: Vec::new(),
         background: None,
         rooms: vec![
-            plain_room(
-                vec![Goal::ReachExit],
-                vec![
-                    entity("player_spawn", (64, 464)),
-                    entity("exit", (448, 464)),
-                ],
-            ),
-            plain_room(vec![Goal::ReachExit], vec![entity("exit", (448, 464))]),
+            plain_room(vec![
+                entity("player_spawn", (64, 464)),
+                entity("goal", (448, 464)),
+            ]),
+            plain_room(vec![]),
         ],
     }
 }
@@ -109,62 +104,52 @@ fn valid_level_1x2() -> Level {
         palette: Vec::new(),
         background: None,
         rooms: vec![
-            plain_room(
-                vec![Goal::ReachExit],
-                vec![
-                    entity("player_spawn", (64, 464)),
-                    entity("exit", (448, 464)),
-                ],
-            ),
-            plain_room(vec![Goal::ReachExit], vec![entity("exit", (448, 464))]),
+            plain_room(vec![
+                entity("player_spawn", (64, 464)),
+                entity("goal", (448, 464)),
+            ]),
+            plain_room(vec![]),
         ],
     }
 }
 
-/// 1×1 关卡：`ReachExit` + `Collect { count }`，并放好 `count` 个 fruit。
-fn level_with_fruits(count: u32) -> Level {
-    let mut level = valid_level();
-    level.rooms[0].goals = vec![Goal::ReachExit, Goal::Collect { count }];
-    for i in 0..count {
-        level.rooms[0]
-            .entities
-            .push(entity("fruit", (64 + 32 * i as i32, 464)));
-    }
-    level
-}
-
-/// 覆盖全部字段（房间名、奖励、重生点、三种目标、显式 size/id）且完全合法的 2×2 关卡。
+/// 覆盖全部字段（房间名、重生点、三种道具、显式 size/id）且完全合法的 2×2 关卡。
 fn featureful_level() -> Level {
-    let mut left_room = plain_room(vec![Goal::ReachExit], vec![entity("exit", (448, 464))]);
+    let mut left_room = plain_room(vec![]);
     left_room.name = Some("a".to_string());
 
-    let mut start_room = plain_room(
-        vec![Goal::ReachExit, Goal::CollectAll],
-        vec![
-            entity("player_spawn", (64, 464)),
-            entity("exit", (448, 464)),
-            EntitySpec {
-                kind: "fruit".to_string(),
-                at: (208, 464),
-                size: Some((24, 24)),
-                id: Some("f1".to_string()),
-            },
-            entity("fruit", (272, 464)),
-        ],
-    );
+    let mut start_room = plain_room(vec![
+        entity("player_spawn", (64, 464)),
+        entity("goal", (448, 464)),
+        EntitySpec {
+            kind: "fruit".to_string(),
+            at: (208, 464),
+            size: Some((24, 24)),
+            id: Some("f1".to_string()),
+            item: None,
+        },
+        entity("fruit", (272, 464)),
+    ]);
     start_room.name = Some("b".to_string());
-    start_room.reward = Some("straw_hat".to_string());
     start_room.spawn = Some((256, 256));
 
-    let mut collect_room = plain_room(
-        vec![Goal::Collect { count: 2 }],
-        vec![
-            entity("exit", (448, 464)),
-            entity("fruit", (208, 464)),
-            entity("fruit", (272, 464)),
-        ],
-    );
-    collect_room.reward = Some("scarf".to_string());
+    let mut item_room = plain_room(vec![
+        EntitySpec {
+            kind: "item".to_string(),
+            at: (208, 464),
+            size: None,
+            id: Some("super_jump".to_string()),
+            item: Some(ItemKind::SuperJump),
+        },
+        EntitySpec {
+            kind: "item".to_string(),
+            at: (272, 464),
+            size: None,
+            id: Some("speed".to_string()),
+            item: Some(ItemKind::Speed),
+        },
+    ]);
+    item_room.name = Some("c".to_string());
 
     Level {
         version: VERSION,
@@ -178,8 +163,14 @@ fn featureful_level() -> Level {
         rooms: vec![
             left_room,
             start_room,
-            collect_room,
-            plain_room(vec![Goal::ReachExit], vec![entity("exit", (448, 464))]),
+            item_room,
+            plain_room(vec![EntitySpec {
+                kind: "item".to_string(),
+                at: (320, 464),
+                size: None,
+                id: None,
+                item: Some(ItemKind::DoubleJump),
+            }]),
         ],
     }
 }
@@ -197,7 +188,7 @@ fn issues_of(level: &Level, rule: &str) -> Vec<LevelIssue> {
 ///
 /// raw string 的分隔符必须长于 16 个 `#`：示例里的 `"################"` 会让 `"#` 之类的分隔符提前闭合。
 const EXAMPLE_LEVEL_RON: &str = r########################################"(
-    version: 1,
+    version: 3,
     name: "world_01",
     grid: (cols: 2, rows: 1),
     start: (col: 0, row: 0),
@@ -205,9 +196,7 @@ const EXAMPLE_LEVEL_RON: &str = r########################################"(
         // ---- rooms[0] = (col 0, row 0)，起始房间 ----
         (
             name: Some("start"),
-            reward: None,
             spawn: None,
-            goals: [ ReachExit ],
             tiles: [
                 "................",  // 文件第 0 行 = 房间最上一行（本地 y ∈ [0, 32)）
                 "................",
@@ -229,15 +218,13 @@ const EXAMPLE_LEVEL_RON: &str = r########################################"(
             entities: [
                 // at 是 AABB 中心：32x32 实体 ⇒ 该 AABB 为 x[48,80] y[448,480]，正好站在地面上
                 (kind: "player_spawn", at: (64, 464)),
-                (kind: "exit", at: (448, 464)),
+                (kind: "goal", at: (448, 464)),
             ],
         ),
         // ---- rooms[1] = (col 1, row 0) ----
         (
             name: Some("fruit_room"),
-            reward: Some("straw_hat"),
             spawn: None,
-            goals: [ ReachExit, Collect(count: 2) ],
             tiles: [
                 "................",
                 "................",
@@ -257,7 +244,7 @@ const EXAMPLE_LEVEL_RON: &str = r########################################"(
                 "################",
             ],
             entities: [
-                (kind: "exit",           at: (448, 432)),
+                (kind: "item", item: Some(DoubleJump), at: (160, 432)),
                 (kind: "fruit",          at: (208, 432)),
                 (kind: "fruit",          at: (272, 432)),
                 (kind: "fruit",          at: (336, 432)),
@@ -270,7 +257,7 @@ const EXAMPLE_LEVEL_RON: &str = r########################################"(
 
 #[test]
 fn constants_match_conventions() {
-    assert_eq!(VERSION, 2);
+    assert_eq!(VERSION, 3);
     assert_eq!(TILE_PX, 32);
     assert_eq!(ROOM_TILES, 16);
     assert_eq!(ROOM_PX, 512);
@@ -333,8 +320,13 @@ fn legend_covers_all_tile_kinds() {
 }
 
 #[test]
-fn size_or_default_is_tile_px() {
-    let mut spec = entity("fruit", (64, 464));
+fn size_or_default_follows_the_registry() {
+    // 拾取类 = 12×12
+    let pickup = entity("fruit", (64, 464));
+    assert_eq!(pickup.size_or_default(), (PICKUP_SIZE, PICKUP_SIZE));
+    assert_eq!(pickup.size_or_default(), (12, 12));
+    // 其它实体 = 整格 32×32
+    let mut spec = entity("goal", (64, 464));
     assert_eq!(spec.size_or_default(), (TILE_PX, TILE_PX));
     assert_eq!(spec.size_or_default(), (32, 32));
     spec.size = Some((64, 8));
@@ -379,8 +371,6 @@ fn tile_at_flips_y_axis_and_clamps_to_air() {
     let room = Room {
         name: None,
         tiles,
-        goals: vec![Goal::ReachExit],
-        reward: None,
         spawn: None,
         entities: Vec::new(),
     };
@@ -416,14 +406,14 @@ fn tile_at_flips_y_axis_and_clamps_to_air() {
     // 坏数据（行缺失 / 行过短 / 非 legend 字符）一律按 Air 兜底，不得 panic
     let broken = Room {
         tiles: vec!["#".to_string()],
-        ..plain_room(Vec::new(), Vec::new())
+        ..plain_room(Vec::new())
     };
     assert_eq!(broken.tile_at(0, ROOM_TILES - 1), TileKind::Solid);
     assert_eq!(broken.tile_at(1, ROOM_TILES - 1), TileKind::Air);
     assert_eq!(broken.tile_at(0, 0), TileKind::Air, "文件第 15 行不存在");
     let invalid = Room {
         tiles: vec!["x".to_string(); ROOM_TILES],
-        ..plain_room(Vec::new(), Vec::new())
+        ..plain_room(Vec::new())
     };
     assert_eq!(invalid.tile_at(0, 0), TileKind::Air);
 }
@@ -442,21 +432,16 @@ fn read_parses_example_level_from_docs() {
 
     let start_room = &level.rooms[0];
     assert_eq!(start_room.name.as_deref(), Some("start"));
-    assert_eq!(start_room.reward, None);
     assert_eq!(start_room.spawn, None);
-    assert_eq!(start_room.goals, vec![Goal::ReachExit]);
     assert_eq!(start_room.tiles.len(), ROOM_TILES);
     assert_eq!(start_room.tiles[10].chars().count(), 17, "示例的故意错误");
     assert_eq!(start_room.entities.len(), 2);
+    assert_eq!(start_room.entities[1].kind, "goal");
 
     let fruit_room = &level.rooms[1];
     assert_eq!(fruit_room.name.as_deref(), Some("fruit_room"));
-    assert_eq!(fruit_room.reward.as_deref(), Some("straw_hat"));
-    assert_eq!(
-        fruit_room.goals,
-        vec![Goal::ReachExit, Goal::Collect { count: 2 }]
-    );
     assert_eq!(fruit_room.entities.len(), 4);
+    assert_eq!(fruit_room.entities[0].item, Some(ItemKind::DoubleJump));
     assert_eq!(fruit_room.entities[1].at, (208, 432));
 
     // 往返：示例即使带 V5 错误也必须能无损写回、读回
@@ -508,17 +493,16 @@ fn example_level_only_reports_v5_on_the_17_char_line() {
 
 #[test]
 fn write_read_round_trip() {
-    // 边界值也要能无损往返：空 goals/entities、0 起点、最小 size、空 id
+    // 边界值也要能无损往返：空 entities、0 起点、最小 size、空 id
     let mut sparse = valid_level();
     sparse.rooms[0].name = Some("edge".to_string());
-    sparse.rooms[0].goals.clear();
-    sparse.rooms[0].reward = Some("hat".to_string());
     sparse.rooms[0].spawn = Some((0, 0));
     sparse.rooms[0].entities = vec![EntitySpec {
         kind: "player_spawn".to_string(),
         at: (0, 0),
         size: Some((1, 1)),
         id: Some(String::new()),
+        item: None,
     }];
 
     for level in [
@@ -540,12 +524,12 @@ fn write_read_round_trip() {
 fn write_uses_four_space_indent_and_lf() {
     let text = write(&featureful_level());
     assert!(
-        text.contains("\n    version: 2,"),
+        text.contains("\n    version: 3,"),
         "顶层字段应为 4 空格缩进：{text}"
     );
     assert!(!text.contains('\r'), "必须使用 LF 换行：{text}");
     assert!(!text.contains("/*"), "不得枚举数组下标：{text}");
-    assert!(text.contains("goals: [\n"), "数组应逐项换行：{text}");
+    assert!(text.contains("rooms: [\n"), "数组应逐项换行：{text}");
     assert!(
         text.contains("    name: \"featureful\","),
         "字符串按双引号输出：{text}"
@@ -589,57 +573,58 @@ fn read_rejects_lenient_input() {
     );
 
     let no_tiles = r#"(
-        version: 1,
+        version: 3,
         name: "n",
         grid: (cols: 1, rows: 1),
         start: (col: 0, row: 0),
-        rooms: [(goals: [ReachExit], entities: [])],
+        rooms: [(entities: [])],
     )"#;
     assert!(
         matches!(read(no_tiles), Err(LevelError::Parse(_))),
         "缺 tiles"
     );
 
-    // entities / goals 同样是契约字段，不是「可选」
+    // entities 同样是契约字段，不是「可选」
     let no_entities = r#"(
-        version: 1,
+        version: 3,
         name: "n",
         grid: (cols: 1, rows: 1),
         start: (col: 0, row: 0),
-        rooms: [(tiles: [], goals: [ReachExit])],
+        rooms: [(tiles: [])],
     )"#;
     assert!(
         matches!(read(no_entities), Err(LevelError::Parse(_))),
         "缺 entities"
     );
 
-    let no_goals = r#"(
-        version: 1,
+    // v3 不再有 goals / reward 字段：旧字段必须解析失败（而不是被静默忽略）
+    let legacy_goal_field = r#"(
+        version: 3,
         name: "n",
         grid: (cols: 1, rows: 1),
         start: (col: 0, row: 0),
-        rooms: [(tiles: [], entities: [])],
+        rooms: [(tiles: [], goals: [ReachExit], entities: [])],
     )"#;
     assert!(
-        matches!(read(no_goals), Err(LevelError::Parse(_))),
-        "缺 goals"
+        matches!(read(legacy_goal_field), Err(LevelError::Parse(_))),
+        "v3 不得接受已移除的 goals 字段"
     );
 
-    // 未知 Goal 变体
-    let bad_goal = r#"(
-        version: 1,
+    // 未知 ItemKind 变体
+    let bad_item = r#"(
+        version: 3,
         name: "n",
         grid: (cols: 1, rows: 1),
         start: (col: 0, row: 0),
-        rooms: [(tiles: [], goals: [Teleport], entities: [])],
+        rooms: [(tiles: [], entities: [(kind: "item", item: Some(Teleport), at: (64, 64))])],
     )"#;
     assert!(
-        matches!(read(bad_goal), Err(LevelError::Parse(_))),
-        "未知 Goal 变体"
+        matches!(read(bad_item), Err(LevelError::Parse(_))),
+        "未知 ItemKind 变体"
     );
 
     // 拼错的字段名不得被静默忽略（字段名是契约）
-    let typo = write(&featureful_level()).replace("reward", "rewrd");
+    let typo = write(&featureful_level()).replace("item", "itme");
     assert_ne!(typo, write(&featureful_level()));
     assert!(
         matches!(read(&typo), Err(LevelError::Parse(_))),
@@ -656,9 +641,11 @@ fn read_rejects_lenient_input() {
         "尾随垃圾"
     );
 
-    // read 只做解析 + 版本检查；语义违规由 validate 负责（此处 V9/V10 违规但 read 成功）
+    // read 只做解析 + 版本检查；语义违规由 validate 负责（此处 V23 违规但 read 成功）
     let mut level = valid_level();
-    level.rooms[0].goals = vec![Goal::Collect { count: 9 }];
+    level.rooms[0]
+        .entities
+        .retain(|entity| entity.kind != "goal");
     assert_eq!(read(&write(&level)), Ok(level));
 }
 
@@ -701,13 +688,12 @@ fn option_fields_default_to_none() {
     let tiles = vec!["\"................\""; ROOM_TILES].join(", ");
     let text = format!(
         r#"(
-            version: 1,
+            version: 3,
             name: "omitted",
             grid: (cols: 1, rows: 1),
             start: (col: 0, row: 0),
             rooms: [(
                 tiles: [{tiles}],
-                goals: [CollectAll],
                 entities: [(kind: "fruit", at: (64, 464))],
             )],
         )"#
@@ -715,12 +701,11 @@ fn option_fields_default_to_none() {
     let level = read(&text).expect("Option 字段缺省必须按 None 解析");
     let room = &level.rooms[0];
     assert_eq!(room.name, None);
-    assert_eq!(room.reward, None);
     assert_eq!(room.spawn, None);
     assert_eq!(room.entities[0].size, None);
     assert_eq!(room.entities[0].id, None);
-    assert_eq!(room.entities[0].size_or_default(), (32, 32));
-    assert_eq!(room.goals, vec![Goal::CollectAll]);
+    assert_eq!(room.entities[0].item, None);
+    assert_eq!(room.entities[0].size_or_default(), (12, 12));
     assert_eq!(level.rooms.len(), 1);
 }
 
@@ -729,19 +714,17 @@ fn option_fields_parse_from_explicit_some() {
     let tiles = vec!["\"................\""; ROOM_TILES].join(", ");
     let text = format!(
         r#"(
-            version: 1,
+            version: 3,
             name: "explicit",
             grid: (cols: 1, rows: 1),
             start: (col: 0, row: 0),
             rooms: [(
                 name: Some("home"),
-                reward: Some("straw_hat"),
                 spawn: Some((256, 256)),
                 tiles: [{tiles}],
-                goals: [ReachExit, CollectAll, Collect(count: 3)],
                 entities: [
                     (kind: "player_spawn", at: (64, 464), size: Some((16, 24)), id: Some("spawn")),
-                    (kind: "exit", at: (448, 464), size: None, id: None),
+                    (kind: "item", item: Some(Speed), at: (448, 464), size: None, id: None),
                 ],
             )],
         )"#
@@ -749,20 +732,12 @@ fn option_fields_parse_from_explicit_some() {
     let level = read(&text).expect("显式 Some 必须解析");
     let room = &level.rooms[0];
     assert_eq!(room.name.as_deref(), Some("home"));
-    assert_eq!(room.reward.as_deref(), Some("straw_hat"));
     assert_eq!(room.spawn, Some((256, 256)));
-    assert_eq!(
-        room.goals,
-        vec![
-            Goal::ReachExit,
-            Goal::CollectAll,
-            Goal::Collect { count: 3 }
-        ]
-    );
     assert_eq!(room.entities[0].size, Some((16, 24)));
     assert_eq!(room.entities[0].id.as_deref(), Some("spawn"));
     assert_eq!(room.entities[0].size_or_default(), (16, 24));
-    assert_eq!(room.entities[1].size_or_default(), (32, 32));
+    assert_eq!(room.entities[1].item, Some(ItemKind::Speed));
+    assert_eq!(room.entities[1].size_or_default(), (12, 12));
 }
 
 #[test]
@@ -803,20 +778,18 @@ fn validate_accepts_valid_levels() {
 fn validate_returns_all_issues_without_short_circuit() {
     let mut level = valid_level();
     level.name = "Bad Name".to_string();
-    level.rooms[0].goals.clear();
     level.rooms[0].entities.clear();
     level.rooms[0].entities.push(entity("enemy", (96, 464)));
 
     let issues = validate(&level);
-    // 空 goals 不再是问题（V7 已移除），只要求其余规则不被短路
-    assert!(issues_of(&level, "V7").is_empty());
-    for rule in ["V2", "V12", "V14"] {
+    // 清空实体后 goal / player_spawn 也缺失，但所有规则都必须被报告
+    for rule in ["V2", "V12", "V14", "V23"] {
         assert!(
             !issues_of(&level, rule).is_empty(),
             "{rule} 未被报告：{issues:?}"
         );
     }
-    assert!(issues.len() >= 3, "必须一次返回全部问题：{issues:?}");
+    assert!(issues.len() >= 4, "必须一次返回全部问题：{issues:?}");
 }
 
 #[test]
@@ -843,7 +816,7 @@ fn v1_version_must_be_current() {
     assert_eq!(issues[0].severity, Severity::Fatal);
     assert_eq!(issues[0].path, "version");
     assert!(
-        issues[0].message.contains("要求 version == 2"),
+        issues[0].message.contains("要求 version == 3"),
         "{}",
         issues[0].message
     );
@@ -925,10 +898,9 @@ fn v4_room_count_matches_grid() {
     assert!(issues_of(&valid_level(), "V4").is_empty());
 
     let mut level = valid_level();
-    level.rooms.push(plain_room(
-        vec![Goal::ReachExit],
-        vec![entity("exit", (448, 464))],
-    ));
+    level
+        .rooms
+        .push(plain_room(vec![entity("goal", (448, 464))]));
     let issues = issues_of(&level, "V4");
     assert_eq!(issues.len(), 1);
     assert_eq!(issues[0].severity, Severity::Error);
@@ -1007,142 +979,61 @@ fn v6_chars_must_be_in_legend() {
     assert!(issues_of(&level, "V6").is_empty());
 }
 
-/// 「每房至少一个目标」是**设计约束**，不由代码强制：空 goals 必须能通过校验。
+/// v3 用**全关卡唯一的终点实体**取代了房间目标：没有终点就永远无法通关。
 #[test]
-fn empty_goals_are_allowed_by_validation() {
-    let mut level = valid_level();
-    level.rooms[0].goals.clear();
-    let issues = validate(&level);
-    assert!(issues.is_empty(), "空 goals 不应再报错：{issues:?}");
-    assert!(issues_of(&level, "V7").is_empty(), "V7 已移除且不得复用");
+fn v23_exactly_one_goal() {
+    assert!(issues_of(&valid_level(), "V23").is_empty());
 
-    // 正例：单一非 ReachExit 条件仍然合法
+    // 反例：没有终点
     let mut level = valid_level();
-    level.rooms[0].goals = vec![Goal::CollectAll];
-    level.rooms[0].entities.push(entity("fruit", (96, 464)));
-    assert!(validate(&level).is_empty());
-}
-
-#[test]
-fn v8_reach_exit_needs_exactly_one_exit() {
-    assert!(issues_of(&valid_level(), "V8").is_empty());
-
-    let mut level = valid_level();
-    level.rooms[0].entities.retain(|spec| spec.kind != "exit");
-    let issues = issues_of(&level, "V8");
+    level.rooms[0].entities.retain(|spec| spec.kind != "goal");
+    let issues = issues_of(&level, "V23");
     assert_eq!(issues.len(), 1);
     assert_eq!(issues[0].severity, Severity::Error);
-    assert_eq!(issues[0].path, "rooms[0].entities");
-    assert!(
-        issues[0]
-            .message
-            .contains("要求恰好 1 个 exit 实体，实际 0 个")
-    );
+    assert_eq!(issues[0].path, "rooms");
+    assert!(issues[0].message.contains("goal 实体数 0，要求恰好 1 个"));
 
+    // 反例：两个终点
     let mut level = valid_level();
-    level.rooms[0].entities.push(entity("exit", (320, 464)));
-    let issues = issues_of(&level, "V8");
+    level.rooms[0].entities.push(entity("goal", (320, 464)));
+    let issues = issues_of(&level, "V23");
     assert_eq!(issues.len(), 1);
-    assert!(issues[0].message.contains("实际 2 个"));
+    assert!(issues[0].message.contains("goal 实体数 2"));
 
-    // 正例：没有 ReachExit 时不要求 exit
-    let mut level = valid_level();
-    level.rooms[0].goals = vec![Goal::CollectAll];
-    level.rooms[0].entities.retain(|spec| spec.kind != "exit");
-    level.rooms[0].entities.push(entity("fruit", (96, 464)));
-    assert!(issues_of(&level, "V8").is_empty());
-}
-
-#[test]
-fn v9_collect_all_needs_at_least_one_fruit() {
-    let mut level = valid_level();
-    level.rooms[0].goals = vec![Goal::CollectAll];
-    let issues = issues_of(&level, "V9");
-    assert_eq!(issues.len(), 1);
-    assert_eq!(issues[0].severity, Severity::Error);
-    assert_eq!(issues[0].path, "rooms[0].entities");
-    assert!(
-        issues[0]
-            .message
-            .contains("至少 1 个 fruit 实体，实际 0 个")
-    );
-
-    // 正例
-    level.rooms[0].entities.push(entity("fruit", (96, 464)));
-    assert!(issues_of(&level, "V9").is_empty());
-    assert!(
-        validate(&level)
-            .iter()
-            .all(|issue| issue.severity != Severity::Error)
-    );
-}
-
-#[test]
-fn v10_collect_count_within_fruit_count() {
-    // 正例：count == fruit 数
-    assert!(issues_of(&level_with_fruits(2), "V10").is_empty());
-    // 正例：count < fruit 数
-    let mut level = level_with_fruits(3);
-    level.rooms[0].goals = vec![Goal::ReachExit, Goal::Collect { count: 2 }];
-    assert!(issues_of(&level, "V10").is_empty());
-    // 正例：三房间示例的形状（3 个 fruit、要求 2）
-    let example = read(EXAMPLE_LEVEL_RON).expect("示例必须可解析");
-    assert!(issues_of(&example, "V10").is_empty());
-
-    // 反例：count 超过 fruit 数
-    let mut level = level_with_fruits(2);
-    level.rooms[0].goals = vec![Goal::ReachExit, Goal::Collect { count: 3 }];
-    let issues = issues_of(&level, "V10");
-    assert_eq!(issues.len(), 1);
-    assert_eq!(issues[0].severity, Severity::Error);
-    assert_eq!(issues[0].path, "rooms[0].goals[1].count");
-    assert_eq!(
-        issues[0].message,
-        "V10 rooms[0].goals[1].count: 要求 3 个果实，房间内只有 2 个"
-    );
-
-    // 反例：count == 0
-    let mut level = level_with_fruits(2);
-    level.rooms[0].goals = vec![Goal::ReachExit, Goal::Collect { count: 0 }];
-    let issues = issues_of(&level, "V10");
-    assert_eq!(issues.len(), 1);
-    assert!(issues[0].message.contains("count 必须 >= 1"));
-}
-
-#[test]
-fn v11_reward_charset_and_uniqueness() {
-    assert!(issues_of(&valid_level(), "V11").is_empty());
-
-    // 正例：合法且全关卡唯一
+    // 正例：终点可以放在任意房间，不要求在 start 房间
     let mut level = valid_level_2x1();
-    level.rooms[0].reward = Some("straw_hat".to_string());
-    level.rooms[1].reward = Some("scarf".to_string());
-    assert!(issues_of(&level, "V11").is_empty());
+    level.rooms[0].entities.retain(|spec| spec.kind != "goal");
+    level.rooms[1].entities.push(entity("goal", (448, 464)));
+    assert!(issues_of(&level, "V23").is_empty());
+}
 
-    // 反例：字符集
-    let mut level = valid_level_2x1();
-    level.rooms[0].reward = Some("Straw Hat".to_string());
-    let issues = issues_of(&level, "V11");
+/// V24：`kind == "item"` 必须带道具类型；其它 kind 不得带。
+#[test]
+fn v24_item_field_matches_kind() {
+    assert!(issues_of(&featureful_level(), "V24").is_empty());
+
+    // 反例：item 实体缺 item 字段
+    let mut level = valid_level();
+    level.rooms[0].entities.push(entity("item", (96, 464)));
+    let issues = issues_of(&level, "V24");
     assert_eq!(issues.len(), 1);
     assert_eq!(issues[0].severity, Severity::Error);
-    assert_eq!(issues[0].path, "rooms[0].reward");
-    assert!(issues[0].message.contains("不匹配 ^[a-z0-9_]+$"));
+    assert_eq!(issues[0].path, "rooms[0].entities[2].item");
+    assert!(issues[0].message.contains("必须指定道具类型"));
 
-    // 反例：重复
-    let mut level = valid_level_2x1();
-    level.rooms[0].reward = Some("straw_hat".to_string());
-    level.rooms[1].reward = Some("straw_hat".to_string());
-    let issues = issues_of(&level, "V11");
+    // 反例：非 item 实体误带 item 字段
+    let mut level = valid_level();
+    level.rooms[0].entities.push(EntitySpec {
+        kind: "fruit".to_string(),
+        at: (96, 464),
+        size: None,
+        id: None,
+        item: Some(ItemKind::Speed),
+    });
+    let issues = issues_of(&level, "V24");
     assert_eq!(issues.len(), 1);
-    assert_eq!(issues[0].path, "rooms[1].reward");
-    assert!(issues[0].message.contains("与 rooms[0].reward 重复"));
-
-    // 反例：三个房间的第三个重复只报一次
-    let mut level = featureful_level();
-    level.rooms[3].reward = Some("straw_hat".to_string());
-    let issues = issues_of(&level, "V11");
-    assert_eq!(issues.len(), 1);
-    assert_eq!(issues[0].path, "rooms[3].reward");
+    assert_eq!(issues[0].path, "rooms[0].entities[2].item");
+    assert!(issues[0].message.contains("只有 kind = \"item\""));
 }
 
 #[test]
@@ -1255,7 +1146,7 @@ fn v14_kind_must_be_registered() {
         assert!(
             issues[0]
                 .message
-                .contains("player_spawn / exit / fruit / checkpoint")
+                .contains("player_spawn / goal / fruit / checkpoint / item")
         );
     }
 }
@@ -1394,7 +1285,7 @@ fn v18_room_boundary_discontinuity_is_warning() {
 // ---------- v2：调色板 + 迁移（`03` §3.9）----------
 
 #[test]
-fn v1_files_migrate_to_v2_with_builtin_palette() {
+fn v1_files_migrate_to_v3_with_builtin_palette_and_goal() {
     let text = r#"(
         version: 1,
         name: "w",
@@ -1420,6 +1311,14 @@ fn v1_files_migrate_to_v2_with_builtin_palette() {
     assert_eq!(level.palette(), level_format::Level::builtin_palette());
     assert_eq!(level.behavior_of('#'), Some(level_format::Behavior::Solid));
     assert_eq!(level.cell_of('^'), Some(2));
+    // v3 迁移：旧 `exit` 变成 `goal`，房间不再有 goals / reward
+    assert_eq!(level.rooms[0].entities[1].kind, "goal");
+    assert!(
+        level.rooms[0]
+            .entities
+            .iter()
+            .all(|entity| entity.kind != "exit")
+    );
 }
 
 #[test]
@@ -1492,9 +1391,7 @@ fn v19_rejects_bad_palette_entries() {
         start: level_format::RoomCoord { col: 0, row: 0 },
         rooms: vec![level_format::Room {
             name: None,
-            reward: None,
             spawn: None,
-            goals: vec![level_format::Goal::ReachExit],
             tiles: vec![".".repeat(16); 16],
             entities: vec![
                 level_format::EntitySpec {
@@ -1502,12 +1399,14 @@ fn v19_rejects_bad_palette_entries() {
                     at: (64, 464),
                     size: None,
                     id: None,
+                    item: None,
                 },
                 level_format::EntitySpec {
-                    kind: "exit".into(),
+                    kind: "goal".into(),
                     at: (448, 464),
                     size: None,
                     id: None,
+                    item: None,
                 },
             ],
         }],

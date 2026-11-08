@@ -230,8 +230,6 @@ mod tests {
             rooms: vec![Room {
                 name: None,
                 tiles,
-                goals: vec![level_format::Goal::ReachExit],
-                reward: None,
                 spawn: None,
                 entities: vec![
                     level_format::EntitySpec {
@@ -239,12 +237,14 @@ mod tests {
                         at: (64, 64),
                         size: None,
                         id: None,
+                        item: None,
                     },
                     level_format::EntitySpec {
-                        kind: "exit".to_string(),
+                        kind: "goal".to_string(),
                         at: (128, 64),
                         size: None,
                         id: None,
+                        item: None,
                     },
                 ],
             }],
@@ -281,8 +281,6 @@ mod tests {
         let make_room = |tiles: Vec<String>| Room {
             name: None,
             tiles,
-            goals: vec![level_format::Goal::ReachExit],
-            reward: None,
             spawn: None,
             entities: vec![
                 level_format::EntitySpec {
@@ -290,12 +288,14 @@ mod tests {
                     at: (64, 64),
                     size: None,
                     id: None,
+                    item: None,
                 },
                 level_format::EntitySpec {
-                    kind: "exit".to_string(),
+                    kind: "goal".to_string(),
                     at: (128, 64),
                     size: None,
                     id: None,
+                    item: None,
                 },
             ],
         };
@@ -380,8 +380,6 @@ mod tests {
         let make_room = |tiles: Vec<String>| Room {
             name: None,
             tiles,
-            goals: vec![level_format::Goal::ReachExit],
-            reward: None,
             spawn: None,
             entities: vec![
                 level_format::EntitySpec {
@@ -389,12 +387,14 @@ mod tests {
                     at: (64, 64),
                     size: None,
                     id: None,
+                    item: None,
                 },
                 level_format::EntitySpec {
-                    kind: "exit".to_string(),
+                    kind: "goal".to_string(),
                     at: (128, 64),
                     size: None,
                     id: None,
+                    item: None,
                 },
             ],
         };

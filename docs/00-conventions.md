@@ -17,8 +17,8 @@
 | D4 | 房间与相机 | 房间**无缝衔接**；数个房间构成一个关卡；**2D 相机跟随玩家 AABB 中心**，并钳制在关卡 AABB 内（视野不越界） |
 | D5 | 房间尺寸 | **16×16 瓦片 = 512×512 像素（方屏）**；内层视野小于一个房间（尺寸见 `07` §7.1.1）——玩家看不到整间房 |
 | D6 | 关卡数据 | **瓦片网格 + 实体列表（RON）** |
-| D7 | 房间目标 | **通用条件列表（可组合）**；首批条件类型 = `ReachExit` + `Collect` |
-| D8 | 装饰品定位 | **纯外观收集**，不附带能力，不做门禁/回溯 |
+| D7 | 通关目标 | **全关卡唯一的终点实体（`goal`）**；任一玩家触碰即记录该玩家通关时间，全员到达后结算 |
+| D8 | 道具定位 | **临时能力**（高跳 / 快跑 / 双跳）；角色同时只携带一个，二次拾取覆盖；不持久化、不叠加 |
 | D9 | 美术资源 | 暂无，**先用程序化占位资产**；美术后置替换 |
 | D10 | 开发工具 | 自研地图设计工具，供开发快速搭平台 + 就地试玩 |
 
@@ -33,7 +33,7 @@
 | D15 | 依赖策略 | 只引入 `bevy` + `serde` + `ron`；编辑器额外 `bevy_egui`。**不引入**物理/瓦片/补间/输入/HUD/网络第三方 crate（0.20 上多数尚不可用，见 `09`）。联机只用 `std::net::UdpSocket` |
 | D16 | 输入抽象 | 直接用 `ButtonInput<KeyCode>`，但在 `input` 模块内收敛为按玩家编号索引的 `PlayerInputs.slots`。理由：不引依赖，同时支持本地双人与远程玩家输入 |
 | D17 | 存档 | 自研 `SaveData`（RON）写入平台数据目录，路径由 `save_path()` 单一函数决定。**客户端联机时不写本地存档** |
-| D18 | 联机模型 | **主机权威**的 UDP 点对点：主机跑全部物理/死亡/目标，客户端只发输入、应用快照，并对自己控制的角色做本地预测（不做回滚）；局域网房间用 UDP 查询/响应发现；单房间最多 4 名玩家（含主机）。每个进程的相机跟随自己的玩家；本地双人左右分屏。见 `05` §5.15、`07` §7.2.2 |
+| D18 | 联机模型 | **主机权威**的 UDP 点对点：主机跑全部物理/死亡/终点/计时，客户端只发输入、应用快照，并对自己控制的角色做本地预测（不做回滚）；局域网房间用 UDP 查询/响应发现；单房间最多 4 名玩家（含主机）。每个进程的相机跟随自己的玩家；本地双人左右分屏。见 `05` §5.15、`07` §7.2.2 |
 
 ---
 
@@ -42,7 +42,7 @@
 | 文档 | 主题 | 内容所有者 |
 |---|---|---|
 | `00-conventions.md` | 契约、坐标、命名、Z 层、常量归属 | 本文 |
-| `01-game-design.md` | 核心循环、房间目标、装饰品、通关与范围 | 玩法常量、目标类型语义 |
+| `01-game-design.md` | 核心循环、终点、道具、计时评分与范围 | 玩法常量、终点/道具语义 |
 | `02-world-and-rooms.md` | 房间网格、世界拓扑、相机行为、房间状态 | 房间/相机逻辑常量 |
 | `03-level-format.md` | `.level.ron` 数据格式与校验规则 | 格式字段与校验 |
 | `04-assets.md` | 美术资源规格、命名、占位资产、图集 | 资源路径与尺寸 |
@@ -137,11 +137,11 @@ Bevy 0.20 的 2D 透明排序依据**视图空间 Z**，且排序不稳定 ⇒ *
 | 房间背景板 | `-50.0` | `07` |
 | 瓦片贴花（草、砖纹） | `-10.0` | `07` |
 | **实体瓦片** | `0.0` | `07` |
-| 可拾取物（果实） | `20.0` | `07` |
+| **可拾取物（果实 / 道具）** | `20.0` | `07` |
 | **存档点标记** | `21.0` | `07` |
+| **终点** | `22.0` | `07` |
 | 敌人 | `30.0` | `07` |
 | **角色本体** | `40.0 + 0.1 × 玩家编号`（`0..=3` ⇒ `40.0..=40.3`） | `07` |
-| 装饰品图层 | `41.0 + layer_index`，`layer_index ∈ 0..=6`（层数、槽位语义与上限见 `04` §6.1） | `04` |
 | 粒子 / 特效 | `60.0` | `07` |
 | 前景瓦片 | `70.0` | `07` |
 | 世界空间文字（`Text2d`） | `80.0` | `07` |
@@ -162,7 +162,7 @@ Bevy 0.20 的 2D 透明排序依据**视图空间 Z**，且排序不稳定 ⇒ *
 | 组件 | 名词，`PascalCase` | `Player`, `Solid`, `Grounded`, `Reward` |
 | 标记组件 | 名词，加 `Marker` 后缀避免歧义 | `PlayerMarker` |
 | 资源 | 名词，`PascalCase` | `SaveData`, `LevelHandles`, `CameraTarget` |
-| 消息（buffered） | **过去式** | `RoomCleared`, `DecorationGranted` |
+| 消息（buffered） | **过去式** | `ItemPicked`, `PlayerFinished` |
 | 事件（observer） | **命令式/名词化动作** | `TriggerRoomGoal`, `OnPlayerDied` |
 | 系统 | `动词_名词`，`snake_case` | `apply_gravity`, `resolve_solid_collisions` |
 | 常量 | `SCREAMING_SNAKE_CASE`，按主题分组在 `config.rs` 的模块中 | `physics::GRAVITY` |
@@ -174,7 +174,7 @@ Bevy 0.20 的 2D 透明排序依据**视图空间 Z**，且排序不稳定 ⇒ *
 |---|---|---|
 | 关卡文件 | `assets/levels/<level_id>.level.ron`，文件内 `name` **必须**等于 `<level_id>`（校验强制） | `assets/levels/world_01.level.ron` |
 | 图集 | 无 padding、无 margin、严格 32×32 网格 | `assets/sprites/player/cat_sheet.png` |
-| 装饰品 id | `snake_case`，与 `assets/sprites/decorations/<id>.png` 同名 | `straw_hat` |
+| 装饰品 id | — | 已移除（v3） |
 | 瓦片图集 | 单一图集 `assets/sprites/tiles/tileset.png`，索引由 `03` 的 legend 固定 | — |
 | 房间 id | **不存字符串**，由 `(col, row)` 推导 | — |
 
@@ -190,7 +190,7 @@ animj/
 ├─ assets/                    # 运行时资产根（两个 bin 共用，见 05 §资产路径）
 │  ├─ levels/
 │  ├─ config/                 # 项目级玩法配置：player.ron（全局玩家碰撞，06 §6.5.1）
-│  ├─ sprites/{player,tiles,decorations,ui,backgrounds}/
+│  ├─ sprites/{player,tiles,ui,backgrounds}/
 │  └─ fonts/
 └─ crates/
    ├─ level_format/           # lib：纯 serde 数据 + 解析 + 校验，不依赖 bevy
@@ -208,7 +208,7 @@ animj/
 
 - `Level.version: u32`，当前 **`2`**。
 - Loader 遇到不认识的 `version` **必须硬失败并给出清晰错误**，禁止猜测或宽容解析。
-- 版本升级时在 `crates/level_format/src/migrate.rs` 提供 `migrate_vN_to_vN1`，并在 `03` 记录变更历史。
+- 版本升级时在 `crates/level_format/src/io.rs` 的 `read()` 内提供旧结构迁移，并在 `03` 记录变更历史。
 
 ---
 
@@ -219,10 +219,9 @@ animj/
 | **Level（关卡）** | 一个 `.level.ron` 文件描述的完整地图 = `cols × rows` 个房间 |
 | **Room（房间）** | 关卡网格中的一个格子 = 16×16 瓦片（视野小于房间，见 `07` §7.1.1） |
 | **Tile（瓦片）** | 32×32 像素的地形单元，类型由 legend 决定 |
-| **Goal（目标）** | 一个房间的通关条件集合，见 `01` §目标条件 |
-| **Condition（条件）** | Goal 的一项，如 `ReachExit` / `Collect(n)` |
-| **Reward（奖励）** | 房间达成目标后授予的装饰品 id |
-| **Decoration（装饰品）** | 纯外观图层，叠加在角色 sprite 上 |
+| **Goal（终点）** | 全关卡唯一的 `goal` 实体；玩家触碰即记录通关时间（`01` §1.4） |
+| **Item（道具）** | 可拾取的能力来源：`SuperJump` / `Speed` / `DoubleJump`；同时只携带一个 |
+| **RunState（本局状态）** | 计时、每名玩家的通关时间与结算标记（`crates/game/src/run.rs`） |
 | **Solid / OneWay / Hazard** | 瓦片的三类可交互语义，见 `03` 与 `06` |
 | **Viewport（视口）** | 内层离屏渲染目标（尺寸见 `07` §7.1.1），像素完美管线的逻辑屏幕 |
 | **Session（会话）** | 一局游戏的玩家构成：`Solo` / `LocalCoop` / `Host` / `Client`（`SessionMode`，见 `05` §5.5） |

@@ -7,7 +7,6 @@ use bevy::prelude::*;
 
 use crate::checkpoint::ActiveCheckpoint;
 use crate::player::PlayerMotion;
-use crate::player::decor::Decorations;
 use crate::render::tiles::RoomRoot;
 use crate::room::RoomZone;
 use crate::state::{GameState, StartupFlow};
@@ -108,7 +107,7 @@ fn start_flow(
 /// 回到主菜单时销毁整局世界（玩家、瓦片、房间实体）并清掉关卡级资源。
 ///
 /// 不这样做的话，下一次「开始游戏」会在旧实体之上再生成一套：两个玩家、两套瓦片、
-/// 相机/房间判定随机命中其中之一。装饰品重置为默认值，避免上一局的装备泄漏到新游戏。
+/// 相机/房间判定随机命中其中之一。
 ///
 /// `RoomRoot` 与房间子实体是 `ChildOf` 关系；Bevy 0.20 的 `despawn` 会递归销毁子树
 /// （`render/tiles.rs` 的热重载重建依赖同一行为）。
@@ -127,6 +126,6 @@ fn teardown_level(
     commands.remove_resource::<PendingLevel>();
     commands.insert_resource(crate::room::PickedZones::default());
     commands.insert_resource(ActiveCheckpoint::default());
-    commands.insert_resource(Decorations::default());
+    commands.insert_resource(crate::run::RunState::default());
     commands.insert_resource(CurrentRoom::default());
 }

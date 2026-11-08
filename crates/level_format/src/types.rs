@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use crate::legend::TileKind;
 
 /// 本引擎支持的关卡文件版本号。见 `docs/03-level-format.md` §3.8
-pub const VERSION: u32 = 2;
+pub const VERSION: u32 = 3;
 /// 瓦片边长（像素）。见 `docs/00-conventions.md` §0.3
 pub const TILE_PX: i32 = 32;
 /// 房间边长（瓦片）。见 `docs/00-conventions.md` §0.3
@@ -426,11 +426,6 @@ pub struct Room {
     pub name: Option<String>,
     /// 恰好 16 行、每行恰好 16 个 legend 字符；第 0 行 = 房间最上一行。
     pub tiles: Vec<String>,
-    /// 房间目标条件。允许为空（设计上要求至少一个，但**不在代码里强制**）；空列表运行时永不满足。
-    pub goals: Vec<Goal>,
-    /// 装饰品 id；`None` = 本房间不授予装饰品。
-    #[serde(default)]
-    pub reward: Option<String>,
     /// 重生点（房间局部坐标，AABB 中心）；`None` = 用 `docs/02-world-and-rooms.md` 的默认值。
     #[serde(default)]
     pub spawn: Option<(i32, i32)>,
@@ -452,20 +447,60 @@ pub struct EntitySpec {
     /// 可选稳定标识，供编辑器与后续逻辑引用。
     #[serde(default)]
     pub id: Option<String>,
+    /// 道具类型；仅 `kind == "item"` 时有效（V24）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub item: Option<ItemKind>,
 }
 
-/// 房间目标条件；条件之间是 AND。见 `docs/03-level-format.md` §3.5
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
-pub enum Goal {
-    /// 玩家 AABB 与房间内的 exit 区域相交（该房间需恰好 1 个 exit，见 V8）。
-    ReachExit,
-    /// 该房间所有 fruit 已收集（该房间需至少 1 个 fruit，见 V9）。
-    CollectAll,
-    /// 该房间已收集 fruit >= `count`（`1 <= count <=` 房间内 fruit 数，见 V10）。
-    Collect {
-        /// 需要的果实数量。
-        count: u32,
-    },
+/// 可拾取道具的**能力类型**。见 `docs/03-level-format.md` §3.4、`docs/06-physics-and-movement.md` §6.12。
+///
+/// 玩家同一时刻至多携带一个道具；再次拾取会覆盖当前道具（不叠加）。
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ItemKind {
+    /// 跳得更高（起跳初速倍率）。
+    SuperJump,
+    /// 跑得更快（水平最大速度倍率）。
+    Speed,
+    /// 二段跳（离地后再起跳一次）。
+    DoubleJump,
+}
+
+impl ItemKind {
+    /// 编辑器/UI 的稳定短 id（与 RON 枚举名一致）。
+    pub fn id(self) -> &'static str {
+        match self {
+            ItemKind::SuperJump => "SuperJump",
+            ItemKind::Speed => "Speed",
+            ItemKind::DoubleJump => "DoubleJump",
+        }
+    }
+
+    /// 展示用中文名（UI 另按语言本地化，这里只给调试/日志）。
+    pub fn label(self) -> &'static str {
+        match self {
+            ItemKind::SuperJump => "高跳",
+            ItemKind::Speed => "快跑",
+            ItemKind::DoubleJump => "双跳",
+        }
+    }
+
+    /// 网络快照里的稳定编号（0 = 无道具）。
+    pub fn code(self) -> u8 {
+        match self {
+            ItemKind::SuperJump => 1,
+            ItemKind::Speed => 2,
+            ItemKind::DoubleJump => 3,
+        }
+    }
+
+    pub fn from_code(code: u8) -> Option<Self> {
+        match code {
+            1 => Some(ItemKind::SuperJump),
+            2 => Some(ItemKind::Speed),
+            3 => Some(ItemKind::DoubleJump),
+            _ => None,
+        }
+    }
 }
 
 /// `(col, row)` 在行主序 `rooms` 数组中的下标 = `row * cols + col`。见 `docs/00-conventions.md` §0.3
@@ -501,10 +536,18 @@ impl Room {
     }
 }
 
+/// 拾取类实体（`fruit` / `item`）的默认 AABB 边长（像素）。见 `docs/03-level-format.md` §3.4。
+pub const PICKUP_SIZE: i32 = 12;
+
 impl EntitySpec {
-    /// 实体 AABB 尺寸；未显式给出时取注册表默认值 `(TILE_PX, TILE_PX)`。见 `docs/03-level-format.md` §3.4
+    /// 实体 AABB 尺寸；未显式给出时取注册表默认值（`03` §3.4）：
+    /// `fruit` / `item` = [`PICKUP_SIZE`]，其余 = `TILE_PX`。
     pub fn size_or_default(&self) -> (i32, i32) {
-        self.size.unwrap_or((TILE_PX, TILE_PX))
+        let default = match self.kind.as_str() {
+            "fruit" | "item" => (PICKUP_SIZE, PICKUP_SIZE),
+            _ => (TILE_PX, TILE_PX),
+        };
+        self.size.unwrap_or(default)
     }
 }
 

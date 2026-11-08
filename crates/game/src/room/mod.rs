@@ -1,18 +1,13 @@
-//! 房间：当前房间判定、条件求值、通关与奖励。所有者文档：`docs/01-game-design.md` §1.4/§1.6、
-//! `docs/02-world-and-rooms.md` §2.2/§2.3。
+//! 房间：当前房间判定与房间内实体的传感器。所有者文档：`docs/02-world-and-rooms.md` §2.2/§2.4、
+//! `docs/01-game-design.md` §1.4（终点）/§1.5（道具）。
 //!
-//! 分工：
-//! - [`goals`]：**纯函数**条件求值（`01` §1.4）。
-//! - [`reward`]：`RoomCleared` → 幂等授予装饰品（`01` §1.5）。
-//! - 本文件：房间判定（含滞回）、房间内实体的传感器、通关判定、全通检查。
-
-pub mod goals;
-pub mod reward;
+//! 房间**不再承载通关目标**：终点（`goal`）是全关卡唯一的实体，触碰即由 [`crate::run`] 记录成绩。
+//! 本模块只保留：房间切换（含滞回）、果实拾取、房间实体标识。
 
 use std::collections::BTreeSet;
 
 use bevy::prelude::*;
-use level_format::Room;
+use level_format::ItemKind;
 
 use crate::config::physics::PICKUP_INFLATE;
 use crate::config::room::ROOM_SWITCH_HYSTERESIS;
@@ -24,26 +19,12 @@ use crate::world::CurrentRoom;
 use crate::world::load::LoadedLevel;
 use crate::world::progress::LevelProgress;
 
-use goals::RoomRuntime;
-
 // ---------- 消息（`05` §5.6）----------
 
 /// 玩家进入了新房间（`02` §2.2）。
 #[derive(Message, Debug, Clone, Copy)]
 pub struct RoomEntered {
     pub room_index: u32,
-}
-
-/// 房间首次满足全部目标（单调，一个房间最多一次）。
-#[derive(Message, Debug, Clone, Copy)]
-pub struct RoomCleared {
-    pub room_index: u32,
-}
-
-/// 装饰品被授予（幂等：已拥有的不会重复发）。
-#[derive(Message, Debug, Clone)]
-pub struct DecorationGranted {
-    pub decoration_id: String,
 }
 
 /// 拾取了一颗果实（`06` §6.5.4）。
@@ -57,8 +38,10 @@ pub struct CollectiblePicked {
 /// 房间实体的种类（由 `world/load.rs` 生成）。
 #[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RoomZoneKind {
-    /// `exit` 区域：与玩家 AABB 相交即满足 `ReachExit`（`06` §6.5.5）。
-    Exit,
+    /// `goal` 区域：与玩家 AABB 相交即该玩家到达终点（`01` §1.4）。
+    Goal,
+    /// `item`：拾取后覆盖角色当前道具（`01` §1.5、`06` §6.12）。
+    Item(ItemKind),
     /// `fruit`：与玩家（外扩 `PICKUP_INFLATE`）相交即拾取（`06` §6.5.4）。
     Fruit,
     /// `checkpoint`：玩家在区域内按 `E` 设为存档点（`02` §2.5）。
@@ -75,23 +58,12 @@ pub struct RoomZone {
     pub at: (i32, i32),
 }
 
-/// 本固定步的出口探针结果（每步覆写；由 `check_pickups_and_zones` 写、`evaluate_goals` 读）。
-///
-/// 为什么用"每步覆写"而不是"进入即标记"：`ReachExit` 的语义是**玩家位于区域内**，
-/// 与收集类条件必须**同时**成立（`01` §1.4），离开区域后不再满足。
-///
-/// 多玩家：记录**有玩家站在出口里**的房间集合（不同玩家可能在不同房间）。
-#[derive(Resource, Debug, Default, Clone)]
-pub struct ExitProbe {
-    pub rooms: BTreeSet<u32>,
-}
-
-/// 房间实体的稳定编号（生成顺序）。联机快照用它告诉客户端「哪些果实已被拾取」
+/// 房间实体的稳定编号（生成顺序）。联机快照用它告诉客户端「哪些实体已被拾取」
 /// （`05` §5.15.3）。
 #[derive(Component, Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ZoneId(pub u32);
 
-/// 已被拾取并销毁的房间实体编号。客户端据此销毁对应果实（`05` §5.15.3）。
+/// 已被拾取并销毁的房间实体编号。客户端据此销毁对应实体（`05` §5.15.3）。
 #[derive(Resource, Debug, Default, Clone)]
 pub struct PickedZones(pub BTreeSet<u32>);
 
@@ -143,14 +115,11 @@ pub struct RoomPlugin;
 impl Plugin for RoomPlugin {
     fn build(&self, app: &mut App) {
         app.add_message::<RoomEntered>()
-            .add_message::<RoomCleared>()
-            .add_message::<DecorationGranted>()
             .add_message::<CollectiblePicked>()
-            .init_resource::<ExitProbe>()
             .init_resource::<PickedZones>()
             .add_systems(
                 FixedUpdate,
-                check_pickups_and_zones
+                collect_fruit
                     .in_set(GameSet::Physics)
                     .run_if(in_state(GameState::Playing))
                     .run_if(crate::net::not_client),
@@ -161,14 +130,6 @@ impl Plugin for RoomPlugin {
                     .chain()
                     .in_set(GameSet::Room)
                     .run_if(in_state(GameState::Playing)),
-            )
-            .add_systems(
-                Update,
-                (evaluate_goals, reward::grant_rewards, check_level_complete)
-                    .chain()
-                    .in_set(GameSet::Room)
-                    .run_if(in_state(GameState::Playing))
-                    .run_if(crate::net::not_client),
             );
     }
 }
@@ -184,7 +145,6 @@ pub fn track_current_room(
         return;
     };
     // 焦点玩家 = 客户端自己的编号；其它模式 = 编号最小者（主机/单人/P1）。
-    // 目标判定按**每个玩家各自的房间**做，这里只维护 HUD/调试用的焦点房间（`02` §2.2）。
     let focus = client
         .as_ref()
         .and_then(|client| client.player_id)
@@ -241,14 +201,12 @@ pub fn aabb_overlaps(a: &Aabb, b: &Aabb) -> bool {
     a.min.x < b.max.x && b.min.x < a.max.x && a.min.y < b.max.y && b.min.y < a.max.y
 }
 
-/// 房间内实体传感器：拾取果实、探测出口。只在**当前房间**内判定（`01` §1.4）。
-#[allow(clippy::too_many_arguments)]
-pub fn check_pickups_and_zones(
+/// 房间内实体传感器：拾取果实。道具由 `player::items`、终点由 `run` 各自处理。
+pub fn collect_fruit(
     loaded: Option<Res<LoadedLevel>>,
     progress: Option<ResMut<LevelProgress>>,
-    mut probe: ResMut<ExitProbe>,
     mut picked_zones: ResMut<PickedZones>,
-    players: Query<(&PlayerId, &PlayerMotion)>,
+    players: Query<&PlayerMotion>,
     zones: Query<(Entity, &RoomZone, Option<&ZoneId>)>,
     mut commands: Commands,
     mut picked: MessageWriter<CollectiblePicked>,
@@ -257,129 +215,34 @@ pub fn check_pickups_and_zones(
         return;
     };
     let grid = (loaded.level.grid.cols, loaded.level.grid.rows);
-    probe.rooms.clear();
-
-    // 玩家按房间分组；每个实体只判定一次（两个玩家同时压在同一颗果实上不能算两颗）。
-    let players: Vec<(u32, (u32, u32), Aabb)> = players
+    let players: Vec<((u32, u32), Aabb)> = players
         .iter()
-        .filter_map(|(_, motion)| {
+        .filter_map(|motion| {
             let pos = world_to_room(motion.0.aabb.center(), grid.0, grid.1)?;
-            Some((
-                level_format::room_index(pos.col, pos.row, grid.0) as u32,
-                (pos.col, pos.row),
-                motion.0.aabb,
-            ))
+            Some(((pos.col, pos.row), motion.0.aabb))
         })
         .collect();
 
     for (entity, zone, zone_id) in &zones {
-        match zone.kind {
-            RoomZoneKind::Exit => {
-                if players.iter().any(|(room, _, aabb)| {
-                    *room == zone.room_index && aabb_overlaps(aabb, &zone.aabb)
-                }) {
-                    probe.rooms.insert(zone.room_index);
-                }
-            }
-            RoomZoneKind::Fruit => {
-                // 拾取外扩 `PICKUP_INFLATE`：差一点也算吃到（`06` §6.5.4）
-                let Some((room, (col, row), _)) = players
-                    .iter()
-                    .find(|(room, _, aabb)| {
-                        *room == zone.room_index
-                            && aabb_overlaps(&aabb.inset(-PICKUP_INFLATE), &zone.aabb)
-                    })
-                    .map(|(room, coord, aabb)| (*room, *coord, *aabb))
-                else {
-                    continue;
-                };
-                let total = progress.collect_fruit(col, row);
-                if let Some(zone_id) = zone_id {
-                    picked_zones.0.insert(zone_id.0);
-                }
-                picked.write(CollectiblePicked { room_index: room });
-                commands.entity(entity).despawn();
-                info!("收集果实：房间 ({}, {}) 累计 {total}", col, row);
-            }
-            // 存档点由 `checkpoint::activate_checkpoint` 按 `E` 激活（`02` §2.5）。
-            RoomZoneKind::Checkpoint => {}
+        if zone.kind != RoomZoneKind::Fruit {
+            continue;
         }
-    }
-}
-
-/// 房间内的果实总数（`CollectAll` 用）。
-pub fn fruit_count(room: &Room) -> u32 {
-    room.entities
-        .iter()
-        .filter(|entity| entity.kind == "fruit")
-        .count() as u32
-}
-
-/// 当前房间的条件求值；满足且此前未通关 ⇒ 标记通关并发 `RoomCleared`（单调）。
-pub fn evaluate_goals(
-    loaded: Option<Res<LoadedLevel>>,
-    probe: Res<ExitProbe>,
-    progress: Option<ResMut<LevelProgress>>,
-    players: Query<&PlayerMotion>,
-    mut cleared: MessageWriter<RoomCleared>,
-) {
-    let (Some(loaded), Some(mut progress)) = (loaded, progress) else {
-        return;
-    };
-    let cols = loaded.level.grid.cols;
-    let rows = loaded.level.grid.rows;
-
-    // 只判定**有玩家在内**的房间；多玩家跨房间时各自房间都会判定。
-    let mut occupied = BTreeSet::new();
-    for motion in &players {
-        if let Some(pos) = world_to_room(motion.0.aabb.center(), cols, rows) {
-            occupied.insert(level_format::room_index(pos.col, pos.row, cols) as u32);
-        }
-    }
-
-    for room_index in occupied {
-        let col = room_index % cols;
-        let row = room_index / cols;
-        let Some(room_data) = loaded.level.rooms.get(room_index as usize) else {
+        let Some((col, row)) = players
+            .iter()
+            .find(|(_, aabb)| aabb_overlaps(&aabb.inset(-PICKUP_INFLATE), &zone.aabb))
+            .map(|(coord, _)| *coord)
+        else {
             continue;
         };
-        let Some(room_progress) = progress.room(col, row).copied() else {
-            continue;
-        };
-        if room_progress.cleared {
-            continue;
+        let total = progress.collect_fruit(col, row);
+        if let Some(zone_id) = zone_id {
+            picked_zones.0.insert(zone_id.0);
         }
-        let runtime = RoomRuntime {
-            at_exit: probe.rooms.contains(&room_index),
-            collected_fruit: room_progress.collected_fruit,
-            total_fruit: fruit_count(room_data),
-        };
-        if !goals::goals_satisfied(&room_data.goals, &runtime) {
-            continue;
-        }
-        progress.mark_cleared(col, row);
-        info!(
-            "房间 ({}, {}) 通关（{}/{}）",
-            col,
-            row,
-            progress.cleared_count(),
-            progress.rooms.len()
-        );
-        cleared.write(RoomCleared { room_index });
-    }
-}
-
-/// 全部房间通关 ⇒ 进入结算（`01` §1.6）。
-pub fn check_level_complete(
-    progress: Option<Res<LevelProgress>>,
-    mut next: ResMut<NextState<GameState>>,
-) {
-    let Some(progress) = progress else {
-        return;
-    };
-    if progress.all_cleared() {
-        info!("全部房间通关（{} 个），进入结算", progress.rooms.len());
-        next.set(GameState::GameComplete);
+        picked.write(CollectiblePicked {
+            room_index: zone.room_index,
+        });
+        commands.entity(entity).despawn();
+        info!("收集果实：房间 ({}, {}) 累计 {total}", col, row);
     }
 }
 
@@ -389,17 +252,10 @@ mod tests {
     use level_format::ROOM_PX;
 
     use super::*;
+    use crate::config::room::ROOM_SWITCH_HYSTERESIS;
     use crate::coords::room_center;
 
     const GRID: (u32, u32) = (10, 3);
-
-    fn runtime(at_exit: bool, collected: u32, total: u32) -> RoomRuntime {
-        RoomRuntime {
-            at_exit,
-            collected_fruit: collected,
-            total_fruit: total,
-        }
-    }
 
     /// 房间内任意位置都不触发切换。
     #[test]
@@ -478,166 +334,5 @@ mod tests {
         let overlapping = Aabb::from_center_size(Vec2::new(9.0, 0.0), Vec2::splat(10.0));
         assert!(!aabb_overlaps(&a, &touching));
         assert!(aabb_overlaps(&a, &overlapping));
-    }
-
-    /// M4 全链路（无头、确定性）：拾取 → 通关 → 授奖 → 全通结算。
-    ///
-    /// 不用 `--demo` 验证这一段：脚本输入无法可靠地"跳过错落在地面的出口"或"从平台右缘
-    /// 落进尖刺不被杀"，端到端必须靠确定性的系统级测试。
-    #[test]
-    fn m4_pipeline_pickup_clear_reward_complete() {
-        use bevy::ecs::system::RunSystemOnce;
-        use bevy::state::app::StatesPlugin;
-        use level_format::{EntitySpec, Goal, Grid, Room, RoomCoord};
-
-        use crate::config::physics::{PICKUP_SIZE, PLAYER_SIZE};
-        use crate::physics::Body;
-        use crate::player::PlayerStepOutcome;
-        use crate::player::decor::Decorations;
-        use crate::tiles::LevelTiles;
-        use crate::world::progress::LevelProgress;
-
-        fn spec(kind: &str, at: (i32, i32)) -> EntitySpec {
-            EntitySpec {
-                kind: kind.to_string(),
-                at,
-                size: None,
-                id: None,
-            }
-        }
-
-        // 1 个房间：ReachExit + Collect(1)，奖励 item_01；1 个果实 + 1 个出口
-        let level = level_format::Level {
-            version: level_format::VERSION,
-            name: "m4".to_string(),
-            grid: Grid { cols: 1, rows: 1 },
-            start: RoomCoord { col: 0, row: 0 },
-            tileset: None,
-            tileset_columns: 8,
-            palette: Vec::new(),
-            background: None,
-            rooms: vec![Room {
-                name: None,
-                reward: Some("item_01".to_string()),
-                spawn: None,
-                goals: vec![Goal::ReachExit, Goal::Collect { count: 1 }],
-                tiles: vec!["................".to_string(); 16],
-                entities: vec![spec("exit", (448, 464)), spec("fruit", (200, 464))],
-            }],
-        };
-        let rows = level.grid.rows;
-        let world_of = |at: (i32, i32)| {
-            crate::coords::room_local_to_world(0, 0, rows, Vec2::new(at.0 as f32, at.1 as f32))
-        };
-
-        let mut app = App::new();
-        app.add_plugins(StatesPlugin)
-            .add_message::<CollectiblePicked>()
-            .add_message::<RoomCleared>()
-            .add_message::<DecorationGranted>()
-            .init_resource::<ExitProbe>()
-            .init_resource::<PickedZones>()
-            .init_resource::<Decorations>()
-            .init_state::<GameState>();
-        app.insert_resource(LoadedLevel {
-            level: level.clone(),
-            handle: Handle::default(),
-        })
-        .insert_resource(LevelTiles::from_level(&level))
-        .insert_resource(LevelProgress::from_level(&level))
-        .insert_resource(CurrentRoom { col: 0, row: 0 });
-
-        // ---- 1) 玩家站在果实上 ⇒ 拾取 ----
-        let fruit_center = world_of((200, 464));
-        let player = app
-            .world_mut()
-            .spawn((
-                PlayerId(0),
-                PlayerMotion(Body::at_center(fruit_center)),
-                PlayerStepOutcome::default(),
-            ))
-            .id();
-        let fruit = app
-            .world_mut()
-            .spawn(RoomZone {
-                room_index: 0,
-                kind: RoomZoneKind::Fruit,
-                aabb: Aabb::from_center_size(fruit_center, Vec2::splat(PICKUP_SIZE)),
-                at: (200, 464),
-            })
-            .id();
-        app.world_mut()
-            .run_system_once(check_pickups_and_zones)
-            .expect("传感器");
-        assert_eq!(
-            app.world()
-                .resource::<LevelProgress>()
-                .room(0, 0)
-                .unwrap()
-                .collected_fruit,
-            1,
-            "果实应计入进度"
-        );
-        assert!(
-            app.world().get_entity(fruit).is_err(),
-            "拾取后实体应被销毁（幂等）"
-        );
-
-        // ---- 2) 玩家走到出口（条件此时才同时成立）⇒ 通关 ----
-        let exit_center = world_of((448, 464));
-        app.world_mut().spawn(RoomZone {
-            room_index: 0,
-            kind: RoomZoneKind::Exit,
-            aabb: Aabb::from_center_size(exit_center, Vec2::splat(32.0)),
-            at: (448, 464),
-        });
-        app.world_mut()
-            .get_mut::<PlayerMotion>(player)
-            .unwrap()
-            .0
-            .aabb = Aabb::from_center_size(exit_center, PLAYER_SIZE);
-        app.world_mut()
-            .run_system_once(check_pickups_and_zones)
-            .expect("传感器");
-        app.world_mut()
-            .run_system_once(evaluate_goals)
-            .expect("条件求值");
-        assert!(
-            app.world()
-                .resource::<LevelProgress>()
-                .room(0, 0)
-                .unwrap()
-                .cleared,
-            "两个条件同时满足 ⇒ 房间通关"
-        );
-
-        // ---- 3) 授奖（幂等）----
-        app.world_mut()
-            .run_system_once(reward::grant_rewards)
-            .expect("授奖");
-        assert!(
-            app.world().resource::<Decorations>().has("item_01"),
-            "通关应授予房间奖励"
-        );
-
-        // ---- 4) 全部房间通关 ⇒ 进入结算 ----
-        app.world_mut()
-            .run_system_once(check_level_complete)
-            .expect("全通检查");
-        match app.world().resource::<NextState<GameState>>() {
-            NextState::Pending(GameState::GameComplete) => {}
-            other => panic!("全部房间 cleared 应进入结算，实际 {other:?}"),
-        }
-    }
-
-    /// 组合条件：必须先收够果实、再站进出口区域（`01` §1.4）。
-    #[test]
-    fn combined_goals_require_both_at_the_same_time() {
-        let goals = [
-            level_format::Goal::ReachExit,
-            level_format::Goal::Collect { count: 2 },
-        ];
-        assert!(!goals::goals_satisfied(&goals, &runtime(false, 3, 3)));
-        assert!(goals::goals_satisfied(&goals, &runtime(true, 2, 3)));
     }
 }

@@ -9,9 +9,9 @@ Bevy **0.20** 像素风 2D 平台跳跃游戏的规范文档集。**本目录是
 | 位置 | 内容 |
 |---|---|
 | `crates/level_format/` | 关卡数据结构、legend、`read`/`write`、V1–V18 校验（**零 bevy 依赖**，36 个测试） |
-| `crates/game/` | 玩法 crate：**主菜单 / 关卡选择 / 设置（音量、全屏、中/英语言，默认中文；UI 窗口相机）**、**存档读档**、暂停菜单与装饰品装备、**角色帧动画**、双层像素相机、像素吸附、瓦片渲染 + 房间裁剪、关卡加载 + 校验 + 热重载、房间判定（8 px 滞回）、**相机跟随玩家（钳制在地图内）**、**条件求值/拾取/通关/授奖/结算**、HUD（进度 + 提示条 + 结算面板）、调试叠层；bin `animj` |
+| `crates/game/` | 玩法 crate：**主菜单 / 关卡选择 / 设置（音量、全屏、中/英语言，默认中文；UI 窗口相机）**、**存档读档**、暂停菜单、**角色帧动画**、双层像素相机、像素吸附、瓦片渲染 + 房间裁剪、关卡加载 + 校验 + 热重载、房间判定（8 px 滞回）、**相机跟随玩家（钳制在地图内）**、**道具拾取/覆盖、终点判定、计时与分数结算**、HUD（计时 + 道具 + 提示条 + 结算面板）、调试叠层；bin `animj` |
 | `crates/editor/` | lib `editor`（会话/撤销/相机/投影/Gizmos/工具/面板/试玩）+ bin `animj-editor`、bin `animj-dev`（`validate-levels` / `gen-placeholder-assets`） |
-| `assets/` | 占位资产（图集 + 30 件装饰品 + 7 个音效 WAV + `anim/player.anim.ron`，规格符合 `04`）+ `world_01.level.ron`（10×3 = 30 房间；两处竖井带单向台阶可上行，保存即热重载） |
+| `assets/` | 占位资产（图集 + 6 个音效 WAV + `anim/player.anim.ron`，规格符合 `04`）+ `world_01.level.ron`（10×3 = 30 房间；两处竖井带单向台阶可上行，保存即热重载） |
 
 常用命令（别名见 `.cargo/config.toml`，纪律与判据见 `AGENTS.md` §4）：
 
@@ -23,14 +23,14 @@ cargo game -- --demo click --frames 120              # 注入 PointerInput 点�
 cargo game -- --demo settings --frames 140           # 设置冒烟：音量/全屏/语言（切到 English 并写 settings.ron）
 cargo game -- --frames 90 --screenshot target/m0 --hide-ui  # 直接进默认关卡；导出画布与窗口（关 UI，供逐像素比较）
 cargo game -- --demo jump --frames 3000             # 脚本输入跑一段：日志给出每次跳跃的实测峰值
-cargo game -- --demo walk --frames 3000             # 走过房间边界与出口：日志给出房间切换、通关（M4）
+cargo game -- --demo walk --frames 3000             # 走过房间边界：日志给出房间切换与计时
 cargo game -- --demo hop --frames 3000              # 连续小跳：检查平台/尖刺/果实几何（不是通关判据）
 cargo game -- --demo pause --frames 120 --screenshot target/pause  # 暂停菜单冒烟（Esc 在无头会话不可注入）
-cargo editor                                         # 打开编辑器（M5：画瓦片 / 放实体 / 改条件 / 保存 / F5 试玩）
+cargo editor                                         # 打开编辑器（M5：画瓦片 / 放实体 / 改道具与终点 / 保存 / F5 试玩）
 cargo editor -- --frames 140 --demo-play             # 自动化：进入试玩→退出，并断言编辑缓冲未变
 cargo dev-cli -- validate-levels --deny-warnings     # 关卡体检（退出码 0 才算过）
 cargo dev-cli -- gen-placeholder-assets --check      # 占位资产防漂移（逐字节比对）
-cargo test-all                                       # 全仓测试（当前 162 项：level_format 41（39 集成 + 2 单元）+ game 90 + editor 31）
+cargo test-all                                       # 全仓测试（level_format / game / editor）
 ```
 
 进度：**M0–M8 ✅**（编辑器遗留 5 项已补齐；可选细化见 `08` §8.10.5）。M1–M8 的完成判据见 `01` §1.9；各模块「已落地 / 尚未落地」见 `05` §5.2 的进度注记。
@@ -64,10 +64,10 @@ flowchart LR
 | — | [`AGENTS.md`](AGENTS.md) | 开发纪律、完成定义、验证命令矩阵、标准流程 checklist |
 | — | [`README.md`](README.md) | 本文件：索引与状态 |
 | `00` | [`00-conventions.md`](00-conventions.md) | **契约**：已锁定决策、坐标系统、命名、Z 层、常量归属、目录布局 |
-| `01` | [`01-game-design.md`](01-game-design.md) | 核心循环、房间目标条件、装饰品、通关、里程碑与非目标 |
+| `01` | [`01-game-design.md`](01-game-design.md) | 核心循环、终点、道具、计时评分、里程碑与非目标 |
 | `02` | [`02-world-and-rooms.md`](02-world-and-rooms.md) | 房间网格、无缝衔接、相机跟随与地图边界、房间状态、重生 |
 | `03` | [`03-level-format.md`](03-level-format.md) | `.level.ron` schema、legend、实体注册表、校验规则 V1–V18 |
-| `04` | [`04-assets.md`](04-assets.md) | 美术资源规格、图集、锚点、帧动画、装饰品图层、占位资产 |
+| `04` | [`04-assets.md`](04-assets.md) | 美术资源规格、图集、锚点、帧动画、道具占位、占位资产 |
 | `05` | [`05-architecture.md`](05-architecture.md) | crate 划分、模块树、插件、调度顺序、消息、测试策略 |
 | `06` | [`06-physics-and-movement.md`](06-physics-and-movement.md) | AABB 碰撞算法、移动手感常量、宽容机制 |
 | `07` | [`07-rendering.md`](07-rendering.md) | 像素完美双层相机、采样/MSAA/色调映射、像素吸附、瓦片渲染、UI 设计系统（调色板/组件/焦点/HUD） |

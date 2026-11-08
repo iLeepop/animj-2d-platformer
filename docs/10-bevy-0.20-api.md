@@ -220,20 +220,20 @@ fn go(mut next: ResMut<NextState<AppState>>) { next.set_if_different(AppState::P
 - 便捷标记组件 `DespawnOnEnter<S>` / `DespawnOnExit<S>`（在 prelude）。【已验证】<https://docs.rs/bevy/0.20.0/bevy/prelude/index.html>
 - `SubStates` 的 derive 语法：`#[source(AppState = AppState::Playing)]`。【已验证】<https://docs.rs/bevy/0.20.0/bevy/prelude/trait.SubStates.html>
 
-### 10.2.5 Message（buffered / 拉取式）——本项目「房间达成」「拾取」等一律用这个
+### 10.2.5 Message（buffered / 拉取式）——本项目「拾取」「到达终点」等一律用这个
 
 ```rust
 #[derive(Message)]
-struct RoomCleared { col: u32, row: u32 }
+struct ItemPickedMsg { player: u8, kind: u8 }
 
-fn emit(mut w: MessageWriter<RoomCleared>) { w.write(RoomCleared { col: 1, row: 0 }); }
+fn emit(mut w: MessageWriter<ItemPickedMsg>) { w.write(ItemPickedMsg { player: 0, kind: 1 }); }
 
-fn consume(mut r: MessageReader<RoomCleared>) {
-    for m in r.read() { info!("cleared {} {}", m.col, m.row); }
+fn consume(mut r: MessageReader<ItemPickedMsg>) {
+    for m in r.read() { info!("picked {} {}", m.player, m.kind); }
 }
 
 // 注册（缺了就收不到消息）
-fn build(app: &mut App) { app.add_message::<RoomCleared>(); }
+fn build(app: &mut App) { app.add_message::<ItemPickedMsg>(); }
 
 // Commands / World 侧
 fn quit(mut commands: Commands) { commands.write_message(AppExit::Success); }
@@ -260,16 +260,16 @@ fn fire(mut commands: Commands) { commands.trigger(LevelRestart); }
 
 // 定向到实体的 —— 必须 EntityEvent
 #[derive(EntityEvent)]
-struct CollectReward { entity: Entity, reward: u32 }
+struct ItemPickedEvent { entity: Entity, kind: u32 }
 
 fn build2(app: &mut App) {
-    app.add_observer(|e: On<CollectReward>| {
+    app.add_observer(|e: On<ItemPickedEvent>| {
         let _target = e.entity;      // 目标实体字段
-        let _hint = e.event().reward; // 事件负载
+        let _hint = e.event().kind;  // 事件负载
     });
 }
 // 实体级 observer：
-// commands.spawn(Player).observe(|e: On<CollectReward>| { /* ... */ });
+// commands.spawn(Player).observe(|e: On<ItemPickedEvent>| { /* ... */ });
 
 // 沿 ChildOf 向上冒泡（0.20 写法）
 #[derive(EntityEvent)]
@@ -703,7 +703,7 @@ use bevy::ui_widgets::{Activate, Button};
 |---|---|---|
 | 1 | **Observer 去掉 `B: Bundle` 泛型**：`On<Add, A>` → `On<Add<A>>` | 组件新增/移除的 observer 全部改写；`#[require]` 相关的观察逻辑受影响 |
 | 2 | **指针事件扁平化**：`Pointer<Press>` → `PointerPress` | 编辑器（`08`）拖拽/框选、菜单点击全受影响；`PointerEvent` trait 用于泛型 |
-| 3 | **`Sprite` 迁到 Mesh2d/Material2d**，新增 `alpha_mode`；**同 Z 的绘制顺序可能变化** | 直接威胁像素风叠层正确性 ⇒ 所有 sprite 必须显式分级 Z，Z 取值见 `00` §0.4；手写 `Sprite { .. }` 必须 `..default()`；角色与装饰品（`04`）的叠层顺序受此影响 |
+| 3 | **`Sprite` 迁到 Mesh2d/Material2d**，新增 `alpha_mode`；**同 Z 的绘制顺序可能变化** | 直接威胁像素风叠层正确性 ⇒ 所有 sprite 必须显式分级 Z，Z 取值见 `00` §0.4；手写 `Sprite { .. }` 必须 `..default()`；角色/可拾取物/终点的叠层顺序受此影响 |
 | 4 | **`SpriteMaterial` → `SpriteMeshMaterial`** | 若将来做角色描边/闪白等自定义 sprite 材质，用 `MaterialExtension2d`/`ExtendedMaterial2d` |
 | 5 | **文本字号/字体源**：`TextFont::default()` 从 `Px(20)` 变 `Rem(1.)`；`font` 变 `FontSource`；`FontSource::SansSerif` → `sans_serif()`；新增 `Val::Em`/`Val::Rem`，`Val::resolve` 增参 | HUD（`07`）与编辑器（`08`）里**所有文本必须显式 `FontSize::Px(..)`**，否则会跟随 `RemSize` 漂移 |
 | 6 | **状态 API 改名**：`NextState::set_if_neq` → `set_if_different` | 房间/游戏状态切换代码统一用新名 |

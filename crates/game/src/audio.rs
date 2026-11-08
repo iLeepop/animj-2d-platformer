@@ -8,7 +8,8 @@ use bevy::prelude::*;
 
 use crate::player::PlayerStepOutcome;
 use crate::player::death::PlayerDied;
-use crate::room::{CollectiblePicked, DecorationGranted, RoomCleared};
+use crate::room::CollectiblePicked;
+use crate::run::PlayerFinished;
 use crate::state::{GameSet, GameState};
 
 /// 首批 cue（`04` §6.9.1）。
@@ -19,7 +20,6 @@ pub enum AudioCue {
     Bump,
     Pickup,
     Clear,
-    Decoration,
     Death,
 }
 
@@ -32,7 +32,6 @@ impl AudioCue {
             AudioCue::Bump => "audio/bump.wav",
             AudioCue::Pickup => "audio/pickup.wav",
             AudioCue::Clear => "audio/clear.wav",
-            AudioCue::Decoration => "audio/decoration.wav",
             AudioCue::Death => "audio/death.wav",
         }
     }
@@ -88,18 +87,15 @@ fn play_room_fx(
     mut commands: Commands,
     assets: Res<AssetServer>,
     mut picked: MessageReader<CollectiblePicked>,
-    mut cleared: MessageReader<RoomCleared>,
-    mut granted: MessageReader<DecorationGranted>,
+    mut finished: MessageReader<PlayerFinished>,
     mut died: MessageReader<PlayerDied>,
 ) {
     let picked_any = picked.read().count() > 0;
-    let cleared_any = cleared.read().count() > 0;
-    let granted_any = granted.read().count() > 0;
+    let finished_any = finished.read().count() > 0;
     let died_any = died.read().count() > 0;
     for (triggered, cue) in [
         (picked_any, AudioCue::Pickup),
-        (cleared_any, AudioCue::Clear),
-        (granted_any, AudioCue::Decoration),
+        (finished_any, AudioCue::Clear),
         (died_any, AudioCue::Death),
     ] {
         if triggered {
@@ -120,7 +116,6 @@ mod tests {
             AudioCue::Bump,
             AudioCue::Pickup,
             AudioCue::Clear,
-            AudioCue::Decoration,
             AudioCue::Death,
         ] {
             let path = cue.file();

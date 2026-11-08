@@ -59,12 +59,8 @@ pub const PLAYER_SHEET_ROWS: u32 = 4;
 /// 而 `00` §0.4 的 Z 表一直排到 `-100`（远景视差）。相机放在 `999.9` 会把 `-100` 推到近平面之外而整体不可见。
 pub const CAMERA_Z: f32 = 0.0;
 
-/// Z 层常量名。**数值一律来自 `docs/00-conventions.md` §0.4**，本文件不另行决定。
-/// HUD 提示条（通关/获奖）的显示时长（秒）。见 `07` §7.10.4。
+/// HUD 提示条（拾取道具 / 到达终点）的显示时长（秒）。见 `07` §7.10.4。
 pub const HUD_TOAST_SECS: f32 = 2.5;
-
-/// 装饰品槽位数（`04` §6.1）：`layer_index ∈ 0..DECORATION_LAYERS`。
-pub const DECORATION_LAYERS: usize = 7;
 
 pub mod z {
     /// 远景视差。见 `00` §0.4。
@@ -79,6 +75,8 @@ pub mod z {
     pub const PICKUP: f32 = 20.0;
     /// 存档点标记。见 `00` §0.4。
     pub const CHECKPOINT: f32 = 21.0;
+    /// 终点。见 `00` §0.4。
+    pub const GOAL: f32 = 22.0;
     /// 敌人。见 `00` §0.4。
     pub const ENEMY: f32 = 30.0;
     /// 角色本体基准。见 `00` §0.4。
@@ -91,8 +89,6 @@ pub mod z {
     pub fn player_z(player: u8) -> f32 {
         PLAYER + player as f32 * 0.1
     }
-    /// 装饰品图层基准：实际 Z = `DECORATION_BASE + layer_index`（槽位见 `04` §6.1）。
-    pub const DECORATION_BASE: f32 = 41.0;
     /// 粒子 / 特效。见 `00` §0.4。
     pub const PARTICLE: f32 = 60.0;
     /// 前景瓦片。见 `00` §0.4。

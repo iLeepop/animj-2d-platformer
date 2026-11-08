@@ -4,8 +4,8 @@
 
 /// 协议版本。客户端与主机不一致时拒绝加入（`05` §5.15.2）。
 ///
-/// v3：`PlayerSnap` 增加 `last_input_seq`（客户端预测的确认序号）。
-pub const PROTOCOL_VERSION: u16 = 3;
+/// v4：移除房间通关位图，增加本局计时、每名玩家的道具 / 二段跳状态 / 通关时间。
+pub const PROTOCOL_VERSION: u16 = 4;
 
 /// 局域网发现与游戏共用的 UDP 端口（`05` §5.15.2）。
 pub const NET_PORT: u16 = 42345;
@@ -67,9 +67,6 @@ pub const PLAYER_SPAWN_GAP_PX: f32 = 24.0;
 
 /// 多人出生点的左右搜索次数（每侧）：找不到空位时退化为按编号偏移。
 pub const SPAWN_PLACEMENT_TRIES: usize = 8;
-
-/// 快照通关位图覆盖的房间上限（`u64`，与 `01` §1.8 的单关卡上限一致）。
-pub const SNAPSHOT_MAX_ROOMS: usize = 64;
 
 /// 联机房间的默认显示名（`05` §5.15.4）。
 pub const DEFAULT_ROOM_NAME: &str = "animj LAN";

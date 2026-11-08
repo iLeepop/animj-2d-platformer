@@ -610,85 +610,42 @@ fn right_panel(ui: &mut egui::Ui, session: &mut EditorSession) {
             });
         }
         ui.separator();
-        ui.heading(format!(
-            "选中房间 ({}, {})",
-            session.current_room.0, session.current_room.1
+        ui.heading("全关卡实体");
+        ui.label(format!(
+            "终点 {} 个（要求恰好 1）",
+            session
+                .doc
+                .rooms
+                .iter()
+                .flat_map(|room| room.entities.iter())
+                .filter(|entity| entity.kind == "goal")
+                .count()
         ));
-        let mut reward = session.room().reward.clone().unwrap_or_else(String::new);
-        ui.horizontal(|ui| {
-            ui.label("reward");
-            if ui.text_edit_singleline(&mut reward).changed() {
-                session.begin_edit();
-                let trimmed = reward.trim();
-                session.set_reward(if trimmed.is_empty() {
-                    None
-                } else {
-                    Some(trimmed.to_string())
-                });
-            }
-        });
-        ui.separator();
-        ui.heading("目标");
-        for (index, goal) in session.room().goals.clone().into_iter().enumerate() {
-            ui.horizontal(|ui| {
-                match goal {
-                    level_format::Goal::ReachExit => {
-                        ui.label("到达出口");
-                    }
-                    level_format::Goal::CollectAll => {
-                        ui.label("收集全部");
-                    }
-                    level_format::Goal::Collect { count } => {
-                        ui.label("收集");
-                        let mut value = count;
-                        if ui
-                            .add(egui::DragValue::new(&mut value).range(1..=255))
-                            .changed()
-                        {
-                            session.begin_edit();
-                            let mut goals = session.room().goals.clone();
-                            goals[index] = level_format::Goal::Collect { count: value };
-                            session.set_goals(goals);
-                        }
-                    }
-                }
-                if ui.button("x").clicked() {
-                    session.begin_edit();
-                    let mut goals = session.room().goals.clone();
-                    goals.remove(index);
-                    session.set_goals(goals);
-                }
-            });
-        }
-        ui.horizontal(|ui| {
-            if ui.button("+ 到达出口").clicked() {
-                session.begin_edit();
-                let mut goals = session.room().goals.clone();
-                goals.push(level_format::Goal::ReachExit);
-                session.set_goals(goals);
-            }
-            if ui.button("+ 收集").clicked() {
-                session.begin_edit();
-                let mut goals = session.room().goals.clone();
-                goals.push(level_format::Goal::Collect { count: 1 });
-                session.set_goals(goals);
-            }
-            if ui.button("+ 收集全部").clicked() {
-                session.begin_edit();
-                let mut goals = session.room().goals.clone();
-                goals.push(level_format::Goal::CollectAll);
-                session.set_goals(goals);
-            }
-        });
         ui.separator();
         ui.heading("实体笔刷");
-        for kind in ["fruit", "exit", "checkpoint", "player_spawn"] {
+        for kind in ["fruit", "goal", "checkpoint", "player_spawn", "item"] {
             if ui
                 .selectable_label(session.entity_kind == kind, kind)
                 .clicked()
             {
                 session.entity_kind = kind.to_string();
             }
+        }
+        if session.entity_kind == "item" {
+            ui.horizontal(|ui| {
+                for item in [
+                    level_format::ItemKind::SuperJump,
+                    level_format::ItemKind::Speed,
+                    level_format::ItemKind::DoubleJump,
+                ] {
+                    if ui
+                        .selectable_label(session.entity_item == item, item.label())
+                        .clicked()
+                    {
+                        session.entity_item = item;
+                    }
+                }
+            });
         }
         ui.separator();
         // 实体按房间管理：只显示**当前房间**的列表；切房间后列表随 `current_room` 切换。
@@ -1173,9 +1130,7 @@ mod tests {
             rooms: (0..6)
                 .map(|_| level_format::Room {
                     name: None,
-                    reward: None,
                     spawn: None,
-                    goals: vec![level_format::Goal::ReachExit],
                     tiles: vec![".".repeat(16); 16],
                     entities: vec![],
                 })

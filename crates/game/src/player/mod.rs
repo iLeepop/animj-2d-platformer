@@ -7,8 +7,8 @@
 
 pub mod collision;
 pub mod death;
-pub mod decor;
 pub mod input;
+pub mod items;
 pub mod spawn;
 
 use bevy::prelude::*;
@@ -102,25 +102,23 @@ pub struct PlayerPlugin;
 
 impl Plugin for PlayerPlugin {
     fn build(&self, app: &mut App) {
-        app.add_plugins((input::PlayerInputPlugin, death::PlayerDeathPlugin))
-            .insert_resource(collision::PlayerCollision::load())
-            .init_resource::<PlayerInputs>()
-            .init_resource::<decor::Decorations>()
-            .add_systems(
-                Update,
-                (
-                    update_player_facing.run_if(crate::net::not_client),
-                    decor::sync_decoration_layers,
-                    decor::sync_decoration_facing,
-                )
-                    .chain(),
-            )
-            .add_systems(
-                FixedUpdate,
-                apply_player_physics
-                    .in_set(GameSet::Physics)
-                    .run_if(crate::net::not_client),
-            );
+        app.add_plugins((
+            input::PlayerInputPlugin,
+            death::PlayerDeathPlugin,
+            items::ItemPlugin,
+        ))
+        .insert_resource(collision::PlayerCollision::load())
+        .init_resource::<PlayerInputs>()
+        .add_systems(
+            Update,
+            (update_player_facing.run_if(crate::net::not_client),),
+        )
+        .add_systems(
+            FixedUpdate,
+            apply_player_physics
+                .in_set(GameSet::Physics)
+                .run_if(crate::net::not_client),
+        );
     }
 }
 
@@ -146,7 +144,13 @@ pub fn apply_player_physics(
     mut inputs: ResMut<PlayerInputs>,
     collision: Res<collision::PlayerCollision>,
     tiles: Option<Res<LevelTiles>>,
-    mut players: Query<(Entity, &PlayerId, &mut PlayerMotion, &mut PlayerStepOutcome)>,
+    mut players: Query<(
+        Entity,
+        &PlayerId,
+        &mut PlayerMotion,
+        &mut PlayerStepOutcome,
+        &items::CarriedItem,
+    )>,
 ) {
     // 关卡尚未加载时没有瓦片数据：物理不推进（此时 `GameState` 还在 Loading，本系统不会被门控触发，
     // 但保持 Option 以防编辑器/测试场景只加了 PlayerPlugin）。
@@ -154,19 +158,22 @@ pub fn apply_player_physics(
         return;
     };
     // 全局玩家碰撞尺寸覆盖默认常量；其余手感参数仍来自 `DEFAULT_PHYSICS`（`06` §6.2.4）。
-    let mut cfg = crate::config::physics::DEFAULT_PHYSICS;
-    cfg.player_size = collision.size_vec();
+    let base_cfg = {
+        let mut cfg = crate::config::physics::DEFAULT_PHYSICS;
+        cfg.player_size = collision.size_vec();
+        cfg
+    };
 
     // 查询迭代顺序不稳定：先按 id 排序，保证同一输入序列在所有机器上得到同一结果。
     let mut order: Vec<(PlayerId, Entity)> = players
         .iter()
-        .map(|(entity, id, _, _)| (*id, entity))
+        .map(|(entity, id, _, _, _)| (*id, entity))
         .collect();
     order.sort_by_key(|(id, _)| *id);
 
     let mut aabbs: Vec<(PlayerId, Aabb)> = players
         .iter()
-        .map(|(_, id, motion, _)| (*id, motion.0.aabb))
+        .map(|(_, id, motion, _, _)| (*id, motion.0.aabb))
         .collect();
     aabbs.sort_by_key(|(id, _)| *id);
 
@@ -178,9 +185,12 @@ pub fn apply_player_physics(
             .filter(|(other, _)| *other != id)
             .map(|(_, aabb)| *aabb)
             .collect();
-        let Ok((_, _, mut motion, mut outcome)) = players.get_mut(entity) else {
+        let Ok((_, _, mut motion, mut outcome, carried)) = players.get_mut(entity) else {
             continue;
         };
+        // 道具只修正本玩家本步的参数副本（`06` §6.12）。
+        let mut cfg = base_cfg;
+        items::apply_item_to_physics(&mut cfg, carried.0);
         let mut out = StepOutcome::default();
         step_with_players(
             &cfg,
@@ -248,9 +258,7 @@ mod tests {
             background: None,
             rooms: vec![Room {
                 name: None,
-                reward: None,
                 spawn: None,
-                goals: vec![],
                 tiles: vec![".".repeat(level_format::ROOM_TILES); level_format::ROOM_TILES],
                 entities: vec![],
             }],

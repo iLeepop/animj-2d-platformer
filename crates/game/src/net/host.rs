@@ -393,7 +393,13 @@ pub fn broadcast_snapshot(
     progress: Option<Res<LevelProgress>>,
     picked: Option<Res<PickedZones>>,
     active: Option<Res<ActiveCheckpoint>>,
-    players: Query<(&PlayerId, &PlayerMotion, &PlayerFacing)>,
+    run: Option<Res<crate::run::RunState>>,
+    players: Query<(
+        &PlayerId,
+        &PlayerMotion,
+        &PlayerFacing,
+        &crate::player::items::CarriedItem,
+    )>,
 ) {
     let Some(host) = host.as_mut() else {
         return;
@@ -407,7 +413,7 @@ pub fn broadcast_snapshot(
 
     let mut snaps: Vec<PlayerSnap> = players
         .iter()
-        .map(|(id, motion, facing)| PlayerSnap {
+        .map(|(id, motion, facing, item)| PlayerSnap {
             id: id.0,
             x: motion.0.aabb.center().x,
             y: motion.0.aabb.center().y,
@@ -415,6 +421,9 @@ pub fn broadcast_snapshot(
             vy: motion.0.vel.y,
             grounded: motion.0.grounded,
             facing_right: facing.0,
+            item: item.0,
+            air_jumps_used: motion.0.air_jumps_used,
+            finish: run.as_ref().and_then(|run| run.time_of(*id)),
             // 主机自己控制的玩家没有上行输入；远程玩家回带最后收到的序号。
             last_input_seq: host
                 .clients
@@ -425,24 +434,16 @@ pub fn broadcast_snapshot(
         .collect();
     snaps.sort_by_key(|player| player.id);
 
-    let (cleared, fruits) = progress
+    let fruits = progress
         .as_ref()
         .map(|progress| {
-            let cleared = progress
-                .rooms
-                .iter()
-                .enumerate()
-                .filter(|(_, room)| room.cleared)
-                .map(|(index, _)| index as u32)
-                .collect();
-            let fruits = progress
+            progress
                 .rooms
                 .iter()
                 .enumerate()
                 .filter(|(_, room)| room.collected_fruit > 0)
                 .map(|(index, room)| (index as u32, room.collected_fruit))
-                .collect();
-            (cleared, fruits)
+                .collect()
         })
         .unwrap_or_default();
     let picked_zones = picked
@@ -457,8 +458,8 @@ pub fn broadcast_snapshot(
     let player_count = snaps.len();
     let message = NetMessage::Snapshot(Snapshot {
         seq: host.seq,
+        run_elapsed: run.as_ref().map_or(0.0, |run| run.elapsed),
         players: snaps,
-        cleared,
         fruits,
         picked: picked_zones,
         checkpoint,

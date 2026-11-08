@@ -24,7 +24,7 @@ flowchart LR
 | 文件 | 内容 |
 |---|---|
 | `lib.rs` | 重导出 + crate 文档 |
-| `types.rs` | `Level` / `Room` / `EntitySpec` / `Goal` / `Grid` / `RoomCoord`（见 `03` §3.2） |
+| `types.rs` | `Level` / `Room` / `EntitySpec` / `ItemKind` / `Grid` / `RoomCoord`（见 `03` §3.2） |
 | `legend.rs` | 字符 ↔ `TileKind` 映射（见 `03` §3.3） |
 | `io.rs` | `read()` / `write()` 单入口（见 `03` §3.1） |
 | `validate.rs` | `validate()` 纯函数，返回全部 `LevelIssue`（见 `03` §3.7） |
@@ -50,30 +50,28 @@ flowchart LR
 | `level_asset.rs` | `Level` 的 Bevy `Asset` 包装 + `AssetLoader` 注册 + `Asset` 事件热重载 |
 | `world/load.rs` | `StartRequest`/`LoadMode` → 校验 → 生成瓦片 sprite → 生成实体与角色 → 放置玩家 |
 | `world/progress.rs` | `LevelProgress` / `RoomProgress`（见 `02` §2.3） |
-| `player/decor.rs` | 装饰品装备与图层渲染（`01` §1.5、`04` §6） |
+| `player/items.rs` | 道具拾取/覆盖（`CarriedItem`）、能力修正（`apply_item_to_physics`，`01` §1.5、`06` §6.12） |
+| `run.rs` | 本局计时、终点判定、全员到达后的结算与分数（`RunState`，`01` §1.4–§1.6） |
 | `checkpoint.rs` | 存档点：`E` 激活、`ActiveCheckpoint`、死亡/启动落点（`02` §2.5） |
 | `camera/rig.rs` | 每个视图的相机跟随：自己的玩家 AABB 中心 + 地图钳制（无平滑，`02` §2.2） |
-| `room/mod.rs` | 当前房间判定（含滞回） |
-| `room/goals.rs` | **纯函数**条件求值 + 通关判定（`01` §1.4） |
-| `room/reward.rs` | 授予装饰品（幂等） |
+| `room/mod.rs` | 当前房间判定（含滞回）、房间实体传感器（果实） |
 | `render/pixel_camera.rs` | 多视图相机（1–2 台内层世界 / 外层整数缩放 / UI 窗口）+ `ViewLayout` + `UiScale = k`（`07` §7.1.2、§7.2.2、§7.10.1） |
 | `render/snap.rs` | 像素吸附 + `Aabb → Transform` 投影（`06` §6.8.2） |
 | `render/tiles.rs` | 瓦片 sprite 批量生成 + 房间可见性裁剪 |
 | `render/parallax.rs` | 2D 视差背景（`03` §3.10 / `07` §7.13）：贴图平铺、相位与滚动、编辑器预览覆盖、mtime 重载 |
 | `render/sprite_anim.rs` | 自写帧动画（`04` §5） |
-| `render/hud.rs` | 屏幕空间 HUD（目标药丸 / 独立提示条 / 结算面板） |
-| `render/pause.rs` | 暂停菜单 + 装饰品装备界面（`Esc` 开关；含「设置」「主菜单」入口） |
+| `render/hud.rs` | 屏幕空间 HUD（计时/道具药丸 / 独立提示条 / 结算面板） |
+| `render/pause.rs` | 暂停菜单（`Esc` 开关；含「设置」「主菜单」入口） |
 | `render/menu.rs` | 主菜单 / 关卡选择 / 联机 / 设置界面（仅发布 bin；`05` §5.5、`07` §7.10.5） |
 | `render/ui_kit.rs` | UI 设计系统组件：调色板角色、按钮/卡片/面板、`Hovered`/`Pressed`/`Outline` 反馈、`TabNavigationPlugin` |
 | `render/debug.rs` | gizmos 网格、`F3` 调试开关、诊断行（dev feature，见 `07` §7.9） |
 | `anim_data.rs` | 角色动画数据（`assets/anim/player.anim.ron`，`04` §5.5）：类型/校验/加载器/内置回退 |
 | `save/mod.rs` | `SaveData` + `save_path()` + 原子写（M6） |
 
-> **当前进度（2026-10-20，M8）**：已落地 `lib.rs` / `config/{mod,physics,render,room,net}.rs` / `coords.rs` / `physics/**` /
-> `player/{mod,input,spawn,death,decor,collision}.rs` / `demo.rs` / `tiles.rs` / `state.rs` / `settings.rs` / `level_asset.rs` /
-> `world/{mod,load,progress}.rs`（加载 + 校验 + 热重载 + 进度）/ `room/{mod,goals,reward}.rs`（房间判定、
-> 传感器、条件求值、授奖、全通）/ `camera/{mod,rig}.rs`（多玩家中点 + 地图钳制）/
-> `net/{mod,protocol,discovery,host,client}.rs`（本地双人之外的局域网联机）/
+> **当前进度（2026-11-08，M9）**：已落地 `lib.rs` / `config/{mod,physics,render,room,net}.rs` / `coords.rs` / `physics/**` /
+> `player/{mod,input,spawn,death,items,collision}.rs` / `run.rs` / `demo.rs` / `tiles.rs` / `state.rs` / `settings.rs` / `level_asset.rs` /
+> `world/{mod,load,progress}.rs`（加载 + 校验 + 热重载 + 进度）/ `room/mod.rs`（房间判定与传感器）/
+> `camera/{mod,rig}.rs` / `net/{mod,protocol,discovery,host,client}.rs` /
 > `render/{mod,pixel_camera,snap,tiles,hud,pause,menu,debug}.rs` / `save/mod.rs`。
 > **尚未落地**：编辑器侧的区域框选（已明确移除，见 `08` §8.10.5）。
 > 不要去找不存在的文件。
@@ -111,20 +109,22 @@ flowchart LR
 | `WorldPlugin` | 关卡加载与生成、热重载（校验通过才替换）、`LevelProgress` | `LevelAssetPlugin` |
 | `PhysicsPlugin` | — （M1 起物理并入 `PlayerPlugin`：`FixedUpdate` 的 `GameSet::Physics`；将来多实体物理再拆出） | `TilePlugin` |
 | `TilePlugin` | `RoomTiles` 存储与查询 | `WorldPlugin` |
-| `PlayerPlugin` | 输入采样、物理步推进、朝向（输入方向 ⇒ `PlayerFacing`，`01` §1.3）、Hazard 死亡与重生（`02` §2.5、`06` §6.1.5/§6.5.3）、全局玩家碰撞配置加载（`06` §6.5.1） | `TilePlugin` |
+| `PlayerPlugin` | 输入采样、物理步推进、道具能力修正、朝向（输入方向 ⇒ `PlayerFacing`，`01` §1.3）、Hazard 死亡与重生（`02` §2.5、`06` §6.1.5/§6.5.3）、全局玩家碰撞配置加载（`06` §6.5.1） | `TilePlugin` |
+| `ItemPlugin` | 道具拾取与覆盖（`FixedUpdate`，`06` §6.12） | `PlayerPlugin` |
+| `RunPlugin` | 本局计时、终点触碰、全员到达结算（`01` §1.4–§1.6） | `PlayerPlugin` |
 | `CheckpointPlugin` | `E` 激活存档点、当前存档点状态与标记高亮（`02` §2.5） | `PlayerPlugin`、`RoomPlugin` |
 | `PlayerSpawnPlugin` | 角色图集句柄（`04` §3.2） | 无 |
 | `DemoPlugin` | 验证用脚本输入 + 物理度量（仅 `--demo` 时由 bin 添加） | 无 |
-| `RoomPlugin` | 当前房间、条件求值、奖励 | `WorldPlugin` |
+| `RoomPlugin` | 当前房间判定、果实拾取传感器 | `WorldPlugin` |
 | `CameraRigPlugin` | 每个视图的相机跟随自己的玩家并钳制在关卡 AABB 内（`GameSet::Camera`，Update）；连续目标写入 `CameraAnchor` 供视差相位使用 | `WorldPlugin` |
 | `ParallaxPlugin` | `Level.background` → 平铺 sprite；`ParallaxCamera` 视图换算；`BackgroundOverride` 预览；`PostUpdate` 在 `GameSet::Snap` 之后、`Propagate` 之前（连续相位 + 整像素落点） | `TileRenderPlugin`（`load_image`）、`WorldPlugin` |
 | `PixelRenderPlugin` | 1–2 台内层 + 外层 + UI 相机、视图布局、窗口自适应、整数缩放、`UiScale` 同步 | 无 |
 | `TileRenderPlugin` | 瓦片 sprite 生成与可见性 | `WorldPlugin` |
-| `SpriteAnimPlugin` | 帧动画 + 按朝向水平翻转 sprite（装饰品同步镜像，`04` §4.5） | 无 |
-| `SavePlugin` | 读档（版本/地图/存档点校验）+ 通关/授奖/设置存档点/退出即存。**客户端 `run_if(not_client)` 全部跳过** | `WorldPlugin`、`RoomPlugin` |
+| `SpriteAnimPlugin` | 帧动画 + 按朝向水平翻转 sprite（`04` §4.5） | 无 |
+| `SavePlugin` | 读档（版本/地图/存档点校验）+ 设置存档点/果实拾取/退出即存。**客户端 `run_if(not_client)` 全部跳过** | `WorldPlugin` |
 | `NetPlugin` | `SessionMode` 资源、主机/客户端生命周期、UDP 收包、快照广播/应用、`OnlineMenu` 房间搜索（本文 §5.15） | 无（只依赖 `std::net` + `serde`/`ron`） |
-| `HudPlugin` | HUD（目标药丸 / 独立提示条 / 结算面板） | `CorePlugin`、`UiKitPlugin` |
-| `PausePlugin` | 暂停菜单 + 装饰品装备界面（`GameState::Paused`，`Esc` 开关）；「设置」进 `Settings`、「主菜单」先存档再回 `MainMenu` | `CorePlugin`、`UiKitPlugin` |
+| `HudPlugin` | HUD（计时/道具药丸 / 独立提示条 / 结算面板） | `CorePlugin`、`UiKitPlugin` |
+| `PausePlugin` | 暂停菜单（`GameState::Paused`，`Esc` 开关）；「设置」进 `Settings`、「主菜单」先存档再回 `MainMenu` | `CorePlugin`、`UiKitPlugin` |
 | `MenuPlugin` | 主菜单 / 关卡选择 / 联机 / 设置 UI。**只由 `add_render_plugins` 注册（发布 bin）**；写入 `StartRequest` 驱动加载 | `WorldPlugin`、`SavePlugin`、`SettingsPlugin`、`CorePlugin`、`UiKitPlugin` |
 | `UiKitPlugin` | UI 设计系统：按钮/卡片/面板构造、`Hovered`/`Pressed`/`Outline` 反馈、`TabNavigationPlugin` 与 `AutoFocus` 约定 | 无 |
 | `SettingsPlugin` | 读设置 → `GlobalVolume` + 主窗口 `WindowMode`；变化后原子写 `settings.ron`。**只由发布 bin 注册** | 无 |
@@ -143,9 +143,9 @@ pub enum GameSet { Input, Physics, PostPhysics, Room, Camera, Fx, Snap }
 | 调度 | 集合/系统 | 说明 |
 |---|---|---|
 | `PreUpdate` | `GameSet::Input` | 采样输入为 `PlayerInput`（纯数据） |
-| `FixedUpdate` | `GameSet::Physics`：`apply_player_physics → activate_checkpoint → check_hazards → respawn_on_death`（依次排序） | 固定 60 Hz。**所有位移与碰撞只在这里发生**；存档点先于死亡判定，因此同一固定步里按 E 设置的点会立即生效 |
+| `FixedUpdate` | `GameSet::Physics`：`apply_player_physics → pickup_items / collect_fruit / advance_run_clock / detect_goal_touch → activate_checkpoint → check_hazards → respawn_on_death`（依次排序） | 固定 60 Hz。**所有位移与碰撞只在这里发生**；存档点先于死亡判定，因此同一固定步里按 E 设置的点会立即生效 |
 | `Update` | `GameSet::PostPhysics` | 把 `FixedUpdate` 结果同步到 `Transform`，触发一次性消息 |
-| `Update` | `GameSet::Room` | 当前房间判定、条件求值、通关与奖励 |
+| `Update` | `GameSet::Room` | 当前房间判定、全员到达后的结算检查 |
 | `Update` | `GameSet::Camera` | 每个视图的相机直接跟随自己的玩家 AABB 中心（钳制在地图内，无平滑） |
 | `Update` | `GameSet::Fx` | 动画、粒子、音效触发 |
 | `PostUpdate` | `GameSet::Snap`：`.before(TransformSystems::Propagate)`（`.after` 会延迟一帧，见 `07` §7.6.3） | 像素吸附（`07`） |
@@ -184,8 +184,8 @@ pub enum SessionMode {
 | `Settings` | 音量 / 全屏 | 返回 `SettingsReturn`（主菜单或暂停菜单） |
 | `Loading` | 加载 `.level.ron`、校验、按 `StartRequest.mode` 建立进度、生成世界 | 成功 → `Playing`；校验失败 → 停留在 `Loading` 并打印错误 |
 | `Playing` | 正常游戏 | — |
-| `Paused` | 暂停菜单、装饰品装备、编辑器编辑态 | 冻结物理与计时 |
-| `GameComplete` | 全部房间通关的结算 | 可返回 `Playing` 继续探索 |
+| `Paused` | 暂停菜单、编辑器编辑态 | 冻结物理与计时 |
+| `GameComplete` | 所有玩家到达终点后的结算 | 展示每名玩家的时间与分数 |
 
 - `StartupFlow` 是部署级开关：发布 bin 默认 `Menu`；编辑器 bin 插入 `Direct`（`08` §8.2）。
 - `LoadMode`：`NewGame`（忽略存档、进度清空）/ `Continue`（存档缺失或不匹配 ⇒ 回主菜单 + 提示）/
@@ -193,13 +193,13 @@ pub enum SessionMode {
 - 「读取存档」在菜单里先 `save::load_raw()` 检查版本与关卡是否存在，再发 `Continue`；
   真正的版本/地图/存档点校验仍在 `save::load_validated` 内部的 `SaveData::restore`。
 - **门控规则**：玩法系统（`GameSet::Input` / `Physics` / `PostPhysics` / `Room` / `Camera` / `Fx`）统一以 `in_state(GameState::Playing)` 为 run condition；跨状态系统（`Snap`、HUD、存档、调试）不门控或按各自状态门控。
-- **联机门控**：客户端（`SessionMode::Client`）跳过物理、死亡、存档点、房间目标/拾取、存档与热重载；
+- **联机门控**：客户端（`SessionMode::Client`）跳过物理、死亡、存档点、道具/果实拾取、计时与终点判定、存档与热重载；
   客户端只保留输入采样、网络上行/下行、相机与渲染。统一用 `net::not_client` / `net::is_client` 两个 run condition。
 - **联机调度**：`PreUpdate`/`Update` 轮询 UDP（主机 `poll_host`、客户端 `poll_client`/`send_join`）；
   `FixedUpdate` 的 `GameSet::Input` 发送客户端输入，`.after(GameSet::Physics)` 广播主机快照；
   `Update` 的 `GameSet::PostPhysics` 应用客户端快照，随后 `GameSet::Camera` 使用它。
 - 编辑器因此**零侵入**地复用同一套插件：编辑态把 `GameState` 停在 `Paused`，试玩时置 `Playing`（见 `08` §8.3 / §8.6）。编辑器**不得**给任何 `game` 系统追加 `run_if`，`game` 也**不得**知道编辑器的存在。
-- **游戏不用状态机表达"房间是否通关"**：房间无缝，通关是进度数据（`02` §2.3），不是状态。
+- **游戏不用状态机表达"房间是否通关"**：房间没有通关状态；本局成绩只在 `RunState` 里（`01` §1.4）。
 
 ## 5.6 数据流与消息
 
@@ -211,10 +211,11 @@ flowchart TB
   PH --> AB[PlayerAabb]
   AB --> ROOM[当前房间判定]
   ROOM --> CAM[相机跟随]
-  AB --> GOAL[条件求值]
-  GOAL -->|满足| CLEARED[RoomCleared 消息]
-  CLEARED --> REWARD[授予装饰品]
-  REWARD --> SAVE[SaveData]
+  AB --> ITEM[道具拾取]
+  AB --> GOAL[终点判定]
+  GOAL -->|触碰| FIN[PlayerFinished 消息]
+  FIN --> RUN[RunState：锁定时间]
+  RUN -->|全员到达| COMPLETE[GameComplete 结算]
 ```
 
 | 消息/事件 | 种类 | 载荷 | 发布者 → 消费者 |
@@ -230,10 +231,11 @@ flowchart TB
 | `PlayerDied` | `Message` | `player_id: PlayerId`, `room_index: u32` | `player/death` → 音效/特效/HUD |
 | `CheckpointActivated` | `Message` | `point: CheckpointPoint`（房间 + 局部 `at`） | `checkpoint` → 存档（立即写盘） |
 | `RoomEntered` | `Message` | `room_index: u32` | `room` → HUD/调试/编辑器 |
-| `RoomCleared` | `Message` | `room_index: u32` | `room/goals` → 奖励/HUD/存档 |
-| `DecorationGranted` | `Message` | `decoration_id: String` | `room/reward` → HUD/存档 |
-| `CollectiblePicked` | `Message` | `room_index: u32` | `room` 传感器 → HUD/音效（`06` §6.5.4） |
-| `ZoneId` / `PickedZones` | 组件 / 资源 | 房间实体编号 / 已拾取编号集合 | 主机快照 → 客户端销毁已拾取果实（§5.15.3） |
+| `ItemPicked` | `Message` | `player: PlayerId`, `kind: ItemKind`, `replaced: Option<ItemKind>` | `player/items` → HUD/音效 |
+| `PlayerFinished` | `Message` | `player: PlayerId`, `time: f32` | `run::detect_goal_touch` → HUD/音效 |
+| `CollectiblePicked` | `Message` | `room_index: u32` | `room` 传感器 → 音效（`06` §6.5.4） |
+| `RunState` | 资源 | `elapsed`, `finished: [Option<f32>; MAX_PLAYERS]`, `complete` | `run` 写；HUD/结算读；主机快照同步 |
+| `ZoneId` / `PickedZones` | 组件 / 资源 | 房间实体编号 / 已拾取编号集合 | 主机快照 → 客户端销毁已拾取实体（§5.15.3） |
 | `LevelValidated` | `Message` | `issues: Vec<LevelIssue>` | 加载/编辑器 → HUD/编辑器面板 |
 
 - 跨模块通信优先用**消息**（buffered，`Message` 派生；0.20 中 `EventWriter/EventReader` 已不存在，见 `10`）。
@@ -249,7 +251,7 @@ flowchart TB
 | `coords::room_local_to_world` / `world_to_room` | 标量与 `Vec2` 风格值 | 标量 / 元组 |
 | `movement::step` | `PlayerBody`（位置/速度/状态）+ `PlayerInput` + `LevelTiles` + `dt` | 新 `PlayerBody` + 事件列表 |
 | `collide::sweep_aabb` | `Aabb` + 位移 + `LevelTiles` | 修正后 `Aabb` + 命中的瓦片边 |
-| `goals::evaluate` | `&[Goal]` + `&RoomFacts` | `bool` |
+| `run::score_for_time` | 通关秒数 | `u32` 分数 |
 | `tiles::tile_at_world` | 世界坐标 + `LevelTiles` | `TileKind` |
 
 - ECS 系统只做三件事：取数据 → 调纯函数 → 写回组件/发消息。
@@ -285,10 +287,11 @@ pub const GRAVITY: f32 = /* … */;
 | 单元 | `level_format`：解析、legend、全部校验规则（每条规则至少一个正例 + 一个反例）、`write → read` 往返相等 | `crates/level_format/tests/` |
 | 单元 | `coords`：往返换算、四个角落、跨房间边界 | `crates/game/src/coords.rs` 内 `#[cfg(test)]` |
 | 单元 | `movement` / `collide`：`06` §测试清单的每一条不变量 | `crates/game/src/player/` |
-| 单元 | `goals::evaluate`：条件组合、边界（0/全部/超量） | `crates/game/src/room/` |
+| 单元 | `run::score_for_time`：时间→分数、最低 0；`RunState` 首次锁定时间；全员到达 | `crates/game/src/run.rs` |
+| 单元 | `player::items`：三种道具的物理修正、拾取覆盖、空手不变 | `crates/game/src/player/items.rs` |
 | 单元 | `render::debug::toggled`：输入的 `just_pressed` 语义（长按与松开都不得翻转） | `crates/game/src/render/debug.rs` 内 `#[cfg(test)]` |
 | 集成（无头） | **输入链路**：`MinimalPlugins` + `InputPlugin`，注入 winit 同型的 `KeyboardInput` 消息 → `ButtonInput<KeyCode>` → 系统行为。它同时钉住**调度顺序**（读输入的系统必须在 `Update`，晚于输入系统的 `PreUpdate`） | 同上 |
-| 集成 | `simulate(level, scripted_inputs, frames)` 无 Bevy 确定性回放：断言最终位置、通关状态 | `crates/game/tests/` |
+| 集成 | `simulate(level, scripted_inputs, frames)` 无 Bevy 确定性回放：断言最终位置、终点与计时 | `crates/game/tests/` |
 | 单元 | 联机协议：RON/二进制快照往返、截断包拒绝、完整快照 ≤ 单包上限；发现查询/响应回环 | `net/protocol.rs`、`net/discovery.rs` 内 `#[cfg(test)]` |
 | 单元 | 多玩家物理：玩家阻挡水平移动、站在玩家头上、撞头；输入槽隔离 | `physics/tests.rs`、`player/{mod,input}.rs` |
 
@@ -301,12 +304,10 @@ pub const GRAVITY: f32 = /* … */;
 
 ```rust
 pub struct SaveData {
-    pub version: u32,                 // 当前 1
+    pub version: u32,                 // 当前 2
     pub level_name: String,           // 与 .level.ron 的 name 一致
     pub grid: (u32, u32),             // 校验同一张地图
-    pub progress: LevelProgress,      // 见 02 §2.3
-    pub owned_decorations: Vec<String>,
-    pub equipped: Vec<Option<String>>,// 长度 == DECORATION_LAYERS（见 04）
+    pub progress: LevelProgress,      // 见 02 §2.3（仅果实计数）
     pub checkpoint: Option<CheckpointPoint>, // 已激活存档点（`02` §2.5）；旧存档缺省 = None
 }
 
@@ -317,14 +318,15 @@ pub struct CheckpointPoint { pub col: u32, pub row: u32, pub at: (i32, i32) }
 |---|---|
 | 路径 | `save_path()` 单一函数决定：Windows `%APPDATA%\animj\save.ron`，其它平台 `$XDG_DATA_HOME/animj/save.ron` 或 `$HOME/.local/share/animj/save.ron` |
 | 原子写 | 先写 `save.ron.tmp`，再 rename 覆盖。禁止原地截断写 |
-| 版本不符 | `version != 1` → 忽略存档并提示，不猜测 |
-| 地图不符 | `level_name` 或 `grid` 与当前关卡不同 → 忽略进度（保留装饰品清单？**否**，一并忽略，避免出现"有装饰品但没通关房间"的矛盾态） |
+| 版本不符 | `version != 2` → 忽略存档并提示，不猜测 |
+| 地图不符 | `level_name` 或 `grid` 与当前关卡不同 → 忽略整份存档 |
 | 存档点失效 | `checkpoint` 必须仍能在关卡数据里找到同房间同 `at` 的 `checkpoint` 实体；否则只丢弃存档点，其余进度照常恢复 |
 | 启动 | 有有效存档点 ⇒ 从存档点所在房间/位置开始；否则从 `player_spawn` 所在房间开始 |
-| 保存时机 | 通关（`RoomCleared`）/ 授奖（`DecorationGranted`）/ 设置存档点（`CheckpointActivated`）/ `AppExit` 各写一次；暂停菜单的「SAVE」「QUIT & SAVE」「MAIN MENU」走同一条 `persist_now` |
+| 保存时机 | 果实拾取（`CollectiblePicked`）/ 设置存档点（`CheckpointActivated`）/ `AppExit` 各写一次；暂停菜单的「SAVE」「QUIT & SAVE」「MAIN MENU」走同一条 `persist_now` |
 | 自动化覆盖 | 环境变量 `ANIMJ_SAVE_DIR` 覆盖存档目录（CI / `--demo` 验证用；不改变发布行为） |
 | 读档入口 | 主菜单「读取存档」先用 `load_raw()` 判断「有没有、是哪一关」，再以 `Continue` 加载；失败回主菜单并在状态行提示 |
-| 新游戏 | `LoadMode::NewGame` 不读存档，进度与装饰品从零开始；实际覆盖存档发生在下一次保存事件（跨房间通关/存档点/退出/主菜单） |
+| 新游戏 | `LoadMode::NewGame` 不读存档，进度从零开始；实际覆盖存档发生在下一次保存事件（果实/存档点/退出/主菜单） |
+| 本局成绩 | 计时与通关时间**不写档**（每次进关从 0 开始，`01` §1.6） |
 
 ## 5.12 代码规范
 
@@ -365,7 +367,7 @@ pub struct GameSettings {
 |---|---|
 | 默认语言 | **中文（`Language::Zh`）**；设置界面可切换 `En`（产品要求） |
 | 唯一文案源 | `crates/game/src/i18n.rs` 的 `ZH` / `EN` 两张 `Strings` 表；UI 系统禁止硬编码某一种语言的玩家可见文本 |
-| 数据例外 | 关卡 id、装饰品 id、资源路径、FPS/调试行等数据或开发信息不翻译 |
+| 数据例外 | 关卡 id、道具枚举名、资源路径、FPS/调试行等数据或开发信息不翻译 |
 | 状态名 | 开发信息：F3 调试叠层与日志都用 `GameState` 的 `Debug` 名（不翻译） |
 | 字体 | `UiFontPlugin` 在 `PreStartup` 加载唯一字体（优先级见 `04` §9）；所有 UI `Text` 用 `UiFont::text_font(px)` |
 | 切换时机 | 设置界面按钮 `ToggleLanguage` 改 `GameSettings.language` ⇒ 设置页重建；返回主菜单/关卡选择时 `OnEnter` 重建；暂停菜单在 settings 变化时重建；HUD 每帧读取 |
@@ -393,14 +395,14 @@ pub struct GameSettings {
 - 编解码（`net/protocol.rs`）：
   - 发现/加入/输入等低频消息：`TAG_RON` + RON 文本（与关卡/存档同一套 `serde`）。
   - 每固定步快照：`TAG_SNAPSHOT` + 定长小端二进制。布局见源码头注释；单包 ≤ `MAX_PACKET_BYTES = 1200`，
-    超限直接丢弃（避免 IP 分片）。房间上限 64 ⇒ 通关集合用 `u64` 位图。
-- 协议版本 `PROTOCOL_VERSION = 3`（v3：`PlayerSnap` 增加 `last_input_seq`，`Input` 改为携带冗余输入样本数组）；发现响应带版本，不匹配不显示。
+    超限直接丢弃（避免 IP 分片）。
+- 协议版本 `PROTOCOL_VERSION = 4`（v4：移除通关房间位图，增加本局计时、每名玩家的道具 / 二段跳状态 / 通关时间）。发现响应带版本，不匹配不显示。
 - `Input { samples: Vec<InputSample> }`：每个固定步发送最近 `INPUT_REDUNDANCY` 条未确认输入（按 `seq` 升序）。
   单个 UDP 包丢失时，后续包会补上；主机按 `seq` 去重。
 - 其余常量（`config/net.rs`，本文拥有）：`MAX_PLAYERS = 4`、`MAX_PACKETS_PER_FRAME = 64`、
   `CONNECT_TIMEOUT_SECS = 10`、`CLIENT_TIMEOUT_SECS = 5`、`REMOTE_INPUT_STALE_SECS = 0.25`、
   `DISCOVERY_INTERVAL_SECS = 1`、`ROOM_TTL_SECS = 3.5`、`JOIN_RETRY_SECS = 0.25`、`PLAYER_SPAWN_GAP_PX = 24`、
-  `SPAWN_PLACEMENT_TRIES = 8`、`SNAPSHOT_MAX_ROOMS = 64`、`INTERP_DELAY_STEPS = 2`、
+  `SPAWN_PLACEMENT_TRIES = 8`、`INTERP_DELAY_STEPS = 2`、
   `INTERP_MAX_LAG_STEPS = 8`、`MAX_PENDING_INPUTS = 240`、`INPUT_REDUNDANCY = 4`。
 
 ### 5.15.3 同步模型（主机权威）
@@ -408,7 +410,7 @@ pub struct GameSettings {
 | 方向 | 频率 | 内容 |
 |---|---|---|
 | 客户端 → 主机 `Input` | 每固定步（60 Hz） | 最近 `INPUT_REDUNDANCY` 条未确认输入（含序号与 `PlayerInput` 四个字段）；主机去重后排队 |
-| 主机 → 客户端 `Snapshot` | 每固定步（60 Hz） | 全部玩家 `(id, x, y, vx, vy, grounded, facing, last_input_seq)`、通关房间、果实计数、已拾取 `ZoneId`、当前存档点 |
+| 主机 → 客户端 `Snapshot` | 每固定步（60 Hz） | `run_elapsed`；全部玩家 `(id, x, y, vx, vy, grounded, facing, item, air_jumps_used, finish, last_input_seq)`；果实计数、已拾取 `ZoneId`、当前存档点 |
 | `Join` / `Welcome` / `Reject` | 0.25 s 重试 / 事件 | 加入握手；`Join` 带持久 `client_id`。主机分配最小空闲 `PlayerId(1..MAX_PLAYERS)`，在**关卡出生点**生成角色；出生点被墙/已有玩家占用时就近找空位。**同一 `client_id` 从新端口重连时复用原玩家编号/实体**，不新增角色 |
 | `Discover` / `RoomInfo` | 1 s 查询 + 响应 | 房间搜索（§5.15.4） |
 | `Bye` / 超时 | 离开 / 5 s 静默 | 客户端收到 `WindowCloseRequested`（点击关闭按钮）或 `AppExit` 时主动发 `Bye`，主机立即移除；异常退出（崩溃/强杀）则 5 s 超时清理 |
@@ -419,10 +421,10 @@ pub struct GameSettings {
   Wi-Fi 突发到达的输入会排队逐帧消费，而不是合并进同一步——合并会造成客户端周期性被快照回拉。
 - 冗余输入在主机侧按 `seq` 去重；跳跃/交互按键仍按**或**写入锁存槽位。
   超过 0.25 s 没有新输入时把 `move_x` / `jump_held` 清零（客户端暂停或卡顿不会让角色一直走）。
-- 客户端**不跑** `apply_player_physics`（全体玩家）/ Hazard / 存档点 / 条件求值 / 存档 / 热重载；
+- 客户端**不跑** `apply_player_physics`（全体玩家）/ Hazard / 存档点 / 道具与终点判定 / 计时 / 存档 / 热重载；
   只对**自己的角色**在 `FixedUpdate` 的 `GameSet::Physics` 内做本地预测（与主机同一个
   `physics::step_with_players`，其他玩家用最近快照的 AABB 当实心障碍）。
-  快照在 `Update` 的 `GameSet::PostPhysics`（早于 `Camera`）写入 `PlayerMotion`，随后：
+  快照在 `Update` 的 `GameSet::PostPhysics`（早于 `Camera`）写入 `PlayerMotion` / `CarriedItem` / `RunState`，随后：
   丢弃 `seq ≤ last_input_seq` 的待确认输入，并从权威状态重放剩余输入（预测收敛）。
   因此输入→自己角色画面不再等待 RTT；偏差由快照纠正。
 - 快照是**完整状态**而非增量：丢包在下一帧自愈。
@@ -454,4 +456,4 @@ pub struct GameSettings {
 - 渲染插值只平滑表现，不降低远端玩家的延迟；丢包时表现为「以平均速度跨过缺口」，而不是冻结再跳。
 - 本地双人**做**左右分屏（每个视图 320×320）；联机不做同机分屏——每个进程只有自己的视图。
 - 客户端热重载被禁用；主机热重载不会同步房间实体编号（联机时建议不编辑关卡）。
-- 装饰品/存档进度：主机负责写入；客户端只读快照，不写本地存档。
+- 存档进度：主机负责写入；客户端只读快照，不写本地存档。

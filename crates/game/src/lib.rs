@@ -20,6 +20,7 @@ pub mod physics;
 pub mod player;
 pub mod render;
 pub mod room;
+pub mod run;
 pub mod save;
 pub mod settings;
 pub mod state;
@@ -78,7 +79,10 @@ pub fn add_game_plugins(app: &mut App) {
         player::PlayerPlugin,
         player::spawn::PlayerSpawnPlugin,
         camera::CameraRigPlugin,
+    ));
+    app.add_plugins((
         room::RoomPlugin,
+        run::RunPlugin,
         save::SavePlugin,
         render::pause::PausePlugin,
         render::debug::DebugPlugin,

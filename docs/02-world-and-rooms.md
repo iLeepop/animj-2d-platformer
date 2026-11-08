@@ -55,7 +55,7 @@
 ```
 
 - 判定输入是**玩家 AABB 的中心**在世界坐标下的位置（不是 Transform）。
-- 滞回的作用：玩家在边界上来回蹭时，`CurrentRoom`（HUD / 目标 / 房间事件）不会来回切换。相机与此判定**解耦**，始终跟随玩家 AABB 中心。
+- 滞回的作用：玩家在边界上来回蹭时，`CurrentRoom`（HUD / 房间事件）不会来回切换。相机与此判定**解耦**，始终跟随玩家 AABB 中心。
 - 判定每帧在 `Update` 的 `GameSet::Room` 内执行一次（见 `05`）。逻辑与 `FixedUpdate` 的物理步长解耦。
 
 ## 2.3 房间状态与进度
@@ -63,7 +63,6 @@
 ```rust
 /// 行主序索引 = row * cols + col，与 List<Room> 布局一致
 struct RoomProgress {
-    cleared: bool,      // 目标条件曾全部满足（单调，不可回退）
     collected_fruit: u32, // 该房间已收集的 fruit 数量（单调）
 }
 
@@ -77,9 +76,10 @@ struct LevelProgress {
 | 规则 | 说明 |
 |---|---|
 | 索引唯一来源 | `row_major_index(col, row, cols) = row * cols + col`（`00` §0.3） |
-| 单调性 | `cleared` 与 `collected_fruit` **只增不减**；死亡与重进房间都不重置 |
+| 单调性 | `collected_fruit` **只增不减**；死亡与重进房间都不重置 |
 | 存档校验 | 读档时若 `level_name` 或 `grid` 与当前关卡不符 → 丢弃该存档的进度并提示，**不做猜测性映射** |
-| 房间重入 | 允许；已 `cleared` 的房间不再触发奖励 |
+| 房间通关 | **不存在**：v3 起房间没有目标、没有 `cleared`，通关由 `01` §1.4 的终点触发 |
+| 本局成绩 | 计时与每名玩家的通关时间在 `run::RunState`，**不进房间进度、不写档** |
 
 ### 热重载（M3 起）
 
@@ -106,7 +106,7 @@ sequenceDiagram
   L->>V: 解析出的 Level
   V-->>L: Ok / Err(字段级错误)
   L->>W: 生成瓦片实体（仅非空瓦片）
-  L->>W: 生成实体列表（exit / fruit / ...）
+  L->>W: 生成实体列表（goal / item / fruit / checkpoint）
   L->>W: 放置玩家到出生点（存档点或 player_spawn 房间）
   L->>P: 按 cols*rows 初始化 RoomProgress
   L->>P: 按 LoadMode 恢复进度（Continue/Auto）或清零（NewGame）
@@ -120,8 +120,8 @@ sequenceDiagram
 | 实体类 | 生命周期 | 理由 |
 |---|---|---|
 | 瓦片 sprite | 关卡加载时一次性生成（仅非空瓦片），关卡卸载时销毁 | 静态 |
-| `exit` / `fruit` / `checkpoint` 等房间实体 | 关卡加载时生成，常驻；存档点由玩家按 `E` 激活 | 房间无缝，任何时刻都可能在视野附近 |
-| 玩家 | 关卡加载时生成，死亡时重置位置而非销毁重建 | 保留装饰品装备状态 |
+| `goal` / `item` / `fruit` / `checkpoint` 等房间实体 | 关卡加载时生成，常驻；可拾取实体（`item` / `fruit`）被拾取后销毁 | 房间无缝，任何时刻都可能在视野附近 |
+| 玩家 | 关卡加载时生成，死亡时重置位置而非销毁重建 | 保留当前携带的道具 |
 | 粒子和临时特效 | 播放完毕即销毁 | 一次性 |
 
 - **逻辑层不做房间级激活/卸载**：本阶段关卡规模（≤ 64 房间）下无收益，却有"玩家在边界上时该不该激活隔壁房间"的语义陷阱。

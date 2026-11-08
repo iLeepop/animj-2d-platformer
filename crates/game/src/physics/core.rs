@@ -22,6 +22,8 @@ pub struct Body {
     pub airborne_since: u32,
     /// 距最近一次「跳跃键按下」的固定步数；`u32::MAX` = 已消费 / 无。
     pub buffer_age: u32,
+    /// 离地后已用掉的额外起跳次数（道具「二段跳」，`06` §6.12）；落地清零。
+    pub air_jumps_used: u32,
 }
 
 impl Body {
@@ -39,6 +41,7 @@ impl Body {
             grounded: false,
             airborne_since: COYOTE_STEPS + 1,
             buffer_age: u32::MAX,
+            air_jumps_used: 0,
         }
     }
 }
@@ -63,6 +66,8 @@ pub struct StepOutcome {
     /// `+1` / `-1` = 本步水平分离的方向，`0` = 无。
     pub hit_wall_x: i32,
     pub walked_off: bool,
+    /// 本步是否是**空中**额外起跳（道具「二段跳」）。见 `06` §6.12。
+    pub air_jumped: bool,
 }
 
 /// 推进一个固定步（玩家之间**不**碰撞）。等价于 [`step_with_players`] 的空障碍列表。
@@ -102,6 +107,7 @@ pub fn step_with_players(
     // ---- 1) 计时器（§6.3.2 步骤 1）----
     if body.grounded {
         body.airborne_since = 0;
+        body.air_jumps_used = 0;
     } else {
         body.airborne_since = body.airborne_since.saturating_add(1);
     }
@@ -117,10 +123,20 @@ pub fn step_with_players(
     if buffer_ok && (body.grounded || coyote_ok) {
         body.vel.y = cfg.jump_velocity;
         body.grounded = false;
-        // 土狼时间用尽 ⇒ 禁止空中二段跳
+        // 土狼时间用尽 ⇒ 禁止空中二段跳（但有道具时由下面的分支提供）
         body.airborne_since = cfg.coyote_steps + 1;
         body.buffer_age = u32::MAX;
+        body.air_jumps_used = 0;
         out.jumped = true;
+    } else if buffer_ok && body.air_jumps_used < cfg.max_air_jumps {
+        // 道具「二段跳」：离地（且土狼窗口已过）后再起跳一次。见 `06` §6.12。
+        body.vel.y = cfg.air_jump_velocity;
+        body.grounded = false;
+        body.airborne_since = cfg.coyote_steps + 1;
+        body.buffer_age = u32::MAX;
+        body.air_jumps_used = body.air_jumps_used.saturating_add(1);
+        out.jumped = true;
+        out.air_jumped = true;
     }
 
     // ---- 3) 加速度（§6.2.5 水平；垂直按 grounded / 速度符号选段）----
@@ -191,6 +207,7 @@ pub fn step_with_players(
             body.aabb.min.y = top; // 吸附到顶面：零 skin，面精确贴合
             body.aabb.max.y = top + cfg.player_size.y; // 保持尺寸（§6.4.9）
             body.grounded = true;
+            body.air_jumps_used = 0; // 落地恢复「二段跳」次数
         }
         _ => body.grounded = false,
     }

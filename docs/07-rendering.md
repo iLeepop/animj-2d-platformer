@@ -70,7 +70,7 @@
 | `z::PICKUP` | 可拾取物（果实） | 见 `00` §0.4 |
 | `z::ENEMY` | 敌人 | 见 `00` §0.4 |
 | `z::PLAYER` / `z::player_z(id)` | **角色本体**：`40.0 + 0.1 × 玩家编号` | 见 `00` §0.4；多人会互相重叠，必须不同 Z。每个视图的相机跟随自己的玩家（`02` §2.2）；视野仍小于一个房间 |
-| `z::DECORATION_BASE` | 装饰品图层基准；实际 Z = `DECORATION_BASE + layer_index as f32`（槽位语义与上限见 `04` §6.1） | 见 `00` §0.4 |
+| `z::GOAL` | 终点 sprite 的 Z；取值见 `00` §0.4 | 见 `00` §0.4 |
 | `z::PARTICLE` | 粒子 / 特效 | 见 `00` §0.4 |
 | `z::TILE_FOREGROUND` | 前景瓦片 | 见 `00` §0.4 |
 | `z::TEXT2D` | 世界空间文字（`Text2d`） | 见 `00` §0.4 |
@@ -385,7 +385,7 @@ app.add_systems(
 - 统一做法：所有由本项目 spawn 的可渲染实体都带标记组件 `PixelSnap`，吸附系统 `Query<&mut Transform, With<PixelSnap>>`。
 - `PixelSnap` 由 `render` 模块的构造器（`pixel_sprite(..)`、`pixel_text2d(..)`、相机 spawn 助手）自动加上，避免漏标。
 - **`PixelSnap` 只挂在 root 实体上**。带父实体的瓦片（§7.8 的 `RoomRoot` 子实体）不挂：父级世界位置是整像素 + 子级局部偏移是整像素（相对**房间中心**：`tx*TILE_PX + TILE_PX/2 − ROOM_PX/2`, `ty*TILE_PX − ROOM_PX/2`）⇒ 子级世界位置天然是整数。
-  这条与 `04` §6.1 的「装饰品 `offset` 必须是整数像素」是同一约束的两种表述。
+  这条与 `04` §6 的「道具占位尺寸为 12×12」是同一约束的两种表述。
 - 相机（内层）同样带标记：`02` 的跟随目标由玩家中心（客户端为 `RenderCenter`）与整数关卡尺寸算出，吸附是幂等的兜底。
 
 ### 7.6.5 渲染插值的边界（本地物理/预测不插值，联机客户端远端玩家插值）
@@ -559,7 +559,7 @@ RoomRoot { col, row }          // 父实体：Transform = 房间中心（世界�
 | 类别 | 归属 | 理由 |
 |---|---|---|
 | 瓦片（实体瓦片 / 贴花 / 前景）、房间背景板 | `RoomRoot` 的**子实体** | 生成后位置固定；整房间隐藏 = 改父级一个 `Visibility` |
-| 会移动的实体（角色、敌人、可拾取物、粒子、装饰品） | **世界根**（不是 `RoomRoot` 的子） | 它们随 `Aabb` 移动（`06`），若成为 `RoomRoot` 的子，房间切换会连带移动它们；它们的房间归属用 `00` §0.3 的 `world_to_room` 计算（相机/房间状态见 `02`） |
+| 会移动的实体（角色、敌人、可拾取物、粒子） | **世界根**（不是 `RoomRoot` 的子） | 它们随 `Aabb` 移动（`06`），若成为 `RoomRoot` 的子，房间切换会连带移动它们；它们的房间归属用 `00` §0.3 的 `world_to_room` 计算（相机/房间状态见 `02`） |
 
 ### 7.8.3 房间可见性裁剪（M2 起：按**相机视野矩形**判定）
 
@@ -734,7 +734,7 @@ pub fn add_debug_visualization(app: &mut App) {
 - 生产构建调用的是 `#[cfg(not(feature = "dev"))] pub fn add_debug_visualization(app: &mut App) { app.init_resource::<DebugDrawEnabled>(); }`（同一函数名、空实现）—— 这样调用点不必写 `cfg`。
 - `Aabb`（`06`）的 `center()` / `size()` 是 `06` 提供的读取方法；渲染侧只读不写。
 - F3 文本行（`render/debug.rs::update_debug_text`）包含：FPS/实体数、`GameState`（`Debug` 名）、像素缩放倍率、
-  关卡名与网格尺寸、当前房间坐标、通关数与装饰品数、当前房间是否已通关、资产根路径。
+  关卡名与网格尺寸、当前房间坐标、果实总数、本局耗时、资产根路径。
   这些都是**开发信息**，不进入常驻 HUD（§7.10.1）；缺失关卡/进度资源时对应字段显示 `-`。
 
 - `FpsOverlayPlugin { config: FpsOverlayConfig }`，实现 `Default`；运行期改配置走 `ResMut<FpsOverlayConfig>`。【已验证】<https://docs.rs/bevy/0.20.0/bevy/dev_tools/fps_overlay/struct.FpsOverlayPlugin.html>（`config` 字段；“this can be later be changed through `FpsOverlayConfig` resource”）
@@ -762,8 +762,8 @@ pub fn add_debug_visualization(app: &mut App) {
 
 | 用途 | 用什么 | 坐标空间 | 由哪个相机渲染 |
 |---|---|---|---|
-| **游戏 HUD**：房间目标进度（含收集计数）、提示条 | `Node` + `Text`（`bevy_ui`） | 屏幕空间，逻辑像素 = **`VIEWPORT` 坐标系**（320 宽，靠 `UiScale = k` 保持） | **UI 相机**（窗口目标，`IsDefaultUiCamera`） |
-| **提示条**（通关 / 获得装饰品） | 同上，单行文本 + `HUD_TOAST_SECS` 计时 | 同上 | 同上 |
+| **游戏 HUD**：本局计时 + 焦点玩家道具 | `Node` + `Text`（`bevy_ui`） | 屏幕空间，逻辑像素 = **`VIEWPORT` 坐标系**（320 宽，靠 `UiScale = k` 保持） | **UI 相机**（窗口目标，`IsDefaultUiCamera`） |
+| **提示条**（拾取道具 / 到达终点） | 同上，单行文本 + `HUD_TOAST_SECS` 计时 | 同上 | 同上 |
 | **结算面板**（`GameComplete`） | 固定 px 几何的 `Node` + 居中 `Text` | 同上 | 同上 |
 | **世界内文字**：告示牌、道具名、飘字 | `Text2d` | 世界像素（Z = `z::TEXT2D`，数值见 `00` §0.4） | 内层相机（走 `PIXEL_PERFECT_LAYERS`，与 sprite 一起被放大 `k` 倍） |
 | 编辑器 UI | `bevy_egui` | 原生窗口分辨率 | 见 `08` |
@@ -797,7 +797,7 @@ use bevy::prelude::*;
 /// 屏幕空间 HUD（由 UI 窗口相机渲染；逻辑坐标仍按 VIEWPORT_W × VIEWPORT_H）
 fn spawn_hud(commands: &mut Commands, ui_font: &UiFont) {
     commands.spawn((
-        Text::new("目标：到达出口"),
+        Text::new("时间 12.34秒  快跑"),
         ui_font.text_font(HUD_FONT_PX), // 字体 + FontSize::Px（默认抗锯齿）
         // 不要在 UI 上关抗锯齿：原生分辨率下 `FontSmoothing::None` 会让中文边缘发毛。
         TextColor(Color::WHITE),
@@ -913,7 +913,7 @@ UI **不得**再写调色板之外的十六进制值。
 | `UI_SPACE_XS` / `SM` / `MD` / `LG` | `4 / 8 / 12 / 16` | 4px 基准间距 |
 | `UI_BUTTON_WIDTH` | `200.0` | 主菜单/关卡选择按钮宽 |
 | `UI_BUTTON_HEIGHT` | `24.0` | 菜单按钮高 |
-| `UI_BUTTON_HEIGHT_SM` | `20.0` | 设置控件、装饰品 chip |
+| `UI_BUTTON_HEIGHT_SM` | `20.0` | 设置控件 |
 | `UI_BORDER_PX` | `2.0` | 按钮/面板边框 |
 | `UI_SHADOW_PX` | `2.0` | 硬阴影偏移（blur = 0） |
 | `UI_FOCUS_OUTLINE_PX` | `1.0` | 焦点环宽度（offset = 1） |
@@ -956,7 +956,7 @@ UI **不得**再写调色板之外的十六进制值。
 | 关卡选择 | 全屏 `INK` 居中；标题；两列 128×56 卡片（间距 8），标题为 `world_01 → WORLD 01`，有存档时绿色副标题；返回按钮 |
 | 联机 | 全屏 `INK` 居中；标题；264px 房间行；创建房间 `Primary`；返回 `Secondary`；空列表显示 `searching` |
 | 设置 | 全屏 `INK` 居中；240px 面板；每行 24px：左 label（`flex_grow`），右控件；音量 `- / 值 / +`，全屏/语言为 20px 高 toggle，返回 24px |
-| 暂停 | 全屏 `UI_SCRIM` 遮罩 + 居中 260px 面板（最大高 288）；标题「暂停」；5 个 232×24 按钮；装饰品行放入 `flex_grow` 滚动区；重建时保留 `ScrollPosition` |
+| 暂停 | 全屏 `UI_SCRIM` 遮罩 + 居中 260px 面板（最大高 288）；标题「暂停」；5 个 232×24 按钮 |
 | HUD | 左上角 8px 药丸：1px `PLUM` 边框 + `UI_HUD_BG`，内文 12px；无目标时 `Display::None` |
 | 提示条 | 底部 24px 居中独立药丸；`HudToast` 有文本时显示，2.5s 后隐藏；不再混进常驻 HUD 文本 |
 | 结算 | 全屏 `UI_SCRIM` + 居中 240×120 面板；24px 标题 + 12px 统计；`DespawnOnExit(GameComplete)` |
@@ -977,8 +977,7 @@ UI **不得**再写调色板之外的十六进制值。
   首个按钮 `AutoFocus`。焦点环由 §7.10.5.2 的 `Outline` 表达。
 - 设置界面**不再整块重建**：`OnEnter(Settings)` 生成一次，`GameSettings` 变化时只更新带 marker 的
   `Text`（音量值、全屏值、语言值、标题/行标签）。这样焦点、hover 与按钮状态不会在连续调音量时丢失。
-- 暂停菜单保留整块重建（装饰品变化时），但重建前读取 `ScrollPosition(Vec2)`，重建后写回；
-  `AutoFocus` 只在「从关闭到打开」或「重新进入 `Paused`」时添加，避免装备装饰品后焦点跳回「继续」。
+- 暂停菜单保留整块重建（语言变化时），`AutoFocus` 只在「从关闭到打开」或「重新进入 `Paused`」时添加，避免焦点跳回「继续」。
 - 动画只用于颜色与 1px 位移；不做布局宽高补间。文字保持 `FontSmoothing::AntiAliased`（见 §7.10.3）。
 
 #### 7.10.5.5 资产与字体

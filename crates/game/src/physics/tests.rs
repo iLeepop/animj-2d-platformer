@@ -1652,3 +1652,101 @@ fn custom_player_size_keeps_box_invariant() {
     assert!(body.grounded);
     assert!((body.aabb.min.y - TILE).abs() < 1e-3);
 }
+
+// ---------- 道具：二段跳（`06` §6.12）----------
+
+/// 有「二段跳」道具：离地且土狼窗口已过后，第二次按跳仍能起跳；第三次不行。
+#[test]
+fn double_jump_allows_exactly_one_air_jump() {
+    let cfg = PhysicsConfig {
+        max_air_jumps: ITEM_DOUBLE_JUMP_MAX_AIR_JUMPS,
+        air_jump_velocity: JUMP_VELOCITY,
+        ..DEFAULT_PHYSICS
+    };
+    let world = flat_world();
+    let mut body = standing_on(100.0, TILE);
+    let mut out = StepOutcome::default();
+
+    step(
+        &cfg,
+        &world,
+        &mut body,
+        StepInput {
+            jump_pressed: true,
+            jump_held: true,
+            ..StepInput::default()
+        },
+        &mut out,
+    );
+    assert!(out.jumped && !out.air_jumped, "第一次是地面跳");
+    assert_eq!(body.air_jumps_used, 0);
+
+    // 让土狼窗口过期（在空中）
+    body.airborne_since = COYOTE_STEPS + 2;
+    step(
+        &cfg,
+        &world,
+        &mut body,
+        StepInput {
+            jump_pressed: true,
+            jump_held: true,
+            ..StepInput::default()
+        },
+        &mut out,
+    );
+    assert!(out.jumped && out.air_jumped, "第二次是空中二段跳");
+    assert_eq!(body.air_jumps_used, 1);
+
+    // 第三次按跳：没有剩余空中跳
+    body.airborne_since = COYOTE_STEPS + 2;
+    step(
+        &cfg,
+        &world,
+        &mut body,
+        StepInput {
+            jump_pressed: true,
+            jump_held: true,
+            ..StepInput::default()
+        },
+        &mut out,
+    );
+    assert!(!out.jumped, "二段跳道具只允许一次额外起跳");
+
+    // 落地清零
+    let mut body = standing_on(100.0, TILE);
+    body.air_jumps_used = 1;
+    body.vel = Vec2::new(0.0, -MAX_FALL_SPEED);
+    for _ in 0..120 {
+        step(&cfg, &world, &mut body, StepInput::default(), &mut out);
+        if body.grounded {
+            break;
+        }
+    }
+    assert!(body.grounded);
+    assert_eq!(body.air_jumps_used, 0, "落地恢复二段跳次数");
+}
+
+/// 没有道具时，在空中再按跳不得起跳（默认 `max_air_jumps = 0`）。
+#[test]
+fn no_double_jump_without_the_item() {
+    let cfg = DEFAULT_PHYSICS;
+    assert_eq!(cfg.max_air_jumps, 0);
+    let world = flat_world();
+    let mut body = standing_on(100.0, TILE);
+    body.grounded = false;
+    body.airborne_since = COYOTE_STEPS + 2;
+    let mut out = StepOutcome::default();
+    step(
+        &cfg,
+        &world,
+        &mut body,
+        StepInput {
+            jump_pressed: true,
+            jump_held: true,
+            ..StepInput::default()
+        },
+        &mut out,
+    );
+    assert!(!out.jumped, "无道具不得空中起跳");
+    assert!(!out.air_jumped);
+}

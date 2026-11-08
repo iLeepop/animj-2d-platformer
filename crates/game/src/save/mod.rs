@@ -1,7 +1,9 @@
 //! 存档读档。所有者文档：`docs/05-architecture.md` §5.11、`docs/02-world-and-rooms.md` §2.3。
 //!
-//! 规则：版本不符 ⇒ 忽略；地图（`level_name` 或 `grid`）不符 ⇒ **进度与装饰品一并忽略**
-//! （避免"有装饰品但没通关房间"的矛盾态）；写盘一律 `.tmp` + rename。
+//! 规则：版本不符 ⇒ 忽略；地图（`level_name` 或 `grid`）不符 ⇒ 进度一并忽略；
+//! 写盘一律 `.tmp` + rename。
+//!
+//! v2 起存档不再包含装饰品（装饰机制已移除，`01` §1.5）。
 
 use std::path::{Path, PathBuf};
 
@@ -10,11 +12,10 @@ use level_format::Level;
 use serde::{Deserialize, Serialize};
 
 use crate::checkpoint::{ActiveCheckpoint, CheckpointPoint};
-use crate::player::decor::Decorations;
 use crate::world::progress::LevelProgress;
 
-/// 存档格式版本（`05` §5.11）。
-pub const SAVE_VERSION: u32 = 1;
+/// 存档格式版本（`05` §5.11）。v2：删除装饰品字段。
+pub const SAVE_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SaveData {
@@ -22,26 +23,18 @@ pub struct SaveData {
     pub level_name: String,
     pub grid: (u32, u32),
     pub progress: LevelProgress,
-    pub owned_decorations: Vec<String>,
-    pub equipped: Vec<Option<String>>,
     /// 已激活的存档点（`02` §2.5）。旧存档缺省 ⇒ `None`（serde default）。
     #[serde(default)]
     pub checkpoint: Option<CheckpointPoint>,
 }
 
 impl SaveData {
-    pub fn capture(
-        progress: &LevelProgress,
-        decorations: &Decorations,
-        checkpoint: Option<CheckpointPoint>,
-    ) -> Self {
+    pub fn capture(progress: &LevelProgress, checkpoint: Option<CheckpointPoint>) -> Self {
         Self {
             version: SAVE_VERSION,
             level_name: progress.level_name.clone(),
             grid: progress.grid,
             progress: progress.clone(),
-            owned_decorations: decorations.owned().to_vec(),
-            equipped: decorations.equipped(),
             checkpoint,
         }
     }
@@ -50,10 +43,7 @@ impl SaveData {
     ///
     /// 存档点若已不在关卡数据中（关卡被编辑/删除了该实体）⇒ 只丢弃存档点，
     /// 其它进度照常恢复（`02` §2.5）。
-    pub fn restore(
-        self,
-        level: &Level,
-    ) -> Option<(LevelProgress, Decorations, Option<CheckpointPoint>)> {
+    pub fn restore(self, level: &Level) -> Option<(LevelProgress, Option<CheckpointPoint>)> {
         if self.version != SAVE_VERSION {
             warn!(
                 "存档版本 {} 与当前 {} 不符，忽略存档（05 §5.11）",
@@ -66,7 +56,7 @@ impl SaveData {
             || self.progress.rooms.len() != level.rooms.len()
         {
             warn!(
-                "存档地图 {}({}) 与当前 {}({}) 不符，忽略存档（含装饰品）",
+                "存档地图 {}({}) 与当前 {}({}) 不符，忽略存档",
                 self.level_name,
                 format!("{}x{}", self.grid.0, self.grid.1),
                 level.name,
@@ -81,8 +71,7 @@ impl SaveData {
             }
             valid
         });
-        let decorations = Decorations::restore(self.owned_decorations, self.equipped);
-        Some((self.progress, decorations, checkpoint))
+        Some((self.progress, checkpoint))
     }
 }
 
@@ -150,9 +139,7 @@ pub fn load_raw() -> Option<SaveData> {
 }
 
 /// 读档并校验；文件不存在 / 解析失败 / 校验失败都返回 `None`（不 panic、不猜测）。
-pub fn load_validated(
-    level: &Level,
-) -> Option<(LevelProgress, Decorations, Option<CheckpointPoint>)> {
+pub fn load_validated(level: &Level) -> Option<(LevelProgress, Option<CheckpointPoint>)> {
     load_raw()?.restore(level)
 }
 
@@ -160,83 +147,44 @@ pub struct SavePlugin;
 
 impl Plugin for SavePlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(
-            Update,
-            (save_on_progress, save_on_checkpoint).run_if(crate::net::not_client),
-        )
-        .add_systems(Last, save_on_exit.run_if(crate::net::not_client));
+        app.add_systems(Update, save_on_fruit_pickup.run_if(crate::net::not_client))
+            .add_systems(Last, save_on_exit.run_if(crate::net::not_client));
     }
 }
 
-/// 进度变化（通关 / 授奖）即存档：写盘量很小，且保证崩溃不丢进度。
-fn save_on_progress(
-    mut cleared: MessageReader<crate::room::RoomCleared>,
-    mut granted: MessageReader<crate::room::DecorationGranted>,
+/// 果实拾取即存档：写盘量很小，且保证崩溃不丢进度。
+fn save_on_fruit_pickup(
+    mut picked: MessageReader<crate::room::CollectiblePicked>,
     progress: Option<Res<LevelProgress>>,
-    decorations: Option<Res<Decorations>>,
     checkpoint: Option<Res<ActiveCheckpoint>>,
 ) {
-    let changed = cleared.read().count() + granted.read().count() > 0;
-    if !changed {
+    if picked.read().count() == 0 {
         return;
     }
-    let (Some(progress), Some(decorations)) = (progress, decorations) else {
+    let Some(progress) = progress else {
         return;
     };
-    persist_now(
-        progress.as_ref(),
-        decorations.as_ref(),
-        checkpoint.and_then(|checkpoint| checkpoint.0),
-    );
-}
-
-/// 设置存档点 ⇒ 立即写盘（`02` §2.5）。
-fn save_on_checkpoint(
-    mut activated: MessageReader<crate::checkpoint::CheckpointActivated>,
-    progress: Option<Res<LevelProgress>>,
-    decorations: Option<Res<Decorations>>,
-    checkpoint: Option<Res<ActiveCheckpoint>>,
-) {
-    if activated.read().count() == 0 {
-        return;
-    }
-    let (Some(progress), Some(decorations)) = (progress, decorations) else {
-        return;
-    };
-    persist_now(
-        progress.as_ref(),
-        decorations.as_ref(),
-        checkpoint.and_then(|checkpoint| checkpoint.0),
-    );
+    persist_now(&progress, checkpoint.and_then(|checkpoint| checkpoint.0));
 }
 
 /// 退出应用 ⇒ 存档（`01` §1.6）。
 fn save_on_exit(
     mut exit: MessageReader<AppExit>,
     progress: Option<Res<LevelProgress>>,
-    decorations: Option<Res<Decorations>>,
     checkpoint: Option<Res<ActiveCheckpoint>>,
 ) {
     if exit.read().count() == 0 {
         return;
     }
-    let (Some(progress), Some(decorations)) = (progress, decorations) else {
+    let Some(progress) = progress else {
         return;
     };
-    persist_now(
-        progress.as_ref(),
-        decorations.as_ref(),
-        checkpoint.and_then(|checkpoint| checkpoint.0),
-    );
+    persist_now(&progress, checkpoint.and_then(|checkpoint| checkpoint.0));
 }
 
 /// 立即写盘（暂停菜单的「保存/退出」按钮也用这一条路径）。
-pub fn persist_now(
-    progress: &LevelProgress,
-    decorations: &Decorations,
-    checkpoint: Option<CheckpointPoint>,
-) {
-    let data = SaveData::capture(progress, decorations, checkpoint);
+pub fn persist_now(progress: &LevelProgress, checkpoint: Option<CheckpointPoint>) {
+    let data = SaveData::capture(progress, checkpoint);
     let path = save_path();
     match write_atomic(&path, &to_text(&data)) {
         Ok(()) => info!("存档已写：{}", path.display()),
@@ -262,22 +210,19 @@ mod tests {
             rooms: vec![
                 Room {
                     name: None,
-                    reward: None,
                     spawn: None,
-                    goals: vec![level_format::Goal::ReachExit],
                     tiles: vec![".".repeat(ROOM_TILES); ROOM_TILES],
                     entities: vec![level_format::EntitySpec {
                         kind: crate::checkpoint::KIND.to_string(),
                         at: (96, 464),
                         size: None,
                         id: None,
+                        item: None,
                     }],
                 },
                 Room {
                     name: None,
-                    reward: Some("item_01".into()),
                     spawn: None,
-                    goals: vec![level_format::Goal::ReachExit],
                     tiles: vec![".".repeat(ROOM_TILES); ROOM_TILES],
                     entities: vec![],
                 },
@@ -286,26 +231,19 @@ mod tests {
     }
 
     #[test]
-    fn round_trip_preserves_progress_and_decorations() {
+    fn round_trip_preserves_progress() {
         let level = level();
         let mut progress = LevelProgress::from_level(&level);
-        progress.mark_cleared(0, 0);
         progress.collect_fruit(1, 0);
-        let mut decorations = Decorations::default();
-        decorations.grant("item_01");
-        decorations.equip("item_01");
 
-        let data = SaveData::capture(&progress, &decorations, None);
+        let data = SaveData::capture(&progress, None);
         let text = to_text(&data);
         let parsed = from_text(&text).expect("应能解析");
         assert_eq!(parsed, data);
 
-        let (restored_progress, restored_decorations, checkpoint) =
-            parsed.restore(&level).expect("应接受");
+        let (restored_progress, checkpoint) = parsed.restore(&level).expect("应接受");
         assert_eq!(restored_progress, progress);
         assert_eq!(checkpoint, None);
-        let layer = crate::player::decor::spec_of("item_01").unwrap().layer;
-        assert_eq!(restored_decorations.equipped_at(layer), Some("item_01"));
     }
 
     /// 存档点随存档往返，并且必须与关卡里的实体逐字段一致。
@@ -318,9 +256,9 @@ mod tests {
             row: 0,
             at: (96, 464),
         };
-        let data = SaveData::capture(&progress, &Decorations::default(), Some(point));
+        let data = SaveData::capture(&progress, Some(point));
         let parsed = from_text(&to_text(&data)).expect("应能解析");
-        let (_, _, checkpoint) = parsed.restore(&level).expect("应接受");
+        let (_, checkpoint) = parsed.restore(&level).expect("应接受");
         assert_eq!(checkpoint, Some(point));
     }
 
@@ -334,22 +272,22 @@ mod tests {
             row: 0,
             at: (123, 456),
         };
-        let data = SaveData::capture(&progress, &Decorations::default(), Some(point));
-        let (_, _, checkpoint) = data.restore(&level).expect("进度应接受");
+        let data = SaveData::capture(&progress, Some(point));
+        let (_, checkpoint) = data.restore(&level).expect("进度应接受");
         assert_eq!(checkpoint, None);
     }
 
-    /// 旧存档（没有 checkpoint 字段）必须能读：缺省为 `None`（`05` §5.11）。
+    /// 旧存档（没有 checkpoint 字段）在版本相同的前提下仍可读。
     #[test]
     fn old_save_without_checkpoint_field_is_still_accepted() {
         let level = level();
         let progress = LevelProgress::from_level(&level);
-        let data = SaveData::capture(&progress, &Decorations::default(), None);
+        let data = SaveData::capture(&progress, None);
         let text = to_text(&data);
         let legacy = text.replace("    checkpoint: None,\n", "");
         assert!(!legacy.contains("checkpoint"));
         let parsed = from_text(&legacy).expect("旧存档必须可解析");
-        let (_, _, checkpoint) = parsed.restore(&level).expect("旧存档必须被接受");
+        let (_, checkpoint) = parsed.restore(&level).expect("旧存档必须被接受");
         assert_eq!(checkpoint, None);
     }
 
@@ -357,19 +295,17 @@ mod tests {
     fn version_mismatch_is_ignored() {
         let level = level();
         let progress = LevelProgress::from_level(&level);
-        let mut data = SaveData::capture(&progress, &Decorations::default(), None);
+        let mut data = SaveData::capture(&progress, None);
         data.version = 99;
         assert!(data.restore(&level).is_none());
     }
 
-    /// 地图不符 ⇒ 进度与装饰品**一并**忽略（`05` §5.11）。
+    /// 地图不符 ⇒ 进度忽略（`05` §5.11）。
     #[test]
     fn map_mismatch_drops_everything() {
         let level = level();
         let progress = LevelProgress::from_level(&level);
-        let mut decorations = Decorations::default();
-        decorations.grant("item_01");
-        let data = SaveData::capture(&progress, &decorations, None);
+        let data = SaveData::capture(&progress, None);
         let mut other = level.clone();
         other.grid.cols = 3;
         other.rooms.push(other.rooms[0].clone());

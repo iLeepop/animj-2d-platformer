@@ -71,7 +71,7 @@
 | `bevy_ecs_tilemap` | 无（最新 0.19.0，2026-07-04） | 最新版只到 **0.19** | 瓦片渲染 | **不可用** | **阻塞瓦片方案**：自身 + 其下游全部锁在 0.19；README 兼容表最高行 `0.18→0.18`（`main` 声称 track bevy，无 0.20 行）。⇒ 瓦片渲染必须自研（见 `07`） | <https://docs.rs/crate/bevy_ecs_tilemap/latest> |
 | `bevy_ecs_ldtk` | 无（最新 0.15.0，2026-07-05） | 最新版只到 **0.19** | LDtk 关卡导入 | **不可用** | 双阻塞：自身 `bevy ^0.19` + 依赖 `bevy_ecs_tilemap ^0.19.0`。⇒ **LDtk 工作流在 0.20 上不可选** | <https://docs.rs/crate/bevy_ecs_ldtk/latest> |
 | `bevy_ecs_tiled` | 无（最新 0.13.4，2026-08-24） | 最新版只到 **0.19** | Tiled 地图导入 | **不可用** | 双阻塞：自身 `bevy ^0.19` + `bevy_ecs_tilemap ^0.19`；其可选物理集成也指向 0.19（`avian2d ^0.7` / `bevy_rapier2d ^0.36`） | <https://docs.rs/crate/bevy_ecs_tiled/latest> |
-| `bevy_tweening` | 无（最新 0.16.0，2026-06-28） | 最新版只到 **0.19** | 补间动画 | **不可用** | ⇒ 装饰品/UI 过渡动画自研（Bevy 自带 `bevy_curve` 特性可用，见 `07`） | <https://docs.rs/crate/bevy_tweening/latest> |
+| `bevy_tweening` | 无（最新 0.16.0，2026-06-28） | 最新版只到 **0.19** | 补间动画 | **不可用** | ⇒ UI 过渡动画自研（Bevy 自带 `bevy_curve` 特性可用，见 `07`） | <https://docs.rs/crate/bevy_tweening/latest> |
 | `bevy_easings` | 无（最新 0.19.0，2026-06-24） | 最新版只到 **0.19** | 缓动 | **不可用** | 同上；它拆包依赖 `bevy_app/bevy_ecs/bevy_math/...` 而非 `bevy` 门面，迁移成本更高 | <https://docs.rs/crate/bevy_easings/latest> |
 | `iyes_perf_ui` | 无（最新 0.5.0，2025-05-20） | 最后兼容 **0.16** | 性能 HUD | **不可用** | 落后 4 个大版本；用内建 `bevy_dev_tools` / `FrameTimeDiagnosticsPlugin` 自建 | <https://docs.rs/crate/iyes_perf_ui/latest> |
 | `bevy_screen_diagnostics` | 无（最新 0.8.1，2025-04-26） | 最后兼容 **0.16** | 屏显诊断 | **不可用** | 落后 4 个大版本 | <https://docs.rs/crate/bevy_screen_diagnostics/latest> |
@@ -86,7 +86,7 @@
 | 瓦片渲染 | 自研（sprite/atlas 批次，见 `07`） | `bevy_ecs_tilemap` |
 | 关卡编辑工作流 | 自研 `.level.ron` + egui 编辑器（`03`、`08`） | LDtk / Tiled 导入器 |
 | 移动与碰撞 | 自研 AABB + 网格瓦片（`00` §0.1 D3、`06`） | `avian2d` / `bevy_rapier2d` |
-| 装饰品解锁 / UI 过渡动画 | 自研（内建 `bevy_curve` / `bevy_animation` 可用） | `bevy_tweening` / `bevy_easings` |
+| UI 过渡动画 | 自研（内建 `bevy_curve` / `bevy_animation` 可用） | `bevy_tweening` / `bevy_easings` |
 | 性能 HUD、热重载 | 内建 `dev` 集合（`debug` + `bevy_dev_tools` + `render_dev_tools` + `file_watcher`）+ `bevy::diagnostic` | `iyes_perf_ui` / `bevy_screen_diagnostics` |
 | 像素完美缩放 | 自研（见 `07`） | `bevy_pixel_camera` |
 | 世界检查器 | 自研 egui 面板（`08`） | `bevy-inspector-egui`、`bevy_editor_pls` |

@@ -227,6 +227,11 @@ d  = 0.5·(v + v')·dt               // ← 关键：用旧速与新速的平均
 | `HAZARD_INSET` | `2.0` | px | Hazard 判定的角色 AABB 内缩量 |
 | `PICKUP_INFLATE` | `2.0` | px | 拾取判定的角色 AABB 外扩量 |
 | `PICKUP_SIZE` | `12.0` | px | 拾取物 AABB 边长 |
+| `ITEM_SUPER_JUMP_VELOCITY_MULT` | `1.5` | × | 道具「高跳」起跳初速倍率（§6.12） |
+| `ITEM_SPEED_MAX_MULT` | `1.6` | × | 道具「快跑」最大水平速度倍率（§6.12） |
+| `ITEM_SPEED_ACCEL_MULT` | `1.4` | × | 道具「快跑」水平加/减速度倍率（§6.12） |
+| `ITEM_DOUBLE_JUMP_MAX_AIR_JUMPS` | `1` | 次 | 道具「双跳」允许的离地起跳次数（§6.12） |
+| `ITEM_DOUBLE_JUMP_VELOCITY_MULT` | `0.9` | × | 道具「双跳」空中起跳初速相对地面起跳的倍率（§6.12） |
 
 代码投影（`config.rs::physics`）：上表逐条写为 `pub const`；同时提供
 
@@ -606,7 +611,7 @@ match (nearest_standable_top_below(aabb, world), vel.y) {
 
 **不支持。** 理由：
 
-1. **需求未提**：`00` D2/D3 只要求瓦片网格 AABB；`01` 的首批目标类型是 `ReachExit` + `Collect`，无斜坡需求。
+1. **需求未提**：`00` D2/D3 只要求瓦片网格 AABB；`01` 的通关由终点区域触发，无斜坡需求。
 2. **成本显著抬高**：瓦片网格斜坡需要额外的斜面几何数据（每个瓦片内的三角/高度函数）、
    通用的"推离斜面法线"分离求解、沿坡滑动的受力模型、以及坡上接地判定与土狼时间的交互规则——
    这套东西的复杂度**超过本文其余全部内容之和**，而本文的轴分离算法会整体失效（轴分离对斜面本就不成立）。
@@ -733,26 +738,26 @@ Body::at_center(c) = Body {
 }
 ```
 
-### 6.5.4 可拾取物（果实）
+### 6.5.4 可拾取物（果实 / 道具）
 
 | 项 | 约定 |
 |---|---|
 | 数据 | 关卡实体列表中的一项（字段见 `03`），`at` = AABB 中心（房间局部坐标） |
 | AABB | `Aabb::from_center_size(world_center, Vec2::splat(PICKUP_SIZE))`，`PICKUP_SIZE = 12` px |
 | 判定 | 角色 AABB **外扩** `PICKUP_INFLATE`（= 2 px）后与拾取物 AABB 相交 ⇒ 已拾取（即 `overlaps_tile_kind(.., +PICKUP_INFLATE, ..)` 的正向外扩语义） |
-| 时机 | `FixedUpdate` 的 `check_pickups_and_zones`，物理步之后 |
-| 输出 | `MessageWriter<CollectiblePicked>`（消息名以 `05` 的命名为准），随后销毁该实体 |
+| 时机 | `FixedUpdate` 物理步之后：果实 `room::collect_fruit`，道具 `player::items::pickup_items` |
+| 输出 | 果实 → `CollectiblePicked`；道具 → 写 `CarriedItem` 并发 `ItemPicked`，随后销毁该实体 |
 | 为什么外扩而 Hazard 内缩 | 拾取要"手感慷慨"（差一点也算吃到）；危险要"手感宽容"（擦边不算死） |
 
-### 6.5.5 目标区域（`ReachExit` 及通用区域）
+### 6.5.5 区域传感器（终点 / 存档点）
 
 | 项 | 约定 |
 |---|---|
-| 表示 | 矩形区域（`at` = 中心、`size` = 宽高，字段见 `03`）；`ReachExit` 是其中一种用法（语义见 `01`） |
+| 表示 | 矩形区域（`at` = 中心、`size` = 宽高，字段见 `03`） |
 | 判定 | 角色 AABB 与区域 AABB **相交**（不做内缩/外扩） |
-| 附加条件 | 首批**无**附加条件（不要求 grounded）；`01` 若要新增条件（如"必须站在地面"），由 `01` 定义条件语义、由 `05` 装配判定系统，物理侧不再新增常量 |
-| 时机 | `FixedUpdate` 的 `check_pickups_and_zones`，物理步之后 |
-| 幂等 | 区域判定每步都可能为真，**由"是否已达成"的状态位去重**（状态位归 `01`/`02`），不由物理侧处理 |
+| 终点 | 每名玩家首次相交 ⇒ `run::detect_goal_touch` 锁定该玩家时间；`RunState` 去重 |
+| 存档点 | 玩家在区域内按 `E` ⇒ `checkpoint::activate_checkpoint`（`02` §2.5） |
+| 时机 | `FixedUpdate` 物理步之后 |
 
 ---
 
@@ -860,7 +865,7 @@ file_row = ROOM_TILES - 1 - lty                          // 关卡文件行号�
 
 理由（按权重排序）：
 
-1. **需求缺席**：`00` 的 D1–D17 与 `01` 的玩法范围（`ReachExit` + `Collect`）均未要求移动平台；
+1. **需求缺席**：`00` 的 D1–D17 与 `01` 的玩法范围（终点 + 道具）均未要求移动平台；
    §6.2.6 的静态跳跃预算已足以表达全部关卡意图（可攀 2 格、可跨 4 格缺口）。
 2. **承载语义会引入一整类难以测试的时序 bug**：位置差传递、单向平台上的传递、玩家被夹在平台与墙之间
    的挤压处理、以及"平台先动 → 再搬运玩家 → 再解玩家自身碰撞"的严格顺序。这些是物理侧最容易出
@@ -1143,3 +1148,32 @@ transform.translation = (render_pos.x, render_pos.y, Z)        // Z 由 07 给�
   默认 `(0,0)` 与旧行为一致。
 - **T26d 全链路自检**：用临时资产根把 `player.ron` 改成 `16×24 / (0,2)`，发布 bin 的
   `VERIFY: player transform == aabb` 与 `VERIFY: player collider size` 仍为 PASS。
+
+## 6.12 道具能力（v3）
+
+角色同一时刻至多携带一个道具（`CarriedItem(pub Option<ItemKind>)`）。道具只改**本玩家本固定步**的
+`PhysicsConfig` 副本（`player::items::apply_item_to_physics`），全局常量不变：
+
+| 道具 | 效果 | 实现 |
+|---|---|---|
+| `SuperJump` | 跳得更高 | `cfg.jump_velocity *= ITEM_SUPER_JUMP_VELOCITY_MULT` |
+| `Speed` | 跑得更快、加速更跟手 | `cfg.max_run_speed *= ITEM_SPEED_MAX_MULT`；`ground_accel/ground_friction/air_accel/air_drag *= ITEM_SPEED_ACCEL_MULT` |
+| `DoubleJump` | 离地后再跳一次 | `cfg.max_air_jumps = 1`；`cfg.air_jump_velocity = cfg.jump_velocity × ITEM_DOUBLE_JUMP_VELOCITY_MULT` |
+
+### 6.12.1 二段跳的状态机
+
+`Body.air_jumps_used` 记录离地后已用的额外起跳次数，落地/站上平台时清零。每固定步的起跳判定（在 §6.3.2 步骤 2 内）：
+
+1. 先判地面/土狼窗口：`grounded || airborne_since <= coyote_steps` ⇒ 普通跳，`air_jumps_used = 0`。
+2. 否则若 `air_jumps_used < cfg.max_air_jumps` ⇒ 空中跳，`air_jumps_used += 1`、`out.air_jumped = true`。
+3. 普通跳与空中跳都遵守可变跳跃高度（松手截断）。
+
+- 空中跳后 `airborne_since` 被设为 `coyote_steps + 1`，不会再次获得土狼时间。
+- 落地吸附（§6.3.2 步骤 6）成功后 `air_jumps_used = 0`。
+- 客户端预测从快照恢复 `Body.air_jumps_used`（`PlayerSnap` 的 flags bits 2–3），避免每次快照刷新多送一次二段跳。
+
+### 6.12.2 道具的生命周期
+
+- 拾取：`FixedUpdate` 物理步后，角色 AABB 外扩 `PICKUP_INFLATE` 与 `item` 区域相交 ⇒ 覆盖 `CarriedItem`，销毁实体。
+- **死亡保留**道具：避免一次性道具被消耗后无法继续（`01` §1.5）。
+- 不写存档，不进网络持久状态；联机快照带 `item` 供客户端预测。

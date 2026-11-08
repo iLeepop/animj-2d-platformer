@@ -12,11 +12,11 @@
 |---|---|
 | 资源根目录 `assets/` 的顶层子目录 | `00` §0.6（**本文不得增删顶层目录**） |
 | 瓦片网格边长 `TILE_PX`、房间尺寸 | `00` §0.3 |
-| Z 层分配（含装饰品图层 Z 公式） | `00` §0.4 |
-| 资源文件命名 / 装饰品 id 规则 | `00` §0.5（本文 §2 展开为可执行规则，不新增命名空间） |
+| Z 层分配（含拾取物/终点/存档点 Z） | `00` §0.4 |
+| 资源文件命名 / 关卡 id 规则 | `00` §0.5（本文 §2 展开为可执行规则，不新增命名空间） |
 | legend 字符 → `TileKind` 映射、`tileset.png` 的**索引语义** | `03-level-format.md`（**本文只定义 `tileset.png` 的物理布局，§10**） |
 | 采样器滤波、`ImagePlugin`、相机/像素吸附等渲染配置 | `07-rendering.md` |
-| 装饰品**清单（哪些 id 存在）**与解锁规则 | `01-game-design.md` |
+| 道具/关卡的**清单（哪些 id 存在）** | `01-game-design.md` / 关卡文件 |
 | 物理/手感常量（角色 AABB 尺寸、速度） | `06-physics-and-movement.md` |
 
 **原则**：本文中出现的每个像素尺寸、帧数、目录都必须是「生成器可执行 + 真美术可无痛替换」的硬约束。改本文的这些值 = 破坏性变更，必须同步改占位生成器与已产出的 PNG。
@@ -36,8 +36,7 @@ assets/
 │  │  └─ cat_sheet.png              # 角色动画图集（§3.2 / §5）
 │  ├─ tiles/
 │  │  └─ tileset.png                # 唯一瓦片图集（§3.3 / §10）
-│  ├─ decorations/
-│  │  └─ <id>.png                   # 每个装饰品一张 32×32 静态贴图（§6）
+│  ├─ player/
 │  ├─ backgrounds/
 │  │  └─ <name>.png                 # 视差背景层（`03` §3.10 / `07` §7.13）；尺寸自定
 │  └─ ui/
@@ -59,7 +58,7 @@ assets/
 |---|---|---|---|
 | 角色图集 | 固定文件名 `assets/sprites/player/cat_sheet.png` | — | `00` §0.6 |
 | 瓦片图集 | 占位资产固定为 `assets/sprites/tiles/tileset.png`；真实美术可由关卡 `tileset` 字段指向独立文件（如 `tileset_n.png`），并用该关卡的 `tileset_columns` 描述列数 | — | `00` §0.5 / §0.6、本文 §7.3 |
-| 装饰品 | `snake_case`，**文件名（去扩展名）严格等于装饰品 id** | id `straw_hat` → `assets/sprites/decorations/straw_hat.png` | `00` §0.5 |
+| 道具（将来真美术） | `snake_case`，与 `ItemKind` 一致 | `SuperJump` → `assets/sprites/items/super_jump.png` | `03` §3.5 |
 | 背景层 | `snake_case`，可自由命名；尺寸自定（建议 ≥ 512×512），必须能无缝平铺 | `assets/sprites/backgrounds/sky.png` | `03` §3.10 / `07` §7.13 |
 | 关卡文件 | `assets/levels/<level_id>.level.ron`，文件内 `name` 必须等于 `<level_id>` | — | `00` §0.5 |
 | 字体 | `<font_name>.ttf`，`snake_case` | `assets/fonts/pixel_sans.ttf` | 本文 §9 |
@@ -72,7 +71,7 @@ id 规则（与 `00` §0.5 一致）：
 ```
 
 - **禁止**在 id 或文件名中出现大写字母、空格、连字符、非 ASCII。
-- 装饰品 id 是**唯一键**：`01` 的装饰品清单、`assets/sprites/decorations/<id>.png`、存档 `SaveData` 中的记录、运行时组件字段必须**逐字节相同**。
+- 道具类型是 RON 枚举值（`03` §3.5），当前无独立贴图资产：占位色块由运行时绘制。
 - 角色图集/瓦片图集**不接受**多版本命名（禁止 `cat_sheet_v2.png`、`tileset_dark.png`）；换美术 = 覆盖同名文件（§7）。
 
 ---
@@ -145,7 +144,7 @@ index(row, col) = row * COLUMNS + col        // 0-based
 |---|---|---|---|---|
 | 角色 | `assets/sprites/player/cat_sheet.png` | `6 × 4` | `192 × 128` | 见 §5 |
 | 瓦片 | `assets/sprites/tiles/tileset.png` | `TILESET_COLUMNS × N`（§10） | `(32·TILESET_COLUMNS) × (32·N)` | 由 `03` legend 固定 |
-| 装饰品 | `assets/sprites/decorations/<id>.png` | `1 × 1` | `32 × 32` | 静态单帧 |
+| 道具（当前占位） | 运行时色块 | `1 × 1` | `12 × 12`（`PICKUP_SIZE`） | 无贴图资产 |
 | UI | `assets/sprites/ui/ui_atlas.png` | 由 §9 决定 | 同上规则 | UI 专用 |
 
 验证整除：`192 = 32×6`，`128 = 32×4` ✓。
@@ -162,7 +161,7 @@ index(row, col) = row * COLUMNS + col        // 0-based
 | 对象 | Anchor | 对齐基准 |
 |---|---|---|
 | 角色本体 sprite | `Anchor::BOTTOM_CENTER` | **脚底中点**对齐角色 AABB 的**底边中点** |
-| 装饰品 sprite | `Anchor::BOTTOM_CENTER` | 同角色基准 + 每装饰品偏移（见下） |
+| 可拾取物 sprite | `Anchor::BOTTOM_CENTER` | 判定盒底边中点（`load.rs`） |
 | 瓦片 sprite | `Anchor::BOTTOM_CENTER` | 瓦片 AABB 的**底边中点**（全局统一约定，见 `07` §7.8） |
 | 拾取物 / 敌人 | `Anchor::BOTTOM_CENTER` | 各自 AABB 底边中点 |
 | UI `ImageNode` | 不适用（用 `Node` flex 布局） | — |
@@ -178,13 +177,7 @@ player_anchor_world = Vec2::new(aabb.center().x, aabb.min.y)   // 脚底中点�
 sprite_anchor_xy    = player_anchor_world                       // Anchor::BOTTOM_CENTER
 ```
 
-4. **装饰品图层偏移公式**（§6 的每 id 偏移）：
-
-```
-decor_world = player_anchor_world + offset(id)     // offset(id): Vec2，单位像素，来自 §6 表
-```
-
-5. **镜像一致性**：若角色 sprite 设 `flip_x = true`，则其所有已装备装饰品 sprite 必须同样设 `flip_x = true`（否则左右不对称）。镜像时 `Anchor::BOTTOM_CENTER` 不改变对齐，但装饰品的 `offset(id).x` 需随之取反（见 §6 公式）。
+4. **镜像一致性**：角色 sprite 设 `flip_x = true` 时，仅角色贴图翻转；道具/终点是独立世界实体，不随朝向镜像。
 
 ---
 
@@ -343,7 +336,7 @@ fn spawn_player(mut commands: Commands, assets: Res<AssetServer>,
 | 角色各状态图集（`player.anim.ron` 的 `sheet`） | `player::spawn::rebuild_player_sheets` 把每个状态图集的 mtime 纳入重建键 | 试玩与发布 bin 的角色贴图 |
 | 动画面板预览 | `prepare_textures` 的图集缓存键加入 mtime | 编辑器动画面板 |
 | 背景层贴图 | `game::render::parallax` 的贴图身份键 = 路径 + mtime，变化即重新解码并用新尺寸重建 | 编辑器画布、试玩、发布 bin |
-| 内置图集 / 装饰品（走 `AssetServer`） | Bevy `file_watcher`（`dev` feature） | 同上 |
+| 内置图集 / 背景（走 `AssetServer`） | Bevy `file_watcher`（`dev` feature） | 同上 |
 
 规则：
 
@@ -352,65 +345,20 @@ fn spawn_player(mut commands: Commands, assets: Res<AssetServer>,
 - 重画只允许覆盖 PNG 字节；`TILE_PX`、图集行列数、帧序列（§3、§5）不变。
 - mtime 精度不足的文件系统（如 1 s 粒度）可能在同秒内漏掉一次改动；保存后隔一秒再观察即可。
 
-## 6. 装饰品图层
+## 6. 道具占位表现
 
-### 6.1 图层顺序（从最靠近角色到最外层）
+v3 起**没有装饰品图层**（`01` §1.5）：角色不叠加任何外观配件，`DECORATION_LAYERS` / `player/decor.rs` / `sprites/decorations/` 均已删除。
 
-> 多人：角色本体的世界 Z 是 `40.0 + 0.1 × 玩家编号`（`00` §0.4），装饰品实体的**局部** Z 必须减去
-> 它父玩家的 Z（`config::render::z::player_z` / `player::decor::decoration_local_z_for`）。
+道具当前不引入贴图资产，而是由运行时按类型绘制 12×12 占位色块（与 `fruit` 同一拾取层 Z，见 `00` §0.4）：
 
-
-Z 值**唯一来源**见 `00` §0.4（本文不复制该公式）；本文只定义**槽位顺序**与**层数上限**。
-
-| `layer_index` | 槽位名 | 语义（放什么） |
-|---|---|---|
-| 0 | `body` | 身体贴花（毛色斑纹、贴纸） |
-| 1 | `feet` | 脚部（鞋、靴） |
-| 2 | `torso` | 躯干（背带、马甲、围裙） |
-| 3 | `neck` | 颈部（围巾、项圈、领结） |
-| 4 | `face` | 面部（眼镜、面具、眼罩） |
-| 5 | `head` | 头顶（帽子、头饰、耳朵挂件） |
-| 6 | `outer` | 最外层（披风、尾饰、天线） |
-
-- **最大图层数 `DECORATION_LAYERS = 7`**（`layer_index ∈ 0..=6`）。该上限由 `00` §0.4 给出的装饰品图层 Z 区间跨度决定，**与 `00` 冲突时以 `00` 为准**。
-- 同一角色同一 `layer_index` 处**至多一个**装饰品；重复装备则**替换**（不是叠加）。
-- 由于 `00` §0.4 规定装饰品整体绘制在角色本体**之前（上层）**，本项目**不提供**「角色背后」槽位；需要背向遮挡的部件（如真正的披风后摆）应改走前景瓦片层（见 `07`），不得私自改 Z。
-
-### 6.2 装饰品元数据表（`config.rs` 中的常量）
-
-每个装饰品 id 在本模块登记：`layer_index` + 与角色画布对齐的像素偏移。偏移基准 = §4 的 `player_anchor_world`（脚底中点）。
-
-```
-offset(id) = Vec2::new(dx, dy)      // 像素；dy 向上为正（Bevy +Y 向上）
-decor_world = player_anchor_world + offset(id)          // 未镜像
-decor_world = flip(player_anchor_world) + Vec2::new(-dx, dy)   // 角色 flip_x 时 x 取反
-```
-
-```rust
-pub struct DecorationSpec { pub id: &'static str, pub layer: u8, pub offset: Vec2 }
-
-// 示例登记（真实 id 清单归 01；此处只演示字段）
-pub const DECORATIONS: &[DecorationSpec] = &[
-    // DecorationSpec { id: "straw_hat", layer: 5, offset: Vec2::new(0.0, 2.0) },
-    // DecorationSpec { id: "scarf",     layer: 3, offset: Vec2::new(0.0, 0.0) },
-];
-```
-
-- 装饰品贴图 = 单帧 32×32（§3.3）。`offset` 是纯像素整数（`fract() == 0`），避免破坏像素吸附（见 `07`）。
-- 装饰品**不参与**物理/碰撞，纯外观（`00` §0.1 D8）。
-
-### 6.3 未装备时的行为
-
-| 状态 | 行为 |
+| 道具 | 颜色（`player::items::item_color`） |
 |---|---|
-| 某槽位未装备 | **不 spawn** 该层的 sprite 实体（严禁 spawn 后设 `Visibility::Hidden` 占位） |
-| 首次装备 | 创建 sprite：`Sprite::from_atlas_image(<id>.png …)` + `Anchor::BOTTOM_CENTER`，`flip_x` 跟随角色 |
-| 替换装备 | 复用同一实体，仅替换 `Sprite.image`（`Handle<Image>`）与 `offset` |
-| 卸下 | despawn 该层实体 |
-| 存档缺失该 id | 视为未装备（不报错、不生成占位） |
+| `SuperJump` | 橙 `0.98, 0.55, 0.20` |
+| `Speed` | 青 `0.35, 0.85, 0.95` |
+| `DoubleJump` | 紫 `0.85, 0.40, 0.95` |
 
-- 实现建议：用 `DecorationSlot { layer: u8, id: DecorationId }` 组件标记「角色 + 槽位」；查询 `(DecorationSpec, )` 决定 Z（Z 值取自 `00` §0.4）。
-- 每帧（或装备变更时）按 §4 公式重算所有 decorate sprite 的世界位置与 `flip_x`。
+- 拾取后实体销毁；HUD 显示当前道具名（文案见 `05` §5.14）。
+- 将来若换成真美术：新增 `assets/sprites/items/<kind>.png`（严格 32×32）即可，不改格式与物理。
 
 ---
 
@@ -432,8 +380,7 @@ pub const DECORATIONS: &[DecorationSpec] = &[
 | `land` | 落地（`StepOutcome.landed`） |
 | `bump` | 撞头（`StepOutcome.head_bumped`） |
 | `pickup` | `CollectiblePicked` |
-| `clear` | `RoomCleared` |
-| `decoration` | `DecorationGranted` |
+| `clear` | `PlayerFinished`（到达终点） |
 | `death` | `PlayerDied` |
 
 新增 cue 必须同时：本表一行、`assets/audio/` 一个文件、生成器一条 job（`08` §8.10.3）。
@@ -456,12 +403,11 @@ pub const DECORATIONS: &[DecorationSpec] = &[
 | `cat_sheet.png` | `192 × 128` | `6 × 4`；行 = `idle/run/jump/fall`；有效帧 `4/6/2/2`，其余格**全透明** |
 | `tileset.png` | `256 × 32` | `8 × 1`；格 `0..3` = `solid/oneway/spike/decor`（顺序不可变）；其余格全透明 |
 | `ui_atlas.png` | `128 × 64` | `4 × 2` |
-| `decorations/<id>.png` | `32 × 32` | 单帧；`<id>` = 关卡 `reward` 并集（当前 `item_01`…`item_30`） |
 | `audio/<cue>.wav` | ≤ 0.3 s | PCM 16-bit / 单声道 / 44.1 kHz；cue 见 §6.9.1 |
 | `fonts/<name>.ttf` | — | 可选；入库即优先启用（未入库时回退系统 CJK 字体，见 §9） |
 
 4. **命名逐字节一致**（大小写也算）：Windows 不敏感、CI/Linux 敏感。
-5. 交付前用编辑器复核：`cargo editor -- --frames 90` 打开，确认 30 件装饰品与全部瓦片显示正常。
+5. 交付前用编辑器复核：`cargo editor -- --frames 90` 打开，确认全部瓦片、终点、道具与存档点显示正常。
 
 ## 7. 占位资产策略
 
@@ -499,12 +445,11 @@ animj-dev gen-placeholder-assets [--out assets] [--force]
 |---|---|---|---|---|
 | `assets/sprites/player/cat_sheet.png` | `6 × 4` | `192 × 128` | 24 格（有效 14 帧，其余透明） | 行 = `idle/run/jump/fall`，帧序见 §5.2。**占位身体 = `PLAYER_SIZE`（默认 20×28）且底对齐**：看到的就是撞到的；满 32×32 的身体会让 6 px / 4 px 的视觉外沿被误认为穿模。注意：`PLAYER_SIZE` 是**默认值**，运行时由 `assets/config/player.ron` 覆盖（`06` §6.5.1）；修改全局碰撞后占位图不会自动重画，需要重新生成/绘制 |
 | `assets/sprites/tiles/tileset.png` | `TILESET_COLUMNS × N` | `(32·TILESET_COLUMNS) × (32·N)` | `TILESET_COLUMNS × N` | 每格带索引数字；`N` 由 `03` §3.3 的**可渲染**条目数决定（算法见 §10）。**轮廓必须表达物理语义**（`06` §6.4.5）：`#` 实心 = 满格纯色；`=` 单向平台 = 顶部 8 px 薄板（下方全透明）；`^` 尖刺 = 锯齿；装饰 = 内缩小块。历史上四类都画成满格方块，导致玩家把单向平台当成实心块、误以为"跳跃穿模" |
-| `assets/sprites/decorations/<id>.png` | `1 × 1` | `32 × 32` | 1 | 每个 id 一张：**背景全透明**，只在角色画布坐标上画识别图形（居中色块 + 指纹刻度 + 索引角标）；`<id>` 为所有关卡 `reward` 字段的并集（`03` §3.2）。**不得整格不透明**：装饰品是叠加层（§6.1），全不透明会遮住角色本体 |
 | `assets/sprites/ui/ui_atlas.png` | 见 §9 | 同规则 | — | UI 图标占位 |
 | `assets/fonts/<font_name>.ttf` | — | — | — | **不生成**；字体为随仓库提交的静态资产 |
 
 - `tileset.png` 的行数 `N` 与索引**语义**由 `03` 的 legend 唯一决定；生成器**读取 legend**（或由 `03` 提供的等价表）后输出，**不得**内置一套独立映射（§10）。
-- 装饰品 id 清单**唯一来源是所有关卡 `.level.ron` 中 `reward` 字段的并集**（`03` §3.2 / §3.7 V11）；生成器不内置 id 列表，必须扫描 `assets/levels/` 得到。
+- v3 起不再生成装饰品贴图；道具占位由运行时色块绘制（§6），因此生成器不扫描关卡内容。
 
 ### 7.4 占位调色板（8 色）
 
@@ -515,7 +460,7 @@ animj-dev gen-placeholder-assets [--out assets] [--force]
 | 2 | `primary` | `#5d275d` | 主体 |
 | 3 | `secondary` | `#b13e53` | 次体 |
 | 4 | `accent` | `#ef7d57` | 高亮 |
-| 5 | `skin` | `#ffcd75` | 角色/装饰品基色 |
+| 5 | `skin` | `#ffcd75` | 角色基色 |
 | 6 | `marker` | `#38b764` | 帧号/索引标注 |
 | 7 | `outline` | `#f4f4f4` | 轮廓/文字 |
 
@@ -542,7 +487,7 @@ animj-dev gen-placeholder-assets [--out assets] [--force]
 1. **不要**把 sRGB 图像当线性处理（或在导出时做 gamma 变换）；否则颜色会系统性偏亮/偏暗。
 2. **不要**为像素艺术烘焙"最近邻放大"后的图；保持原始小尺寸，交给 `07` 的整数倍缩放。
 3. 需要**逐资源**覆盖采样器时（例如线性缩放的 UI 图集），走 `ImageLoaderSettings`（`07` 记录写法）；本文默认全局 nearest。
-4. 半透明装饰品（如玻璃、气泡）允许 `0<alpha<255`，但必须保证是**直通 alpha**；与角色合成时若出现描边渗色，改为 `alpha∈{0,255}` 或用 `SpriteAlphaMode`（见 `07` / `10`）。
+4. 半透明特效（如玻璃、气泡）允许 `0<alpha<255`，但必须保证是**直通 alpha**；与角色合成时若出现描边渗色，改为 `alpha∈{0,255}` 或用 `SpriteAlphaMode`（见 `07` / `10`）。
 
 ---
 
@@ -630,8 +575,7 @@ fn tileset_layout(layouts: &mut Assets<TextureAtlasLayout>, rows: u32) -> Handle
 | `PLAYER_SHEET_ROWS` | `4` | 本文 §3.2 / §5.2 |
 | 角色动画帧数 | `idle 4 / run 6 / jump 2 / fall 2` | 本文 §5.2 |
 | 角色帧时长 | `idle 0.20 / run 0.08 / jump 0.10 / fall 0.12`（秒/帧） | 本文 §5.2 |
-| `DECORATION_LAYERS` | `7`（`layer_index 0..=6`） | 本文 §6.1 |
-| 装饰品贴图尺寸 | `32 × 32`（=`TILE_PX`） | 本文 §3.3 / §6 |
+| 道具占位尺寸 | `12 × 12`（`PICKUP_SIZE`，运行时色块） | 本文 §6 |
 | `TILESET_COLUMNS` | `8` | 本文 §10 |
 | 占位调色板 | 见 §7.4 | 本文 |
 

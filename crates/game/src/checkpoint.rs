@@ -190,14 +190,13 @@ mod tests {
             rooms: vec![Room {
                 name: None,
                 tiles: vec![".".repeat(ROOM_TILES); ROOM_TILES],
-                goals: vec![level_format::Goal::ReachExit],
-                reward: None,
                 spawn: None,
                 entities: vec![level_format::EntitySpec {
                     kind: KIND.to_string(),
                     at: CHECKPOINT_AT,
                     size: None,
                     id: None,
+                    item: None,
                 }],
             }],
         }

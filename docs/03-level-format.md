@@ -1,6 +1,6 @@
 # 03 — 关卡数据格式（`.level.ron`）
 
-> 坐标与网格定义见 `00-conventions.md` §0.3。**本文拥有**：文件 schema、legend、实体 kind 注册表、目标条件枚举、校验规则、读写入口。
+> 坐标与网格定义见 `00-conventions.md` §0.3。**本文拥有**：文件 schema、legend、实体 kind 注册表、道具类型枚举、校验规则、读写入口。
 > 本文定义的一切字段名都是契约：编辑器（`08`）、运行时（`05`）、美术（`04`）都依赖它们。
 
 ## 3.1 文件与读写
@@ -24,10 +24,13 @@
 
 ```rust
 pub struct Level {
-    pub version: u32,            // 必须 == 1
+    pub version: u32,            // 必须 == 3
     pub name: String,            // snake_case，等于文件名
     pub grid: Grid,              // (cols, rows)
     pub start: RoomCoord,        // 起始房间
+    pub tileset: Option<String>, // 自定义贴图（§3.9）
+    pub tileset_columns: u32,    // 贴图列数（§3.9）
+    pub palette: Vec<PaletteEntry>, // 地块调色板（§3.9）
     pub background: Option<Background>, // 背景视差层（§3.10）；None = 无背景
     pub rooms: Vec<Room>,        // 行主序，len == cols * rows，row 0 = 地图最上一行
 }
@@ -45,8 +48,6 @@ pub struct RoomCoord { pub col: u32, pub row: u32 }
 pub struct Room {
     pub name: Option<String>,    // 可选，便于编辑器与 diff 阅读；全关卡唯一
     pub tiles: Vec<String>,      // 恰好 16 个字符串，每个恰好 16 个 legend 字符
-    pub goals: Vec<Goal>,        // 允许为空（设计上要求至少 1 个，但代码不强制；空列表永不通关）
-    pub reward: Option<String>,  // 装饰品 id；None = 本房间不授予装饰品
     pub spawn: Option<(i32, i32)>, // 重生点（房间局部坐标，AABB 中心）；None = 用 02 的默认值
     pub entities: Vec<EntitySpec>,
 }
@@ -56,8 +57,11 @@ pub struct EntitySpec {
     pub at: (i32, i32),          // 房间局部坐标，AABB 中心，单位像素
     pub size: Option<(i32, i32)>,// 默认 (32, 32)
     pub id: Option<String>,      // 可选稳定标识，供编辑器与后续逻辑引用
+    pub item: Option<ItemKind>,  // 仅 kind == "item" 时有效（V24）
 }
 ```
+
+> **v3 破坏性变更**：房间级 `goals` / `reward` 已删除；房间不再有通关目标。通关由**全关卡唯一的 `goal` 实体**触发（§3.4）。格式迁移见 §3.8。
 
 **为什么坐标是 `i32` 而不是 `f32`**：像素风不存在亚像素摆放；整数能消除浮点格式化噪声（diff 干净）并让"是否对齐网格"成为编译期不可表达的错误。
 
@@ -93,7 +97,7 @@ pub struct EntitySpec {
 
 ```ron
 (
-    version: 2,
+    version: 3,
     name: "world_01",
     tileset: Some("sprites/tiles/my_sheet.png"),   // 相对 assets/；32×32 网格。也接受 "assets/..." 写法（加载时统一规范化）
     tileset_columns: 6,                            // 贴图列数；行数 = ceil(cells / columns)。编辑器加载贴图后按宽度自动校正
@@ -113,7 +117,7 @@ pub struct EntitySpec {
 
 | 规则 | 说明 |
 |---|---|
-| 版本 | `version: 2`。v1 文件由 `migrate.rs` 自动迁移（补 `tileset: None`、`palette` = 内置 4 条、`tileset_columns: 8`） |
+| 版本 | `version: 3`。v1/v2 文件由 `io::read` 自动迁移（补 `tileset: None` / `palette` = 内置 4 条 / `tileset_columns: 8`，删除 `goals`/`reward`，`exit` → `goal`） |
 | `palette` 唯一性 | `char` 唯一且不得为 `.`（空气固定）；`name` 非空；`cell` 在贴图范围内（由编辑器/加载器检查，校验器只看结构） |
 | `behavior` | 只允许 4 种；**新增行为 = 破坏性变更**，必须同时改 `06` 的物理内核与本节 |
 | `collision` | **可选**（`None`/缺省 = 整格 32×32）。`vertices` 是 3..=32 个顶点的**简单多边形**，坐标为瓦片局部像素：原点 = 瓦片左上角、+Y 向下，取值 `0..=32`。同一字符在任意房间共享同一碰撞范围 |
@@ -126,7 +130,7 @@ pub struct EntitySpec {
 
 ```ron
 (
-    version: 2,
+    version: 3,
     // ...
     background: Some((
         layers: [
@@ -146,29 +150,31 @@ pub struct EntitySpec {
 | 数量 | `layers.len() <= 3`（V20）；上限常量是 `MAX_BACKGROUND_LAYERS` |
 | 非破坏性 | 新增 `Option` 字段（serde 默认值），**不升版本**；旧文件读取后 `background = None` |
 
-## 3.4 实体 kind 注册表（v1）
+## 3.4 实体 kind 注册表（v3）
 
 | `kind` | 默认 `size` | 上限/约束 | 说明 |
 |---|---|---|---|
-| `player_spawn` | `(32, 32)` | 全关卡**恰好 1 个**，**可以位于任意房间**（V12）；游戏从它所在房间开始 | 玩家初始位置；也定义关卡起手朝向无意义（默认朝右） |
-| `exit` | `(32, 32)` | 含 `ReachExit` 条件的房间**恰好 1 个**（V8） | 出口区域，触发器（无碰撞） |
-| `fruit` | `(32, 32)` | 每房间 `0..=255` 个 | 收集品，进入 `Collect` / `CollectAll` 的计数 |
+| `player_spawn` | `(32, 32)` | 全关卡**恰好 1 个**，**可以位于任意房间**（V12）；游戏从它所在房间开始 | 玩家初始位置 |
+| `goal` | `(32, 32)` | 全关卡**恰好 1 个**（V23） | **终点**：玩家 AABB 与它相交即该玩家到达终点（`01` §1.4） |
+| `item` | `(12, 12)` | 每房间 `0..=255` 个；**必须**带 `item` 字段（V24） | 可拾取道具；拾取后覆盖角色当前道具（`01` §1.5、`06` §6.12） |
+| `fruit` | `(12, 12)` | 每房间 `0..=255` 个 | 可选收集品（当前只播放拾取反馈与计入存档，不参与通关） |
 | `checkpoint` | `(32, 32)` | 每房间 `0..=255` 个 | 存档点区域；玩家在内按 `E` 激活并写盘（`02` §2.5）。`at` = 重生时的 AABB 中心，必须摆在地面上 |
 
-Roadmap（**格式保留位，v1 校验会拒绝**）：`enemy`、`switch`、`moving_platform`。
+Roadmap（**格式保留位，v3 校验会拒绝**）：`enemy`、`switch`、`moving_platform`。
 
-## 3.5 目标条件枚举
+## 3.5 道具类型枚举
 
 ```rust
-pub enum Goal {
-    ReachExit,             // 玩家 AABB 与 exit 区域相交
-    CollectAll,            // 该房间所有 fruit 已收集
-    Collect { count: u32 } // 该房间已收集 fruit >= count
+pub enum ItemKind {
+    SuperJump,   // 跳得更高（起跳初速倍率）
+    Speed,       // 跑得更快（水平最大速度 / 加速度倍率）
+    DoubleJump,  // 二段跳（离地后额外起跳一次）
 }
 ```
 
-语义与首批范围见 `01` §1.4。条件之间是 **AND**。`goals` **允许为空**：
-「每个房间至少一个目标」是关卡设计约束，**不在代码里强制**；空列表在运行时永不满足（不会自动通关）。
+- 角色**同一时刻至多携带一个道具**；再次拾取直接覆盖，不叠加（`01` §1.5）。
+- 道具实体在拾取后销毁；死亡**不清空**道具，避免一次性道具被消耗后卡死关卡。
+- 具体倍率归 `06` §6.12；这里是 RON 枚举名（`item: Some(SuperJump)`）。
 
 ## 3.6 完整示例
 
@@ -179,7 +185,7 @@ pub enum Goal {
 
 ```ron
 (
-    version: 1,
+    version: 3,
     name: "world_01",
     grid: (cols: 2, rows: 1),
     start: (col: 0, row: 0),
@@ -187,9 +193,7 @@ pub enum Goal {
         // ---- rooms[0] = (col 0, row 0)，起始房间 ----
         (
             name: Some("start"),
-            reward: None,
             spawn: None,
-            goals: [ ReachExit ],
             tiles: [
                 "................",  // 文件第 0 行 = 房间最上一行（本地 y ∈ [0, 32)）
                 "................",
@@ -211,15 +215,13 @@ pub enum Goal {
             entities: [
                 // at 是 AABB 中心：32x32 实体 ⇒ 该 AABB 为 x[48,80] y[448,480]，正好站在地面上
                 (kind: "player_spawn", at: (64, 464)),
-                (kind: "exit", at: (448, 464)),
+                (kind: "goal", at: (448, 464)),
             ],
         ),
         // ---- rooms[1] = (col 1, row 0) ----
         (
             name: Some("fruit_room"),
-            reward: Some("straw_hat"),
             spawn: None,
-            goals: [ ReachExit, Collect(count: 2) ],
             tiles: [
                 "................",
                 "................",
@@ -239,10 +241,10 @@ pub enum Goal {
                 "################",
             ],
             entities: [
-                (kind: "exit",           at: (448, 432)),
-                (kind: "fruit",          at: (208, 432)),
-                (kind: "fruit",          at: (272, 432)),
-                (kind: "fruit",          at: (336, 432)),
+                (kind: "item", item: Some(DoubleJump), at: (160, 432)),
+                (kind: "fruit", at: (208, 432)),
+                (kind: "fruit", at: (272, 432)),
+                (kind: "fruit", at: (336, 432)),
             ],
         ),
     ],
@@ -283,26 +285,22 @@ pub fn validate(level: &Level) -> Vec<LevelIssue>
 | 严重度 | 含义 | 加载时 | 保存时 | `animj-dev validate-levels` 退出码 |
 |---|---|---|---|---|
 | `Fatal` | **结构不变式**被破坏。不可能由合法编辑产生，出现即视为 bug | 拒绝 | 拒绝 | 非零 |
-| `Error` | 语义违规：数据自相矛盾（例：条件要求 3 个果实但房间里只有 2 个） | 拒绝 | **允许**（编辑器必须能存半成品，见 `08` §8.8.3） | 非零 |
+| `Error` | 语义违规：数据自相矛盾（例：关卡没有终点 / 道具实体缺类型） | 拒绝 | **允许**（编辑器必须能存半成品，见 `08` §8.8.3） | 非零 |
 | `Warning` | 可疑但可用（例：实体卡在实心瓦片里） | 允许 | 允许 | `0` |
 
-- `path` 格式：结构字段用 `rooms[13].goals[1].count`；瓦片类问题用 `rooms[3].tiles[12]`；实体类问题用 `rooms[7].entities[2].at`。
+- `path` 格式：结构字段用 `rooms[13].entities[1].item`；瓦片类问题用 `rooms[3].tiles[12]`；实体类问题用 `rooms[7].entities[2].at`。
 - 校验必须是**纯函数**：不读文件、不依赖 Bevy，可直接单测。规则实现必须遍历全部房间，**不得**在第一个错误处返回。
-- 规则编号（`V1`…`V22`；`V7` 已移除且不复用）是对外契约：错误消息必须带上编号，便于文档、编辑器高亮与 CI 输出互相定位。
+- 规则编号（`V1`…`V24`；`V7`/`V8`/`V9`/`V10`/`V11` 已移除且不复用）是对外契约：错误消息必须带上编号，便于文档、编辑器高亮与 CI 输出互相定位。
 
 | # | 规则 | 严重度 |
 |---|---|---|
-| V1 | `version == VERSION`（当前 `2`） | Fatal |
+| V1 | `version == VERSION`（当前 `3`） | Fatal |
 | V2 | `name` 匹配 `^[a-z0-9_]+$`，且等于文件名主干 | Error |
 | V3 | `grid.cols >= 1 && grid.rows >= 1 && cols * rows <= 256` | Error |
 | V3b | `cols * rows > 64` | Warning（见 `02` §2.4 的裁剪 Roadmap） |
 | V4 | `rooms.len() == cols * rows` | Error |
 | V5 | 每个房间 `tiles.len() == 16`；每行字符数（**按 `char` 计**）`== 16` | Fatal |
 | V6 | 每个字符都在 legend 中 | Error |
-| V8 | 含 `ReachExit` ⇒ 该房间 `exit` 实体数 `== 1` | Error |
-| V9 | 含 `CollectAll` ⇒ 该房间 `fruit` 数 `>= 1` | Error |
-| V10 | `Collect { count }` ⇒ `1 <= count <=` 该房间 `fruit` 数 | Error |
-| V11 | `reward` 若为 `Some`：匹配 `^[a-z0-9_]+$`，且全关卡唯一 | Error |
 | V12 | 全关卡 `player_spawn` 实体数 `== 1`（房间不限） | Error |
 | V13 | 实体 `at` 满足 `0 <= x < 512 && 0 <= y < 512`；`size` 各分量 `>= 1` 且 `<= 512` | Error |
 | V14 | `kind` 在 §3.4 注册表中 | Error |
@@ -314,8 +312,10 @@ pub fn validate(level: &Level) -> Vec<LevelIssue>
 | V20 | `background`：`layers.len() <= 3`；每层 `image` 非空；`scroll_x/y <= 100` | Error |
 | V21 | `palette[*].collision` 结构非法：顶点数不在 `3..=32`、坐标超出 `0..=32`、顶点重合、面积为 0、或边自交 | Error |
 | V22 | `palette[*].collision` 实际不生效：`behavior == None`，或栅格化后不覆盖任何像素中心 | Warning |
+| V23 | 全关卡 `goal` 实体数 `== 1` | Error |
+| V24 | `kind == "item"` 必须带 `item` 字段；其它 `kind` 不得带 `item` | Error |
 
-> **V7 已移除**（曾规定 `goals` 非空）：房间目标数量属于关卡设计，不由代码校验；编号不复用，避免与历史错误输出混淆。
+> **V7–V11 已移除**：房间目标机制与装饰品奖励在 v3 删除。编号不复用，避免与历史错误输出混淆。
 >
 > 上表的严重度语义见本节开头三态表。`V4`（房间数与网格不符）同样属于结构不变式，但可以由编辑器改变 `cols/rows` 而合法地瞬时出现，故定为 `Error` 而非 `Fatal`。
 
@@ -324,17 +324,18 @@ pub fn validate(level: &Level) -> Vec<LevelIssue>
 | 规则 | 说明 |
 |---|---|
 | 版本字段 | `version` 是首个字段，缺省即非法 |
-| 未知版本 | Loader **必须硬失败**，错误信息包含"文件版本 X，本引擎支持 2"。禁止宽容解析或猜测 |
-| 破坏性变更 | legend 增删字符、字段改名/删除、坐标语义改变、`Goal` 变体语义改变 |
+| 未知版本 | Loader **必须硬失败**，错误信息包含"文件版本 X，本引擎支持 3"。禁止宽容解析或猜测 |
+| 破坏性变更 | legend 增删字符、字段改名/删除、坐标语义改变、实体 kind 语义改变 |
 | 非破坏性变更 | 新增 `Option` 字段（必须带 serde 默认值）、新增 Roadmap 中已预留的 `kind` |
-| 迁移 | 破坏性变更必须在 `crates/level_format/src/migrate.rs` 提供 `migrate_vN_to_vN_plus_1`，并更新本节的变更历史表 |
+| 迁移 | 破坏性变更必须在 `crates/level_format/src/io.rs` 的 `read()` 内提供旧版本结构并迁移到当前 `VERSION`，同时更新本节变更历史表 |
 
 ### 变更历史
 
 | 版本 | 日期 | 变更 |
 |---|---|---|
-| `1` | 2026-10-16 | 初版：2D 房间网格 + legend 瓦片 + 实体列表 + 三种条件 |
+| `1` | 2026-10-16 | 初版：2D 房间网格 + legend 瓦片 + 实体列表 + 三种房间条件 |
 | `2` | 2026-10-18 | 关卡自带贴图 `tileset`/`tileset_columns` + 地块调色板 `palette`（§3.9） |
 | `2`（增补） | 2026-10-19 | 新增可选字段 `background`（§3.10，V20）；**不升版本**，旧文件读取为 `None` |
 | `2`（校验放宽） | 2026-10-19 | **移除 V7**（`goals` 非空）：每房至少一个目标改为纯设计约束；空列表运行时永不通关 |
 | `2`（增补） | 2026-11-08 | `palette[]` 新增可选字段 `collision`（§3.9，V21/V22）；**不升版本**，旧文件读取为 `None`（整格） |
+| `3` | 2026-11-08 | **破坏性**：删除房间级 `goals` / `reward`；新增全关卡唯一 `goal` 终点（V23）与 `item` 道具实体 + `ItemKind`（V24）；旧文件迁移时 `exit` → `goal`、丢弃目标/奖励字段 |

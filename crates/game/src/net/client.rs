@@ -335,12 +335,14 @@ pub fn apply_snapshot(
     mut progress: Option<ResMut<LevelProgress>>,
     mut active: Option<ResMut<ActiveCheckpoint>>,
     mut picked: Option<ResMut<PickedZones>>,
+    run: Option<ResMut<crate::run::RunState>>,
     mut players: Query<(
         Entity,
         &PlayerId,
         &mut PlayerMotion,
         &mut PlayerStepOutcome,
         &mut PlayerFacing,
+        &mut crate::player::items::CarriedItem,
     )>,
     zones: Query<(Entity, &ZoneId)>,
 ) {
@@ -360,7 +362,7 @@ pub fn apply_snapshot(
     let alive: BTreeSet<u8> = snapshot.players.iter().map(|player| player.id).collect();
     let existing: Vec<(u8, Entity)> = players
         .iter()
-        .map(|(entity, id, _, _, _)| (id.0, entity))
+        .map(|(entity, id, _, _, _, _)| (id.0, entity))
         .collect();
 
     for snap in &snapshot.players {
@@ -369,12 +371,15 @@ pub fn apply_snapshot(
         body.grounded = snap.grounded;
         body.airborne_since = if snap.grounded { 0 } else { COYOTE_STEPS + 1 };
         body.buffer_age = u32::MAX;
+        body.air_jumps_used = snap.air_jumps_used;
         if let Some((_, entity)) = existing.iter().find(|(id, _)| *id == snap.id)
-            && let Ok((_, _, mut motion, mut outcome, mut facing)) = players.get_mut(*entity)
+            && let Ok((_, _, mut motion, mut outcome, mut facing, mut item)) =
+                players.get_mut(*entity)
         {
             motion.0 = body;
             outcome.0 = crate::physics::StepOutcome::default();
             facing.0 = snap.facing_right;
+            item.0 = snap.item;
             continue;
         }
         // 新加入的玩家：生成实体；速度在下一份快照补齐（位置已经正确）。
@@ -408,13 +413,16 @@ pub fn apply_snapshot(
         && let Some(local_snap) = snapshot.players.iter().find(|player| player.id == local_id)
     {
         drop_acked_inputs(&mut client.pending_inputs, local_snap.last_input_seq);
-        if let (Some(tiles), Some((_, _, mut motion, mut outcome, _))) = (
+        if let (Some(tiles), Some((_, _, mut motion, mut outcome, _, _))) = (
             tiles.as_ref(),
-            players.iter_mut().find(|(_, id, _, _, _)| id.0 == local_id),
+            players
+                .iter_mut()
+                .find(|(_, id, _, _, _, _)| id.0 == local_id),
         ) {
             // 与主机同一物理函数；其他玩家用本快照的 AABB 当实心障碍。
             let mut cfg = DEFAULT_PHYSICS;
             cfg.player_size = collision.size_vec();
+            crate::player::items::apply_item_to_physics(&mut cfg, local_snap.item);
             let others: Vec<Aabb> = snapshot
                 .players
                 .iter()
@@ -443,7 +451,19 @@ pub fn apply_snapshot(
     }
 
     if let Some(progress) = progress.as_mut() {
-        progress.apply_net(&snapshot.cleared, &snapshot.fruits);
+        progress.apply_net(&snapshot.fruits);
+    }
+    if let Some(mut run) = run {
+        run.elapsed = snapshot.run_elapsed;
+        // 快照是完整状态：先清空，再按快照重建，避免离开/重连的旧成绩残留。
+        run.finished = [None; crate::config::net::MAX_PLAYERS];
+        for snap in &snapshot.players {
+            if let (Some(time), Some(slot)) =
+                (snap.finish, run.finished.get_mut(PlayerId(snap.id).index()))
+            {
+                *slot = Some(time);
+            }
+        }
     }
     if let Some(picked) = picked.as_mut() {
         for zone in &snapshot.picked {
@@ -559,6 +579,7 @@ pub fn send_input_and_predict(
         &mut PlayerMotion,
         &mut PlayerStepOutcome,
         &mut PlayerFacing,
+        &crate::player::items::CarriedItem,
     )>,
 ) {
     let Some(client) = client.as_mut() else {
@@ -608,17 +629,18 @@ pub fn send_input_and_predict(
     };
     let others: Vec<Aabb> = players
         .iter()
-        .filter(|(id, _, _, _)| id.0 != local_id)
-        .map(|(_, motion, _, _)| motion.0.aabb)
+        .filter(|(id, _, _, _, _)| id.0 != local_id)
+        .map(|(_, motion, _, _, _)| motion.0.aabb)
         .collect();
-    let Some((_, mut motion, mut outcome, mut facing)) =
-        players.iter_mut().find(|(id, _, _, _)| id.0 == local_id)
+    let Some((_, mut motion, mut outcome, mut facing, carried)) =
+        players.iter_mut().find(|(id, _, _, _, _)| id.0 == local_id)
     else {
         return; // 本地玩家实体还没由第一份快照生成
     };
     let mut out = StepOutcome::default();
     let mut cfg = DEFAULT_PHYSICS;
     cfg.player_size = collision.size_vec();
+    crate::player::items::apply_item_to_physics(&mut cfg, carried.0);
     step_with_players(
         &cfg,
         tiles.as_ref(),
@@ -645,6 +667,7 @@ mod tests {
     fn snapshot(seq: u32, x: f32) -> Snapshot {
         Snapshot {
             seq,
+            run_elapsed: seq as f32 / 60.0,
             players: vec![PlayerSnap {
                 id: 1,
                 x,
@@ -653,9 +676,11 @@ mod tests {
                 vy: 0.0,
                 grounded: true,
                 facing_right: true,
+                item: None,
+                air_jumps_used: 0,
+                finish: None,
                 last_input_seq: 0,
             }],
-            cleared: Vec::new(),
             fruits: Vec::new(),
             picked: Vec::new(),
             checkpoint: None,

@@ -3,6 +3,8 @@
 //! HUD 走 **UI 窗口相机**（`IsDefaultUiCamera` 挂在它上面），`UiScale = k` 让逻辑坐标仍然是
 //! `ViewLayout` 的尺寸（单人 320×320，本地双人 640×320；`07` §7.10.1）。因此所有尺寸与字号都用 `px()` 的整数值，
 //! 禁止 `vw()` / `vh()` / `percent()`。
+//!
+//! 显示内容：本局计时、焦点玩家的当前道具、一次性提示条、终点结算面板。
 
 use bevy::prelude::*;
 
@@ -12,15 +14,13 @@ use crate::config::ui::{
     UI_HUD_PILL_MAX_WIDTH, UI_ORANGE, UI_PAPER, UI_PLUM, UI_SPACE_SM, UI_SPACE_XS, UI_TOAST_BOTTOM,
 };
 use crate::fonts::UiFont;
-use crate::player::decor::Decorations;
+use crate::player::items::{CarriedItem, ItemPicked};
+use crate::player::{PlayerId, PlayerMotion};
 use crate::render::pixel_camera::ViewLayout;
 use crate::render::ui_kit;
-use crate::room::{DecorationGranted, RoomCleared, fruit_count};
+use crate::run::{PlayerFinished, RunState};
 use crate::settings::GameSettings;
 use crate::state::GameState;
-use crate::world::CurrentRoom;
-use crate::world::load::LoadedLevel;
-use crate::world::progress::LevelProgress;
 
 /// HUD 文本节点标记。
 ///
@@ -33,7 +33,7 @@ struct HudText;
 #[derive(Component)]
 struct HudPill;
 
-/// 一次性的提示条（通关、获奖）。同一时刻只显示最新一条。
+/// 一次性的提示条（拾取道具、到达终点）。同一时刻只显示最新一条。
 #[derive(Resource, Debug, Default)]
 pub struct HudToast {
     pub text: String,
@@ -133,19 +133,30 @@ fn spawn_hud(mut commands: Commands, font: Res<UiFont>) {
     ));
 }
 
-/// 通关 / 获奖消息 → 提示条。
+/// 拾取道具 / 到达终点消息 → 提示条。
 fn collect_toasts(
-    mut cleared: MessageReader<RoomCleared>,
-    mut granted: MessageReader<DecorationGranted>,
+    mut picked: MessageReader<ItemPicked>,
+    mut finished: MessageReader<PlayerFinished>,
     settings: Res<GameSettings>,
     mut toast: ResMut<HudToast>,
 ) {
     let s = settings.language.strings();
-    for _ in cleared.read() {
-        toast.show(s.room_cleared);
+    for event in picked.read() {
+        toast.show(format!(
+            "{}：{}",
+            s.item_gained,
+            settings.language.item_name(event.kind)
+        ));
     }
-    for event in granted.read() {
-        toast.show(format!("{}+{}", s.decoration_gained, event.decoration_id));
+    for event in finished.read() {
+        toast.show(format!(
+            "{} {} {} {:.2}{}",
+            s.player,
+            event.player.0 + 1,
+            s.finish_title,
+            event.time,
+            s.seconds
+        ));
     }
 }
 
@@ -159,58 +170,24 @@ fn tick_toast(time: Res<Time>, mut toast: ResMut<HudToast>) {
     }
 }
 
-/// 当前房间的目标进度描述（例如中文 `出口  果实 2/3`）。
-fn goals_summary(
-    goals: &[level_format::Goal],
-    collected: u32,
-    total: u32,
-    s: &crate::i18n::Strings,
-) -> String {
-    goals
-        .iter()
-        .map(|goal| match goal {
-            level_format::Goal::ReachExit => s.exit_goal.to_string(),
-            level_format::Goal::Collect { count } => format!("{} {collected}/{count}", s.fruit),
-            level_format::Goal::CollectAll => {
-                format!("{} {collected}/{total}", s.all_fruits)
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("  ")
-}
-
-/// 只显示**玩法信息**：当前房间的目标进度。提示条由 `update_toast_ui` 单独处理。
+/// 只显示**玩法信息**：计时 + 焦点玩家当前携带的道具。
 fn update_hud(
-    current: Option<Res<CurrentRoom>>,
-    loaded: Option<Res<LoadedLevel>>,
-    progress: Option<Res<LevelProgress>>,
+    run: Option<Res<RunState>>,
     settings: Res<GameSettings>,
+    players: Query<(&PlayerId, &CarriedItem), With<PlayerMotion>>,
     mut text: Single<&mut Text, With<HudText>>,
     mut pill: Single<&mut Node, With<HudPill>>,
 ) {
     let s = settings.language.strings();
-    let mut next = String::new();
-
-    if let (Some(loaded), Some(current), Some(progress)) =
-        (loaded.as_ref(), current.as_ref(), progress.as_ref())
-    {
-        let index =
-            level_format::room_index(current.col, current.row, loaded.level.grid.cols) as usize;
-        if let (Some(room_data), Some(room_progress)) = (
-            loaded.level.rooms.get(index),
-            progress.room(current.col, current.row),
-        ) {
-            let goals = goals_summary(
-                &room_data.goals,
-                room_progress.collected_fruit,
-                fruit_count(room_data),
-                s,
-            );
-            if !goals.is_empty() {
-                next = format!("{} {goals}", s.goals);
-            }
-        }
-    }
+    let focus_item = players
+        .iter()
+        .min_by_key(|(id, _)| *id)
+        .and_then(|(_, item)| item.0);
+    let elapsed = run.as_ref().map(|run| run.elapsed).unwrap_or(0.0);
+    let name = focus_item
+        .map(|kind| settings.language.item_name(kind))
+        .unwrap_or(s.no_item);
+    let next = format!("{} {:.2}{}   {}", s.time, elapsed, s.seconds, name);
 
     if text.0 != next {
         text.0 = next.clone();
@@ -243,28 +220,21 @@ fn update_toast_ui(
     }
 }
 
-/// 进入 `GameComplete` 时展示结算（`01` §1.6）。
+/// 进入 `GameComplete` 时展示结算：每名玩家的通关时间与分数（`01` §1.6）。
 fn spawn_completion(
     mut commands: Commands,
-    loaded: Option<Res<LoadedLevel>>,
-    decorations: Option<Res<Decorations>>,
+    run: Option<Res<RunState>>,
+    players: Query<&PlayerId, With<PlayerMotion>>,
     settings: Res<GameSettings>,
     font: Res<UiFont>,
     layout: Res<ViewLayout>,
 ) {
     let s = settings.language.strings();
-    let total_rewards = loaded
-        .as_ref()
-        .map(|loaded| {
-            loaded
-                .level
-                .rooms
-                .iter()
-                .filter(|room| room.reward.is_some())
-                .count()
-        })
-        .unwrap_or(0);
-    let owned = decorations.as_ref().map(|d| d.len()).unwrap_or(0);
+    let mut ids: Vec<u8> = players.iter().map(|id| id.0).collect();
+    ids.sort_unstable();
+    if ids.is_empty() {
+        ids.push(0);
+    }
 
     let root = ui_kit::scrim_screen(&mut commands, &layout, 50);
     commands
@@ -289,11 +259,24 @@ fn spawn_completion(
             ChildOf(panel),
         ))
         .id();
-    ui_kit::title(&mut commands, &font, content, s.all_rooms_cleared);
-    ui_kit::body_center(
-        &mut commands,
-        &font,
-        content,
-        format!("{} {owned}/{total_rewards}", s.decorations),
-    );
+    ui_kit::title(&mut commands, &font, content, s.finish_title);
+    for id in ids {
+        let player = PlayerId(id);
+        let line = match run.as_ref().and_then(|run| run.time_of(player)) {
+            Some(time) => format!(
+                "{} {}  {} {:.2}{}  {} {}",
+                s.player,
+                id + 1,
+                s.finish_line,
+                time,
+                s.seconds,
+                run.as_ref()
+                    .map(|run| run.score_of(player).unwrap_or(0))
+                    .unwrap_or(0),
+                s.points
+            ),
+            None => format!("{} {}  {}", s.player, id + 1, s.unfinished),
+        };
+        ui_kit::body_center(&mut commands, &font, content, line);
+    }
 }

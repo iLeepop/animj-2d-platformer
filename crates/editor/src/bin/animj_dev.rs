@@ -261,8 +261,6 @@ mod placeholder {
     const TILESET_COLUMNS: u32 = 8;
     /// 瓦片格占位色（按索引循环）。见 `docs/04-assets.md` §7.3。
     const TILE_COLORS: [Rgba; 4] = [PRIMARY, SECONDARY, ACCENT, SKIN];
-    /// 装饰品中心图案色（按 id 指纹选色）。见 `docs/04-assets.md` §7.3。
-    const DECORATION_MOTIF_COLORS: [Rgba; 4] = [PRIMARY, SECONDARY, ACCENT, MARKER];
     /// UI 图集列数。见 `docs/04-assets.md` §9。
     const UI_ATLAS_COLUMNS: u32 = 4;
     /// UI 图集行数。见 `docs/04-assets.md` §9。
@@ -418,29 +416,6 @@ mod placeholder {
         raster
     }
 
-    /// 单个装饰品贴图：32×32 单帧。`index` 是 id 在并集里的序号（用于角标，保证可区分）。
-    /// 见 `docs/04-assets.md` §6.2 / §7.3。
-    ///
-    /// **背景必须全透明**：装饰品是叠加在角色上的图层（`04` §6.1），整格不透明会把角色
-    /// 与其它图层完全遮住（全部 7 层同时装备时角色直接不可见）。
-    pub fn decoration(id: &str, index: u32) -> Raster {
-        let mut raster = Raster::new(CELL_PX as u32, CELL_PX as u32);
-        let fingerprint = fingerprint(id);
-        let motif = DECORATION_MOTIF_COLORS[fingerprint as usize % DECORATION_MOTIF_COLORS.len()];
-        // 识别图形：居中的 12×12 实心方块 + 描边，四周保持透明。
-        raster.fill_rect(CELL_PX / 2 - 6, CELL_PX / 2 - 6, 12, 12, motif);
-        raster.stroke_rect(CELL_PX / 2 - 6, CELL_PX / 2 - 6, 12, 12, OUTLINE);
-        // id 指纹条：8 个 2×3 的刻度，让不同 id 即使序号相同也能靠图案区分；灭的刻度保持透明。
-        let bits = fingerprint ^ (fingerprint >> 13);
-        for bit in 0..8 {
-            if (bits >> bit) & 1 == 1 {
-                raster.fill_rect(3 + bit * 3, CELL_PX - 6, 2, 3, motif);
-            }
-        }
-        glyph::draw_index_tag(&mut raster, 2, 2, index);
-        raster
-    }
-
     /// UI 图集：4 列 × 2 行 = 128×64。见 `docs/04-assets.md` §9（M0 只需确定性的占位格）。
     pub fn ui_atlas() -> Raster {
         let mut raster = Raster::new(
@@ -458,16 +433,6 @@ mod placeholder {
             }
         }
         raster
-    }
-
-    /// FNV-1a 32 位指纹：把 id 确定性地映射到图案参数（只用于肉眼区分，非安全用途）。
-    fn fingerprint(id: &str) -> u32 {
-        let mut hash: u32 = 0x811c_9dc5;
-        for byte in id.as_bytes() {
-            hash ^= *byte as u32;
-            hash = hash.wrapping_mul(0x0100_0193);
-        }
-        hash
     }
 }
 
@@ -487,8 +452,6 @@ const LEVEL_FILE_SUFFIX: &str = ".level.ron";
 const PLAYER_SHEET_PATH: &str = "sprites/player/cat_sheet.png";
 /// 瓦片图集输出路径（相对资产根）。见 `docs/04-assets.md` §1 / §3.3。
 const TILESET_PATH: &str = "sprites/tiles/tileset.png";
-/// 装饰品贴图目录（相对资产根）。见 `docs/04-assets.md` §1 / §6。
-const DECORATIONS_DIR: &str = "sprites/decorations";
 /// UI 图集输出路径（相对资产根）。见 `docs/04-assets.md` §1 / §9。
 const UI_ATLAS_PATH: &str = "sprites/ui/ui_atlas.png";
 
@@ -645,32 +608,8 @@ fn cmd_gen_placeholder_assets(args: &[String]) -> ExitCode {
         Err(code) => return code,
     };
 
-    // 装饰品 id 清单的唯一来源 = 全部关卡 `reward` 的并集（`04` §7.3）。
-    let ids = match collect_reward_ids(&options.out.join(LEVELS_DIR_NAME)) {
-        Ok(ids) => ids,
-        Err(reason) => {
-            eprintln!("animj-dev: {reason}");
-            return ExitCode::IoOrParseError;
-        }
-    };
-
-    // 装饰品 id 必须是 `[a-z][a-z0-9_]*`（`04` §2）：否则会生成路径非法的贴图文件，直接判失败。
-    let invalid: Vec<&str> = ids
-        .iter()
-        .filter(|id| !is_valid_decoration_id(id))
-        .map(|id| id.as_str())
-        .collect();
-    if !invalid.is_empty() {
-        for id in &invalid {
-            eprintln!(
-                "animj-dev: 关卡 reward `{id}` 不是合法的装饰品 id（规则见 docs/04-assets.md §2）"
-            );
-        }
-        return ExitCode::CheckFailed;
-    }
-
     // 生成（纯函数）+ 逐张回读自检；自检失败说明编码不自洽 ⇒ `08` §8.10.4 的 InternalError。
-    let jobs = match plan_jobs(&ids) {
+    let jobs = match plan_jobs() {
         Ok(jobs) => jobs,
         Err(reason) => {
             eprintln!("animj-dev: 内部错误：{reason}");
@@ -731,42 +670,9 @@ fn cmd_gen_placeholder_assets(args: &[String]) -> ExitCode {
     ExitCode::Ok
 }
 
-/// 扫描 `dir` 下全部关卡并取其 `reward` 并集（字典序，去掉重复）。见 `04` §7.3。
-///
-/// 目录不存在 = 没有关卡 = 没有装饰品 id（不是错误）；但**关卡文件读不懂**是错误：
-/// 此时 id 集合无法确定，必须报告而不是静默生成残缺资产。
-fn collect_reward_ids(dir: &Path) -> Result<Vec<String>, String> {
-    if !dir.exists() {
-        return Ok(Vec::new());
-    }
-    let mut ids = std::collections::BTreeSet::new();
-    for file in collect_level_files(dir)? {
-        let text = fs::read_to_string(&file)
-            .map_err(|e| format!("读取 {} 失败：{e}", display_path(&file)))?;
-        let level = level_format::read(&text)
-            .map_err(|e| format!("解析 {} 失败：{e}", display_path(&file)))?;
-        for room in &level.rooms {
-            if let Some(reward) = &room.reward {
-                ids.insert(reward.clone());
-            }
-        }
-    }
-    Ok(ids.into_iter().collect())
-}
-
-/// 装饰品 id 规则：`[a-z][a-z0-9_]*`。见 `docs/04-assets.md` §2（与 `00` §0.5 一致）。
-fn is_valid_decoration_id(id: &str) -> bool {
-    let mut chars = id.chars();
-    match chars.next() {
-        Some(first) if first.is_ascii_lowercase() => {}
-        _ => return false,
-    }
-    chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
-}
-
-/// 生成计划：`(相对资产根的路径, PNG 字节)`。顺序固定（先图集，再按 id 字典序的装饰品，最后 UI）。
-fn plan_jobs(ids: &[String]) -> Result<Vec<(String, Vec<u8>)>, String> {
-    let mut jobs = Vec::with_capacity(ids.len() + 10);
+/// 生成计划：`(相对资产根的路径, PNG/WAV 字节)`。顺序固定（先图集，再 UI，最后音效）。
+fn plan_jobs() -> Result<Vec<(String, Vec<u8>)>, String> {
+    let mut jobs = Vec::with_capacity(10);
     jobs.push((
         PLAYER_SHEET_PATH.to_owned(),
         raster::encode_png(&placeholder::player_sheet())?,
@@ -775,13 +681,6 @@ fn plan_jobs(ids: &[String]) -> Result<Vec<(String, Vec<u8>)>, String> {
         TILESET_PATH.to_owned(),
         raster::encode_png(&placeholder::tileset())?,
     ));
-    for (index, id) in ids.iter().enumerate() {
-        let raster = placeholder::decoration(id, index as u32);
-        jobs.push((
-            format!("{}/{id}.png", DECORATIONS_DIR),
-            raster::encode_png(&raster)?,
-        ));
-    }
     jobs.push((
         UI_ATLAS_PATH.to_owned(),
         raster::encode_png(&placeholder::ui_atlas())?,
@@ -793,7 +692,6 @@ fn plan_jobs(ids: &[String]) -> Result<Vec<(String, Vec<u8>)>, String> {
         ("bump", 140.0, 0.05, true),
         ("pickup", 990.0, 0.07, false),
         ("clear", 880.0, 0.18, false),
-        ("decoration", 1320.0, 0.12, false),
         ("death", 110.0, 0.20, true),
     ] {
         jobs.push((

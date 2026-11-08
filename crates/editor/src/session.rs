@@ -65,6 +65,8 @@ pub struct EditorSession {
     pub brush_char: char,
     /// 当前放置的实体类型（`PlaceEntity` 工具）。
     pub entity_kind: String,
+    /// `entity_kind == "item"` 时放置的道具类型。
+    pub entity_item: level_format::ItemKind,
     /// 面板里选中的房间实体下标。
     pub selected_entity: Option<usize>,
     /// 状态栏文字（保存结果、拦截原因等）。
@@ -99,6 +101,7 @@ impl EditorSession {
             tool: Tool::default(),
             brush_char: '#',
             entity_kind: "fruit".to_string(),
+            entity_item: level_format::ItemKind::SuperJump,
             selected_entity: None,
             status: String::new(),
             doc_revision: 0,
@@ -289,16 +292,6 @@ impl EditorSession {
         true
     }
 
-    // ---------- 房间属性 ----------
-
-    pub fn set_reward(&mut self, reward: Option<String>) {
-        self.room_mut().reward = reward;
-    }
-
-    pub fn set_goals(&mut self, goals: Vec<level_format::Goal>) {
-        self.room_mut().goals = goals;
-    }
-
     // ---------- 实体（工具 6） ----------
 
     /// 房间里每个实体的世界 AABB 中心与尺寸（占位尺寸规则与投影一致）。
@@ -355,7 +348,8 @@ impl EditorSession {
         }
     }
 
-    /// 修复「误放多个单例实体」：`player_spawn` 与 `exit` 都只保留第一个（`03` §3.7 V12/V8）。
+    /// 修复「误放多个单例实体」：`player_spawn` 与 `goal` 全关都只保留一个
+    /// （`03` §3.7 V12/V23）。优先保留起始房间的出生点。
     ///
     /// 返回被删除的数量；0 表示本来就没有重复。
     /// 删除任意房间里的任意实体（一个 undo 步骤）。返回是否真的删了。
@@ -400,26 +394,34 @@ impl EditorSession {
         let cols = self.doc.grid.cols;
         let start = (self.doc.start.col, self.doc.start.row);
         // 第一遍：**只计算**要删的下标（不碰 doc，保证 undo 快照是"改之前"）
+        let spawn_in_start = self.doc.rooms.iter().enumerate().any(|(index, room)| {
+            (index as u32 % cols, index as u32 / cols) == start
+                && room.entities.iter().any(|spec| spec.kind == "player_spawn")
+        });
         let mut spawn_kept = false;
+        let mut goal_kept = false;
         let mut plan: Vec<(usize, Vec<usize>)> = Vec::new();
         for (index, room) in self.doc.rooms.iter().enumerate() {
             let (col, row) = (index as u32 % cols, index as u32 / cols);
-            let mut exit_kept = false;
             let mut doomed = Vec::new();
             for (entity_index, spec) in room.entities.iter().enumerate() {
                 let keep = match spec.kind.as_str() {
-                    // V12：全关唯一且在起始房间
+                    // V12：全关唯一；优先保留起始房间的出生点
                     "player_spawn" => {
-                        let keep = (col, row) == start && !spawn_kept;
+                        let keep = if spawn_in_start {
+                            (col, row) == start && !spawn_kept
+                        } else {
+                            !spawn_kept
+                        };
                         if keep {
                             spawn_kept = true;
                         }
                         keep
                     }
-                    // V8：每房唯一
-                    "exit" => {
-                        let keep = !exit_kept;
-                        exit_kept = true;
+                    // V23：全关唯一
+                    "goal" => {
+                        let keep = !goal_kept;
+                        goal_kept = true;
                         keep
                     }
                     _ => true,
@@ -537,7 +539,7 @@ impl EditorSession {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use level_format::{Goal, Grid, RoomCoord};
+    use level_format::{Grid, RoomCoord};
 
     fn sample_level() -> Level {
         Level {
@@ -551,9 +553,7 @@ mod tests {
             background: None,
             rooms: vec![Room {
                 name: None,
-                reward: None,
                 spawn: None,
-                goals: vec![Goal::ReachExit],
                 tiles: vec![".".repeat(ROOM_TILES); ROOM_TILES],
                 entities: vec![],
             }],
@@ -638,6 +638,7 @@ mod tests {
             at: (100, 100),
             size: None,
             id: None,
+            item: None,
         });
         let mut second = level.rooms[0].clone();
         second.entities[0].at = (200, 200);
@@ -677,6 +678,7 @@ mod tests {
             at: (100, 100),
             size: None,
             id: None,
+            item: None,
         });
         let mut session = EditorSession::new(level, None);
         session.begin_edit();
@@ -687,16 +689,30 @@ mod tests {
     }
 
     #[test]
-    fn goals_and_reward_edits_go_through_snapshot() {
+    fn item_brush_edits_go_through_snapshot() {
         let mut session = EditorSession::new(sample_level(), None);
+        session.entity_kind = "item".to_string();
+        session.entity_item = level_format::ItemKind::Speed;
         session.begin_edit();
-        session.set_goals(vec![Goal::ReachExit, Goal::Collect { count: 3 }]);
-        session.set_reward(Some("item_01".into()));
-        assert_eq!(session.room().goals.len(), 2);
-        assert_eq!(session.room().reward.as_deref(), Some("item_01"));
+        let mut spec = level_format::EntitySpec {
+            kind: session.entity_kind.clone(),
+            at: (96, 96),
+            size: None,
+            id: None,
+            item: Some(session.entity_item),
+        };
+        session.room_mut().entities.push(spec.clone());
+        assert_eq!(
+            session.room().entities[0].item,
+            Some(level_format::ItemKind::Speed)
+        );
         assert!(session.undo());
-        assert_eq!(session.room().goals, vec![Goal::ReachExit]);
-        assert_eq!(session.room().reward, None);
+        assert!(session.room().entities.is_empty());
+        // 非 item 实体不携带 item 字段（V24）
+        spec.kind = "fruit".to_string();
+        spec.item = None;
+        session.room_mut().entities.push(spec);
+        assert_eq!(session.room().entities[0].item, None);
     }
 
     /// 工具 6：实体的世界 AABB 命中测试与吸附位置。
@@ -708,6 +724,7 @@ mod tests {
             at: (100, 100),
             size: None,
             id: None,
+            item: None,
         });
         let mut session = EditorSession::new(level, None);
         let boxes = session.entity_boxes();
@@ -775,10 +792,10 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// 误放多个 `player_spawn` / `exit` 时：`player_spawn` **全关唯一且在起始房间**，
-    /// `exit` **每房唯一**（V12 / V8）。去重后一个 undo 步骤可整步回退。
+    /// 误放多个 `player_spawn` / `goal` 时：两者都**全关唯一**（V12 / V23）。
+    /// 去重后一个 undo 步骤可整步回退。
     #[test]
-    fn dedupe_keeps_one_player_spawn_level_wide_and_one_exit_per_room() {
+    fn dedupe_keeps_one_player_spawn_and_one_goal_level_wide() {
         let mut level = sample_level();
         level.grid = level_format::Grid { cols: 2, rows: 1 };
         level.rooms.push(level.rooms[0].clone());
@@ -787,23 +804,24 @@ mod tests {
             at,
             size: None,
             id: None,
+            item: None,
         };
-        // 起始房间：2 个 spawn、2 个 exit、1 个 fruit
+        // 起始房间：2 个 spawn、2 个 goal、1 个 fruit
         level.rooms[0].entities = vec![
             spec("player_spawn", (64, 464)),
             spec("player_spawn", (96, 464)),
-            spec("exit", (448, 464)),
-            spec("exit", (416, 464)),
+            spec("goal", (448, 464)),
+            spec("goal", (416, 464)),
             spec("fruit", (336, 432)),
         ];
-        // 非起始房间误放了一个 spawn + 两个 exit
+        // 非起始房间误放了一个 spawn + 两个 goal
         level.rooms[1].entities = vec![
             spec("player_spawn", (64, 464)),
-            spec("exit", (448, 464)),
-            spec("exit", (416, 464)),
+            spec("goal", (448, 464)),
+            spec("goal", (416, 464)),
         ];
         let mut session = EditorSession::new(level, None);
-        // 数量是实现细节，契约只看**结果**：全关 1 个 spawn、每房 1 个 exit
+        // 数量是实现细节，契约只看**结果**：全关各 1 个
         assert!(session.dedupe_singletons() > 0);
         let kinds = |room: usize| -> Vec<&str> {
             session.doc.rooms[room]
@@ -812,8 +830,8 @@ mod tests {
                 .map(|spec| spec.kind.as_str())
                 .collect()
         };
-        assert_eq!(kinds(0), ["player_spawn", "exit", "fruit"]);
-        assert_eq!(kinds(1), ["exit"]);
+        assert_eq!(kinds(0), ["player_spawn", "goal", "fruit"]);
+        assert!(kinds(1).is_empty());
         // 一个 undo 步骤整步回退
         assert!(session.undo());
         assert_eq!(session.doc.rooms[0].entities.len(), 5);
@@ -834,6 +852,7 @@ mod tests {
             at: (64, 464),
             size: None,
             id: None,
+            item: None,
         });
         let mut session = EditorSession::new(level, None);
         let before = session.doc.rooms[1].entities.len();
@@ -851,7 +870,6 @@ mod tests {
         let mut session = EditorSession::new(sample_level(), None);
         session.begin_edit();
         session.set_tile(2, 2, TileKind::OneWay);
-        session.set_goals(vec![Goal::ReachExit, Goal::Collect { count: 2 }]);
         let path = std::env::temp_dir().join("animj_editor_save_test.level.ron");
         session.path = Some(path.clone());
         session.save().expect("保存应成功");

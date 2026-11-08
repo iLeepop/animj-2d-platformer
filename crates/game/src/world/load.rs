@@ -210,29 +210,23 @@ pub(crate) fn poll_level(
     let level = asset.level.clone();
     let mode = pending.mode;
     // 读档必须在决定出生位置**之前**：存档点决定从哪个房间/位置开始（`02` §2.5、`05` §5.11）。
-    let (progress, decorations, checkpoint) = match mode {
+    let (progress, checkpoint) = match mode {
         LoadMode::NewGame => {
             info!("新游戏：忽略存档（关卡 {}）", level.name);
-            (
-                LevelProgress::from_level(&level),
-                crate::player::decor::Decorations::default(),
-                None,
-            )
+            (LevelProgress::from_level(&level), None)
         }
         LoadMode::Continue | LoadMode::Auto => match crate::save::load_validated(&level) {
-            Some((progress, decorations, checkpoint)) => {
+            Some((progress, checkpoint)) => {
                 info!(
-                    "读档：房间 {}/{} 已通关，装饰品 {} 件{}",
-                    progress.cleared_count(),
-                    progress.rooms.len(),
-                    decorations.len(),
+                    "读档：关卡 {}，果实进度已恢复{}",
+                    level.name,
                     if checkpoint.is_some() {
                         "，存档点已恢复"
                     } else {
                         ""
                     }
                 );
-                (progress, decorations, checkpoint)
+                (progress, checkpoint)
             }
             None if mode == LoadMode::Continue => {
                 error!(
@@ -246,16 +240,12 @@ pub(crate) fn poll_level(
             }
             None => {
                 info!("无可用存档（首次启动或存档不匹配）");
-                (
-                    LevelProgress::from_level(&level),
-                    crate::player::decor::Decorations::default(),
-                    None,
-                )
+                (LevelProgress::from_level(&level), None)
             }
         },
     };
     commands.insert_resource(progress);
-    commands.insert_resource(decorations);
+    commands.insert_resource(crate::run::RunState::default());
     commands.insert_resource(crate::checkpoint::ActiveCheckpoint(checkpoint));
 
     // 出生位置：有存档点 ⇒ 存档点所在房间/位置；否则 player_spawn 所在房间的重生点。
@@ -380,7 +370,7 @@ pub(crate) fn hot_reload_level(
     );
 }
 
-/// 生成关卡实体（`exit` / `fruit`）：常驻，按房间持有世界 AABB（`02` §2.4）。
+/// 生成关卡实体（`goal` / `item` / `fruit` / `checkpoint`）：常驻，按房间持有世界 AABB（`02` §2.4）。
 ///
 /// 视觉是占位色块，尺寸**等于判定尺寸**（拾取物 12×12、区域用声明尺寸/默认 32×32）。
 fn spawn_room_entities(commands: &mut Commands, level: &Level) {
@@ -390,15 +380,18 @@ fn spawn_room_entities(commands: &mut Commands, level: &Level) {
         let (col, row) = ((index as u32) % cols, (index as u32) / cols);
         for spec in &room.entities {
             let kind = match spec.kind.as_str() {
-                "exit" => RoomZoneKind::Exit,
+                "goal" => RoomZoneKind::Goal,
+                "item" => {
+                    RoomZoneKind::Item(spec.item.unwrap_or(level_format::ItemKind::SuperJump))
+                }
                 "fruit" => RoomZoneKind::Fruit,
                 crate::checkpoint::KIND => RoomZoneKind::Checkpoint,
                 // `player_spawn` 只用于放置玩家；未知 kind 由校验拦截（V 规则）
                 _ => continue,
             };
             let size = match kind {
-                RoomZoneKind::Fruit => Vec2::splat(PICKUP_SIZE),
-                RoomZoneKind::Exit | RoomZoneKind::Checkpoint => spec
+                RoomZoneKind::Fruit | RoomZoneKind::Item(_) => Vec2::splat(PICKUP_SIZE),
+                RoomZoneKind::Goal | RoomZoneKind::Checkpoint => spec
                     .size
                     .map(|(w, h)| Vec2::new(w as f32, h as f32))
                     .unwrap_or(Vec2::splat(32.0)),
@@ -407,9 +400,10 @@ fn spawn_room_entities(commands: &mut Commands, level: &Level) {
             let center = crate::coords::room_local_to_world(col, row, rows, local);
             let aabb = Aabb::from_center_size(center, size);
             let (color, zone_z) = match kind {
-                RoomZoneKind::Exit => (Color::srgb(0.30, 0.85, 0.42), z::PICKUP),
+                RoomZoneKind::Goal => (Color::srgb(0.30, 0.85, 0.42), z::GOAL),
+                RoomZoneKind::Item(item) => (crate::player::items::item_color(item), z::PICKUP),
                 RoomZoneKind::Fruit => (Color::srgb(0.92, 0.36, 0.55), z::PICKUP),
-                // 存档点单独一层：可能与出口/果实重叠（`00` §0.4 禁止共享 Z）。
+                // 存档点单独一层：可能与终点/果实重叠（`00` §0.4 禁止共享 Z）。
                 RoomZoneKind::Checkpoint => (crate::checkpoint::ZONE_COLOR, z::CHECKPOINT),
             };
             commands.spawn((
@@ -476,9 +470,7 @@ mod tests {
             background: None,
             rooms: vec![level_format::Room {
                 name: None,
-                reward: None,
                 spawn: None,
-                goals: vec![],
                 tiles: vec!["##..".into(), "....".into(), "=.=.".into()],
                 entities: vec![],
             }],

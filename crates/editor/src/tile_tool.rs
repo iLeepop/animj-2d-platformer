@@ -834,9 +834,7 @@ mod tests {
             start: level_format::RoomCoord { col: 0, row: 0 },
             rooms: vec![level_format::Room {
                 name: None,
-                reward: None,
                 spawn: None,
-                goals: vec![level_format::Goal::ReachExit],
                 tiles: vec![".".repeat(16); 16],
                 entities: vec![],
             }],

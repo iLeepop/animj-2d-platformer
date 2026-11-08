@@ -1,7 +1,7 @@
-//! 房间与关卡进度。所有者文档：`docs/02-world-and-rooms.md` §2.3、`docs/01-game-design.md` §1.6。
+//! 通关进度数据。所有者文档：`docs/02-world-and-rooms.md` §2.3、`docs/05-architecture.md` §5.11。
 //!
-//! **单调性**是硬契约：`cleared` 与 `collected_fruit` 只增不减；死亡、重进房间、热重载都不重置。
-//! 这里只放**纯数据 + 纯方法**，读写时机由 `room/` 与 `world/load.rs` 决定。
+//! 房间目标机制已移除（`01` §1.4）：进度只保留**果实拾取数**（单调），用于存档与联机同步。
+//! 本局成绩（计时 / 完赛）属于 [`crate::run::RunState`]，不写入房间进度。
 
 use bevy::prelude::*;
 use level_format::{Level, room_index};
@@ -10,8 +10,6 @@ use serde::{Deserialize, Serialize};
 /// 单个房间的进度。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RoomProgress {
-    /// 目标条件**曾**全部满足。单调，不可回退。
-    pub cleared: bool,
     /// 该房间已收集的 `fruit` 数量。单调。
     pub collected_fruit: u32,
 }
@@ -43,17 +41,6 @@ impl LevelProgress {
         self.rooms.get_mut(index)
     }
 
-    /// 标记房间通关；返回**是否发生了 false→true 的跃变**（用于"奖励只发一次"）。
-    pub fn mark_cleared(&mut self, col: u32, row: u32) -> bool {
-        match self.room_mut(col, row) {
-            Some(room) if !room.cleared => {
-                room.cleared = true;
-                true
-            }
-            _ => false,
-        }
-    }
-
     /// 记一次果实收集（单调）。
     pub fn collect_fruit(&mut self, col: u32, row: u32) -> u32 {
         match self.room_mut(col, row) {
@@ -65,27 +52,13 @@ impl LevelProgress {
         }
     }
 
-    pub fn cleared_count(&self) -> usize {
-        self.rooms.iter().filter(|room| room.cleared).count()
-    }
-
-    pub fn all_cleared(&self) -> bool {
-        !self.rooms.is_empty() && self.rooms.iter().all(|room| room.cleared)
-    }
-
     /// 用主机快照覆盖进度（客户端专用）。`level_name` / `grid` 不变。
     ///
     /// 快照是完整状态而不是增量：客户端丢失任何一帧都能在下一帧自愈
     /// （`05` §5.15.3）。
-    pub fn apply_net(&mut self, cleared: &[u32], fruits: &[(u32, u32)]) {
+    pub fn apply_net(&mut self, fruits: &[(u32, u32)]) {
         for room in &mut self.rooms {
-            room.cleared = false;
             room.collected_fruit = 0;
-        }
-        for index in cleared {
-            if let Some(room) = self.rooms.get_mut(*index as usize) {
-                room.cleared = true;
-            }
         }
         for (index, count) in fruits {
             if let Some(room) = self.rooms.get_mut(*index as usize) {
@@ -103,9 +76,7 @@ mod tests {
     fn level(cols: u32, rows: u32) -> Level {
         let room = |i: usize| Room {
             name: Some(format!("r{i}")),
-            reward: None,
             spawn: None,
-            goals: vec![level_format::Goal::ReachExit],
             tiles: vec!["................".to_string(); 16],
             entities: vec![],
         };
@@ -123,17 +94,6 @@ mod tests {
     }
 
     #[test]
-    fn clears_are_monotonic_and_report_the_transition() {
-        let mut progress = LevelProgress::from_level(&level(2, 2));
-        assert!(!progress.all_cleared());
-        assert!(progress.mark_cleared(1, 1));
-        assert!(progress.room(1, 1).unwrap().cleared);
-        // 第二次不再跃变（奖励幂等的依据）
-        assert!(!progress.mark_cleared(1, 1));
-        assert_eq!(progress.cleared_count(), 1);
-    }
-
-    #[test]
     fn fruits_are_monotonic() {
         let mut progress = LevelProgress::from_level(&level(2, 1));
         assert_eq!(progress.collect_fruit(0, 0), 1);
@@ -143,44 +103,24 @@ mod tests {
         assert_eq!(progress.collect_fruit(9, 9), 0);
     }
 
-    #[test]
-    fn all_cleared_requires_every_room() {
-        let mut progress = LevelProgress::from_level(&level(2, 2));
-        for (col, row) in [(0, 0), (1, 0), (0, 1)] {
-            progress.mark_cleared(col, row);
-        }
-        assert!(!progress.all_cleared());
-        progress.mark_cleared(1, 1);
-        assert!(progress.all_cleared());
-    }
-
     /// 主机快照覆盖进度：完整状态而非增量，丢失一帧后仍能回到正确值。
     #[test]
     fn net_snapshot_overwrites_progress() {
         let mut progress = LevelProgress::from_level(&level(2, 2));
-        progress.mark_cleared(0, 0);
         progress.collect_fruit(0, 0);
 
-        progress.apply_net(&[3], &[(0, 2)]);
-        assert!(
-            !progress.room(0, 0).unwrap().cleared,
-            "快照里没有的房间必须被清掉"
-        );
-        assert!(progress.room(1, 1).unwrap().cleared, "index 3 = (1, 1)");
+        progress.apply_net(&[(0, 2)]);
         assert_eq!(progress.room(0, 0).unwrap().collected_fruit, 2);
-        assert_eq!(progress.cleared_count(), 1);
 
-        progress.apply_net(&[], &[]);
-        assert_eq!(progress.cleared_count(), 0);
+        progress.apply_net(&[]);
         assert_eq!(progress.room(0, 0).unwrap().collected_fruit, 0);
     }
 
     #[test]
     fn row_major_index_matches_level_layout() {
         let progress = LevelProgress::from_level(&level(3, 2));
-        // (col=1, row=1) ⇒ index = 1*3 + 1 = 4
         let mut progress = progress;
-        assert!(progress.mark_cleared(1, 1));
-        assert!(progress.rooms[4].cleared);
+        assert_eq!(progress.collect_fruit(1, 1), 1);
+        assert_eq!(progress.rooms[4].collected_fruit, 1);
     }
 }

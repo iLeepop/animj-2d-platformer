@@ -64,8 +64,8 @@ mod dev {
     use crate::assets::AssetRoot;
     use crate::coords::room_local_to_world;
     use crate::fonts::UiFont;
-    use crate::player::decor::Decorations;
     use crate::render::pixel_camera::CanvasScale;
+    use crate::run::RunState;
     use crate::state::GameState;
     use crate::world::CurrentRoom;
     use crate::world::load::LoadedLevel;
@@ -111,7 +111,7 @@ mod dev {
         current: Option<Res<CurrentRoom>>,
         loaded: Option<Res<LoadedLevel>>,
         progress: Option<Res<LevelProgress>>,
-        decorations: Option<Res<Decorations>>,
+        run: Option<Res<RunState>>,
         text: Single<(&mut Text, &mut Visibility), With<DebugText>>,
     ) {
         let (mut text, mut visibility) = text.into_inner();
@@ -146,21 +146,20 @@ mod dev {
             .as_ref()
             .map(|current| format!("({}, {})", current.col, current.row))
             .unwrap_or_else(|| "-".to_string());
-        let cleared = progress
+        let fruits = progress
             .as_ref()
-            .map(|progress| format!("{}/{}", progress.cleared_count(), progress.rooms.len()))
-            .unwrap_or_else(|| "-".to_string());
-        let room_cleared = current
-            .as_ref()
-            .and_then(|current| {
+            .map(|progress| {
                 progress
-                    .as_ref()
-                    .and_then(|progress| progress.room(current.col, current.row))
+                    .rooms
+                    .iter()
+                    .map(|room| room.collected_fruit)
+                    .sum::<u32>()
+                    .to_string()
             })
-            .is_some_and(|room| room.cleared);
-        let decor = decorations
+            .unwrap_or_else(|| "-".to_string());
+        let elapsed = run
             .as_ref()
-            .map(|decorations| decorations.len().to_string())
+            .map(|run| format!("{:.2}s", run.elapsed))
             .unwrap_or_else(|| "-".to_string());
         let assets = asset_root
             .as_ref()
@@ -170,11 +169,10 @@ mod dev {
         text.0 = format!(
             "FPS {fps:.0}  entities {entities}  state {state_name}  scale x{scale}\n\
              level {level}  size {size}\n\
-             room {room}{cleared_flag}  cleared {cleared}  decor {decor}\n\
+             room {room}  fruits {fruits}  time {elapsed}\n\
              assets {assets}\n\
              F3: toggle debug draw",
             entities = entities.iter().count(),
-            cleared_flag = if room_cleared { " (cleared)" } else { "" },
         );
     }
 
