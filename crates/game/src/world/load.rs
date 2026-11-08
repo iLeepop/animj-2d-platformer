@@ -154,6 +154,7 @@ pub(crate) fn poll_level(
     player_sheet: Res<crate::player::spawn::PlayerSheet>,
     anim: Res<crate::anim_data::ActiveAnim>,
     session: Res<SessionMode>,
+    collision: Res<crate::player::collision::PlayerCollision>,
     mut next: ResMut<NextState<GameState>>,
 ) {
     let Some(pending) = pending.as_mut() else {
@@ -262,7 +263,7 @@ pub(crate) fn poll_level(
         match checkpoint.filter(|point| crate::checkpoint::exists(&level, *point)) {
             Some(point) => (point.col, point.row, point.world_center(level.grid.rows)),
             // 无存档点 ⇒ 关卡出生点（`player_spawn` 所在房间的重生点，`02` §2.5）。
-            None => crate::world::initial_spawn(&level),
+            None => crate::world::initial_spawn(&level, collision.size.1),
         };
     commands.insert_resource(CurrentRoom {
         col: spawn_col,
@@ -283,7 +284,8 @@ pub(crate) fn poll_level(
     // 先建瓦片再算出生位：多人出生点需要查询实心格（`02` §2.5）。
     let tiles = LevelTiles::from_level(&level);
     let count = session.local_players();
-    let centers = crate::player::spawn::player_spawn_centers(center, count, &tiles);
+    let centers =
+        crate::player::spawn::player_spawn_centers(center, count, &tiles, collision.size_vec());
     for (index, spawn_center) in centers.into_iter().enumerate() {
         crate::player::spawn::spawn_player(
             &mut commands,
@@ -291,6 +293,7 @@ pub(crate) fn poll_level(
             &anim.set,
             crate::player::PlayerId(index as u8),
             spawn_center,
+            &collision,
         );
     }
     info!("生成玩家：{count} 名（模式 {:?}）", *session);

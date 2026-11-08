@@ -54,6 +54,7 @@ fn enter_play(
     loaded: Option<Res<game::world::load::LoadedLevel>>,
     sheet: Option<Res<game::player::spawn::PlayerSheet>>,
     anim: Option<Res<game::anim_data::ActiveAnim>>,
+    collision: Option<Res<game::player::collision::PlayerCollision>>,
     mut current: Option<ResMut<game::world::CurrentRoom>>,
     mut next_state: ResMut<NextState<game::state::GameState>>,
     mut next_mode: ResMut<NextState<EditorMode>>,
@@ -100,14 +101,20 @@ fn enter_play(
     for entity in &players {
         commands.entity(entity).despawn();
     }
-    let center =
-        game::world::room_spawn_center(&session.doc, session.doc.start.col, session.doc.start.row);
+    let collision = collision.as_deref().copied().unwrap_or_default();
+    let center = game::world::room_spawn_center(
+        &session.doc,
+        session.doc.start.col,
+        session.doc.start.row,
+        collision.size.1,
+    );
     game::player::spawn::spawn_player(
         &mut commands,
         &sheet,
         &anim.set,
         game::player::PlayerId(0),
         center,
+        &collision,
     );
 
     // 编辑投影让位给 game 的世界：**显式销毁**（否则叠加层仍画在试玩画面上）

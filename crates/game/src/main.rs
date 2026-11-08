@@ -590,6 +590,7 @@ fn self_check(
     tiles: Option<Res<LevelTiles>>,
     loaded: Option<Res<LoadedLevel>>,
     current: Option<Res<CurrentRoom>>,
+    collision: Res<game::player::collision::PlayerCollision>,
     player_q: Query<(
         &game::player::PlayerId,
         &game::player::PlayerMotion,
@@ -764,9 +765,9 @@ fn self_check(
             transform.is_some_and(|transform| {
                 let center =
                     render_center.map_or_else(|| motion.0.aabb.center(), |center| center.0);
-                (transform.translation.x - center.x.round()).abs() < 0.001
+                (transform.translation.x - (center.x - collision.offset.0).round()).abs() < 0.001
                     && (transform.translation.y
-                        - (center.y - game::config::physics::PLAYER_SIZE.y / 2.0).round())
+                        - (center.y - collision.size.1 / 2.0 - collision.offset.1).round())
                     .abs()
                         < 0.001
             })
@@ -816,7 +817,7 @@ fn self_check(
     // ⑪ 角色碰撞盒尺寸不变形（R1–R5：反向/压扁的 AABB 会静默关闭全部碰撞）
     let box_ok = !players.is_empty()
         && players.iter().all(|(_, motion, _, _)| {
-            (motion.0.aabb.size() - game::config::physics::PLAYER_SIZE).length() <= 1e-3
+            (motion.0.aabb.size() - collision.size_vec()).length() <= 1e-3
         });
     check("player collider size", box_ok);
 

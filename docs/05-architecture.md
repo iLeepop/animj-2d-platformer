@@ -39,7 +39,7 @@ flowchart LR
 | `config/{mod,physics,render,room,net,ui}.rs` | **所有运行时常量的唯一代码落点**（所有者文档见各文件头注释；`net` 归本文 §5.15，`ui` 归 `07` §7.10.5） |
 | `coords.rs` | `room_local_to_world` / `world_to_room` / `room_center`（`00` §0.3 的唯一换算入口） |
 | `physics/{mod,aabb,tile,core,tests}.rs` | **纯函数物理内核**（`06`）：`Aabb`、`TileWorld`/`TileKind`、`step`、`overlaps_tile_kind`，以及 T1–T21 不变量测试 |
-| `player/{mod,input,spawn,death}.rs` | ECS 适配层（`06` §6.1.5）：`PlayerMotion`/`PlayerInput`、输入采样、生成、Hazard 死亡与重生 |
+| `player/{mod,input,spawn,death,collision}.rs` | ECS 适配层（`06` §6.1.5）：`PlayerMotion`/`PlayerInput`、输入采样、生成、Hazard 死亡与重生；`collision.rs` 是全局玩家碰撞配置（`06` §6.5.1） |
 | `demo.rs` | 验证用脚本输入与物理度量（`--demo walk` / `--demo jump`），见 `AGENTS.md` §4 |
 | `tiles.rs` | `RoomTiles` / `LevelTiles` 存储、`tile_at_world`、以及 `TileWorld` 的房间映射实现（`06` §6.6） |
 | `state.rs` | `GameState`（含 `OnlineMenu`）、`GameSet`、`StartupFlow`、`SettingsReturn`、`SessionMode` |
@@ -70,7 +70,7 @@ flowchart LR
 | `save/mod.rs` | `SaveData` + `save_path()` + 原子写（M6） |
 
 > **当前进度（2026-10-20，M8）**：已落地 `lib.rs` / `config/{mod,physics,render,room,net}.rs` / `coords.rs` / `physics/**` /
-> `player/{mod,input,spawn,death,decor}.rs` / `demo.rs` / `tiles.rs` / `state.rs` / `settings.rs` / `level_asset.rs` /
+> `player/{mod,input,spawn,death,decor,collision}.rs` / `demo.rs` / `tiles.rs` / `state.rs` / `settings.rs` / `level_asset.rs` /
 > `world/{mod,load,progress}.rs`（加载 + 校验 + 热重载 + 进度）/ `room/{mod,goals,reward}.rs`（房间判定、
 > 传感器、条件求值、授奖、全通）/ `camera/{mod,rig}.rs`（多玩家中点 + 地图钳制）/
 > `net/{mod,protocol,discovery,host,client}.rs`（本地双人之外的局域网联机）/
@@ -111,7 +111,7 @@ flowchart LR
 | `WorldPlugin` | 关卡加载与生成、热重载（校验通过才替换）、`LevelProgress` | `LevelAssetPlugin` |
 | `PhysicsPlugin` | — （M1 起物理并入 `PlayerPlugin`：`FixedUpdate` 的 `GameSet::Physics`；将来多实体物理再拆出） | `TilePlugin` |
 | `TilePlugin` | `RoomTiles` 存储与查询 | `WorldPlugin` |
-| `PlayerPlugin` | 输入采样、物理步推进、朝向（输入方向 ⇒ `PlayerFacing`，`01` §1.3）、Hazard 死亡与重生（`02` §2.5、`06` §6.1.5/§6.5.3） | `TilePlugin` |
+| `PlayerPlugin` | 输入采样、物理步推进、朝向（输入方向 ⇒ `PlayerFacing`，`01` §1.3）、Hazard 死亡与重生（`02` §2.5、`06` §6.1.5/§6.5.3）、全局玩家碰撞配置加载（`06` §6.5.1） | `TilePlugin` |
 | `CheckpointPlugin` | `E` 激活存档点、当前存档点状态与标记高亮（`02` §2.5） | `PlayerPlugin`、`RoomPlugin` |
 | `PlayerSpawnPlugin` | 角色图集句柄（`04` §3.2） | 无 |
 | `DemoPlugin` | 验证用脚本输入 + 物理度量（仅 `--demo` 时由 bin 添加） | 无 |

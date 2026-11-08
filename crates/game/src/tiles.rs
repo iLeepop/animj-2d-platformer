@@ -456,7 +456,12 @@ mod tests {
 
         for row in 0..level.grid.rows {
             for col in 0..level.grid.cols {
-                let center = crate::world::room_spawn_center(&level, col, row);
+                let center = crate::world::room_spawn_center(
+                    &level,
+                    col,
+                    row,
+                    crate::config::physics::PLAYER_SIZE.y,
+                );
                 let mut body = Body::at_center(center);
                 let mut out = StepOutcome::default();
                 for i in 0..180 {

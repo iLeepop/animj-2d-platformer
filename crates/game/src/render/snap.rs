@@ -5,7 +5,7 @@
 
 use bevy::prelude::*;
 
-use crate::config::physics::PLAYER_SIZE;
+use crate::player::collision::PlayerCollision;
 use crate::state::GameSet;
 
 /// 需要吸附的可渲染实体标记。
@@ -45,6 +45,7 @@ pub struct RenderCenter(pub Vec2);
 /// 有 [`RenderCenter`] 时用它（客户端全部玩家的快照插值），否则用 AABB。
 /// 全世界只有这里与 [`snap_render_transforms`] 会写渲染位置；物理侧任何地方都不得读 `Transform`。
 pub fn sync_player_transform(
+    collision: Res<PlayerCollision>,
     mut players: Query<(
         &crate::player::PlayerMotion,
         Option<&RenderCenter>,
@@ -54,8 +55,13 @@ pub fn sync_player_transform(
     for (motion, render_center, mut transform) in &mut players {
         let aabb = motion.0.aabb;
         let center = render_center.map_or_else(|| aabb.center(), |center| center.0);
-        transform.translation.x = snap_px(center.x);
-        transform.translation.y = snap_px(center.y - PLAYER_SIZE.y / 2.0);
+        // 精灵底边中点 = AABB 底边中点 − offset；默认 offset = 0 时与旧行为一致（`06` §6.5.1）。
+        let bottom = Vec2::new(
+            center.x - collision.offset.0,
+            center.y - collision.size.1 / 2.0 - collision.offset.1,
+        );
+        transform.translation.x = snap_px(bottom.x);
+        transform.translation.y = snap_px(bottom.y);
     }
 }
 
@@ -66,5 +72,39 @@ fn snap_render_transforms(mut query: Query<&mut Transform, With<PixelSnap>>) {
     for mut transform in &mut query {
         transform.translation.x = snap_px(transform.translation.x);
         transform.translation.y = snap_px(transform.translation.y);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::physics::Body;
+    use crate::player::PlayerMotion;
+
+    /// 精灵底边中点 = AABB 底边中点 − offset；默认 offset = 0 时保持旧行为。
+    #[test]
+    fn sync_player_transform_applies_collision_offset() {
+        let mut app = App::new();
+        app.insert_resource(PlayerCollision {
+            size: (10.0, 20.0),
+            offset: (3.0, -2.0),
+            ..Default::default()
+        })
+        .add_systems(Update, sync_player_transform);
+        let entity = app
+            .world_mut()
+            .spawn((
+                PlayerMotion(Body::at_center_with(
+                    Vec2::new(100.0, 50.0),
+                    Vec2::new(10.0, 20.0),
+                )),
+                Transform::default(),
+            ))
+            .id();
+        app.update();
+        let transform = app.world().entity(entity).get::<Transform>().unwrap();
+        // center = (100, 50)；底边中点 = (100, 40)；offset=(3,-2) ⇒ 精灵底边 = (97, 42)
+        assert_eq!(transform.translation.x, 97.0);
+        assert_eq!(transform.translation.y, 42.0);
     }
 }

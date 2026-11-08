@@ -6,9 +6,9 @@ use bevy::prelude::*;
 use bevy::sprite::Anchor;
 use level_format::TILE_PX;
 
+use super::collision::PlayerCollision;
 use super::{PlayerFacing, PlayerId, PlayerMotion, PlayerStepOutcome};
 use crate::config::net::{PLAYER_SPAWN_GAP_PX, SPAWN_PLACEMENT_TRIES};
-use crate::config::physics::PLAYER_SIZE;
 use crate::config::render::{
     PLAYER_SHEET_COLUMNS, PLAYER_SHEET_IMAGE, PLAYER_SHEET_ROWS, player_tint, z,
 };
@@ -120,7 +120,7 @@ fn rebuild_player_sheets(
 /// 多玩家出生位置：第一个在 `base`，其余按 ±`PLAYER_SPAWN_GAP_PX` 寻找不与实心瓦片重叠的位置。
 ///
 /// 不依赖房间数据（出生点可能被墙挤住）；找不到空位时退化为按 id 偏移（碰撞求解会处理）。
-pub fn player_spawn_centers(base: Vec2, count: usize, tiles: &LevelTiles) -> Vec<Vec2> {
+pub fn player_spawn_centers(base: Vec2, count: usize, tiles: &LevelTiles, size: Vec2) -> Vec<Vec2> {
     let mut centers = Vec::with_capacity(count);
     for index in 0..count {
         if index == 0 {
@@ -128,7 +128,7 @@ pub fn player_spawn_centers(base: Vec2, count: usize, tiles: &LevelTiles) -> Vec
             continue;
         }
         let free = |x: f32| {
-            let aabb = Aabb::from_center_size(Vec2::new(x, base.y), PLAYER_SIZE);
+            let aabb = Aabb::from_center_size(Vec2::new(x, base.y), size);
             !overlaps_tile_kind(tiles, aabb, 0.0, TileKind::Solid)
         };
         let mut chosen = base.x + index as f32 * PLAYER_SPAWN_GAP_PX;
@@ -151,9 +151,9 @@ pub fn player_spawn_centers(base: Vec2, count: usize, tiles: &LevelTiles) -> Vec
 /// 联机加入点：优先**精确出生点**；被实心瓦片或已有玩家占用时，向四周找最近空位。
 ///
 /// 主机已离开出生点时，远程玩家就出现在出生点本身；主机还站在那儿时才偏移。
-pub fn nearest_free_spawn(base: Vec2, tiles: &LevelTiles, occupied: &[Aabb]) -> Vec2 {
+pub fn nearest_free_spawn(base: Vec2, tiles: &LevelTiles, occupied: &[Aabb], size: Vec2) -> Vec2 {
     let free = |center: Vec2| {
-        let aabb = Aabb::from_center_size(center, PLAYER_SIZE);
+        let aabb = Aabb::from_center_size(center, size);
         let blocked_by_tile = overlaps_tile_kind(tiles, aabb, 0.0, TileKind::Solid);
         let blocked_by_player = occupied.iter().any(|other| {
             aabb.min.x < other.max.x
@@ -189,6 +189,7 @@ pub fn spawn_player(
     anim: &crate::anim_data::PlayerAnimSet,
     id: PlayerId,
     center: Vec2,
+    collision: &PlayerCollision,
 ) -> Entity {
     let idle = anim.state(AnimRow::Idle);
     let mut sprite = Sprite::from_atlas_image(
@@ -199,10 +200,12 @@ pub fn spawn_player(
         },
     );
     sprite.color = player_tint(id.0);
+    let body = Body::at_center_with(center, collision.size_vec());
+    let bottom = collision.sprite_bottom_center(&body.aabb);
     commands
         .spawn((
             id,
-            PlayerMotion(Body::at_center(center)),
+            PlayerMotion(body),
             PlayerStepOutcome::default(),
             // 默认朝右（`03` §3.4），由 `player::update_player_facing` 随输入更新。
             PlayerFacing::default(),
@@ -212,9 +215,9 @@ pub fn spawn_player(
             AnimationTimer::for_state(idle.frame_secs),
             CurrentAnimation(AnimRow::Idle),
             Anchor::BOTTOM_CENTER,
-            // 位置语义 = AABB 底边中点（脚底中点），与 `06` §6.8.2 的投影一致；
+            // 位置语义 = 精灵底边中点（默认与 AABB 底边中点重合，见 `06` §6.5.1）；
             // 每帧由 `render::snap::sync_player_transform` 覆盖。
-            Transform::from_xyz(snap_px(center.x), snap_px(center.y), z::player_z(id.0)),
+            Transform::from_xyz(snap_px(bottom.x), snap_px(bottom.y), z::player_z(id.0)),
             PIXEL_PERFECT_LAYERS,
             PixelSnap,
         ))

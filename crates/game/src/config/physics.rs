@@ -61,8 +61,14 @@ pub const SUBSTEP_HARD_CAP: u32 = 8;
 /// 常量表硬约束上限（px）：任一轴速度 ≤ `MAX_STEP_DISPLACEMENT × FIXED_HZ`。
 pub const MAX_STEP_DISPLACEMENT: f32 = SUBSTEP_MAX_DISTANCE * SUBSTEP_HARD_CAP as f32;
 
-/// 角色 AABB 尺寸（宽 × 高，px）。
+/// 角色 AABB 尺寸（宽 × 高，px）。默认值；实际运行时由 [`crate::player::collision::PlayerCollision`] 覆盖。
 pub const PLAYER_SIZE: Vec2 = Vec2::new(20.0, 28.0);
+/// 玩家碰撞盒宽高的允许范围（px）。见 `06` §6.5.1。
+pub const PLAYER_SIZE_MIN: f32 = 4.0;
+/// 玩家碰撞盒宽高的允许范围（px）。见 `06` §6.5.1。
+pub const PLAYER_SIZE_MAX: f32 = 64.0;
+/// 玩家碰撞盒相对精灵脚底的最大偏移（px，单轴）。见 `06` §6.5.1。
+pub const PLAYER_OFFSET_MAX: f32 = 64.0;
 /// Hazard 判定的角色 AABB 内缩量（px）。
 pub const HAZARD_INSET: f32 = 2.0;
 /// 拾取判定的角色 AABB 外扩量（px）。

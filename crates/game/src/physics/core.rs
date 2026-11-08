@@ -28,8 +28,13 @@ impl Body {
     /// 出生 / 房间重置用的干净状态（`06` §6.5.3）：
     /// 土狼时间**用尽**，因此重置后不得凭空获得一次空中起跳。
     pub fn at_center(center: Vec2) -> Self {
+        Self::at_center_with(center, PLAYER_SIZE)
+    }
+
+    /// 指定 AABB 尺寸的干净状态（全局玩家碰撞配置，见 `06` §6.5.1）。
+    pub fn at_center_with(center: Vec2, size: Vec2) -> Self {
         Self {
-            aabb: Aabb::from_center_size(center, PLAYER_SIZE),
+            aabb: Aabb::from_center_size(center, size),
             vel: Vec2::ZERO,
             grounded: false,
             airborne_since: COYOTE_STEPS + 1,

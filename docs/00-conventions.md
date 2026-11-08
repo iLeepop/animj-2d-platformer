@@ -189,6 +189,7 @@ animj/
 ├─ docs/
 ├─ assets/                    # 运行时资产根（两个 bin 共用，见 05 §资产路径）
 │  ├─ levels/
+│  ├─ config/                 # 项目级玩法配置：player.ron（全局玩家碰撞，06 §6.5.1）
 │  ├─ sprites/{player,tiles,decorations,ui,backgrounds}/
 │  └─ fonts/
 └─ crates/

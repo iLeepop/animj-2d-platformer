@@ -1628,3 +1628,27 @@ fn custom_oneway_part_is_only_standable_under_it() {
         right.aabb.min.y
     );
 }
+
+/// 全局玩家碰撞尺寸：`PhysicsConfig.player_size` 与 `Body::at_center_with` 使用同一尺寸时，
+/// 分离/落地必须保持新尺寸（不退回默认 20×28）。
+#[test]
+fn custom_player_size_keeps_box_invariant() {
+    let custom = Vec2::new(12.0, 20.0);
+    let cfg = PhysicsConfig {
+        player_size: custom,
+        ..DEFAULT_PHYSICS
+    };
+    let world = flat_world();
+    let mut body = Body::at_center_with(Vec2::new(100.0, 200.0), custom);
+    let mut out = StepOutcome::default();
+    for i in 0..180 {
+        step(&cfg, &world, &mut body, StepInput::default(), &mut out);
+        assert!(
+            (body.aabb.size() - custom).abs().max_element() < 1e-3,
+            "第 {i} 步尺寸变形：{:?}",
+            body.aabb.size()
+        );
+    }
+    assert!(body.grounded);
+    assert!((body.aabb.min.y - TILE).abs() < 1e-3);
+}

@@ -5,6 +5,7 @@
 //! 多玩家：每个角色带 [`PlayerId`]，输入按 id 放在 [`PlayerInputs`] 的槽位里。
 //! 物理按 id 升序依次推进，后推进的玩家会撞到先推进玩家的新位置（确定性、无推挤抖动）。
 
+pub mod collision;
 pub mod death;
 pub mod decor;
 pub mod input;
@@ -102,6 +103,7 @@ pub struct PlayerPlugin;
 impl Plugin for PlayerPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins((input::PlayerInputPlugin, death::PlayerDeathPlugin))
+            .insert_resource(collision::PlayerCollision::load())
             .init_resource::<PlayerInputs>()
             .init_resource::<decor::Decorations>()
             .add_systems(
@@ -142,6 +144,7 @@ fn update_player_facing(
 /// 把一个固定步推进到**所有**角色实体上（按 `PlayerId` 升序，确定性）。
 pub fn apply_player_physics(
     mut inputs: ResMut<PlayerInputs>,
+    collision: Res<collision::PlayerCollision>,
     tiles: Option<Res<LevelTiles>>,
     mut players: Query<(Entity, &PlayerId, &mut PlayerMotion, &mut PlayerStepOutcome)>,
 ) {
@@ -150,6 +153,9 @@ pub fn apply_player_physics(
     let Some(tiles) = tiles else {
         return;
     };
+    // 全局玩家碰撞尺寸覆盖默认常量；其余手感参数仍来自 `DEFAULT_PHYSICS`（`06` §6.2.4）。
+    let mut cfg = crate::config::physics::DEFAULT_PHYSICS;
+    cfg.player_size = collision.size_vec();
 
     // 查询迭代顺序不稳定：先按 id 排序，保证同一输入序列在所有机器上得到同一结果。
     let mut order: Vec<(PlayerId, Entity)> = players
@@ -177,7 +183,7 @@ pub fn apply_player_physics(
         };
         let mut out = StepOutcome::default();
         step_with_players(
-            &crate::config::physics::DEFAULT_PHYSICS,
+            &cfg,
             tiles.as_ref(),
             &mut motion.0,
             StepInput {
@@ -251,6 +257,7 @@ mod tests {
         };
         let mut app = App::new();
         app.init_resource::<PlayerInputs>()
+            .insert_resource(crate::player::collision::PlayerCollision::default())
             .insert_resource(LevelTiles::from_level(&level));
 
         let mut left = Body::at_center(Vec2::new(100.0, 100.0));

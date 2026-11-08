@@ -18,7 +18,7 @@
 
 /// 构建标记：启动时打印，用于确认"跑的是不是最新构建"。
 /// 每次改编辑器 UI/交互都手动递增末尾字母。
-pub const BUILD_TAG: &str = "2026-11-08/a";
+pub const BUILD_TAG: &str = "2026-11-08/b";
 
 /// egui 通行内的执行顺序（`08` §8.5.6）：**先**构成本帧所有面板，**再**处理世界输入。
 /// 顺序反了时 `ctx.egui_wants_pointer_input()` 读到的是上一帧的布局，点按钮会漏到画布。
@@ -33,6 +33,7 @@ pub enum EditorUiSet {
 pub mod anim_tool;
 pub mod camera;
 pub mod io;
+pub mod player_tool;
 pub mod playtest;
 pub mod session;
 pub mod tile_tool;
@@ -59,7 +60,22 @@ pub struct EditorPlugin;
 
 impl Plugin for EditorPlugin {
     fn build(&self, app: &mut App) {
+        // `add_game_plugins` 已由 bin 先调用：`PlayerCollision` 通常已从磁盘加载。
+        // 单元测试可能只加 `EditorPlugin`，此时补一份默认/磁盘值，面板不依赖插件顺序。
+        if app
+            .world()
+            .get_resource::<game::player::collision::PlayerCollision>()
+            .is_none()
+        {
+            app.insert_resource(game::player::collision::PlayerCollision::load());
+        }
+        let saved = app
+            .world()
+            .get_resource::<game::player::collision::PlayerCollision>()
+            .copied()
+            .unwrap_or_default();
         app.init_state::<EditorMode>()
+            .insert_resource(player_tool::PlayerEdit::new(saved))
             .init_resource::<crate::tile_tool::TileTool>()
             .init_resource::<crate::anim_tool::SheetTexture>()
             .init_resource::<crate::tile_tool::TileTexture>()

@@ -26,7 +26,8 @@ fn main() {
             Update,
             drive_demo_room.run_if(resource_exists::<editor::session::EditorSession>),
         )
-        .add_systems(Update, drive_demo_collision);
+        .add_systems(Update, drive_demo_collision)
+        .add_systems(Update, drive_demo_player);
 
     // 编辑态看整张地图（`08` §8.1.4）。
     app.insert_resource(game::render::tiles::RoomCulling(false));
@@ -60,6 +61,8 @@ struct Cli {
     demo_room: Option<String>,
     /// 冒烟：第 10 帧选中该字符的地块，并给它一个演示用多边形碰撞（不写盘）。
     demo_collision: Option<String>,
+    /// 冒烟：第 10 帧切到「玩家」标签页并设一个演示用玩家碰撞（不写盘）。
+    demo_player: bool,
 }
 
 impl Cli {
@@ -73,6 +76,7 @@ impl Cli {
                 "--demo-play" => cli.demo_play = true,
                 "--demo-room" => cli.demo_room = args.next(),
                 "--demo-collision" => cli.demo_collision = args.next(),
+                "--demo-player" => cli.demo_player = true,
                 other => eprintln!("忽略未知参数：{other}"),
             }
         }
@@ -229,6 +233,31 @@ fn drive_demo_collision(
         "[demo-collision] 选中地块 {target:?}（palette[{index}]），dirty = {}",
         session.dirty
     );
+}
+
+/// `--demo-player`：切到「玩家」标签页并设一个演示用尺寸/偏移，便于截图检查面板。
+///
+/// 只改内存中的全局资源（不写盘）；用于验证 `08` §8.5.7 D 的 UI 与预览。
+fn drive_demo_player(
+    cli: Res<Cli>,
+    tick: Res<FrameTick>,
+    mut tab: ResMut<editor::ui::BottomTab>,
+    mut bottom_height: ResMut<editor::ui::BottomHeight>,
+    mut collision: Option<ResMut<game::player::collision::PlayerCollision>>,
+    mut done: Local<bool>,
+) {
+    if !cli.demo_player || *done || tick.0 < 10 {
+        return;
+    }
+    *done = true;
+    *tab = editor::ui::BottomTab::Player;
+    bottom_height.0 = 480.0;
+    if let Some(collision) = collision.as_mut() {
+        collision.size = (16.0, 24.0);
+        collision.offset = (0.0, 2.0);
+        collision.clamp();
+    }
+    println!("[demo-player] 已切到「玩家」标签页并设置演示碰撞");
 }
 
 fn exit_on_frames_limit(cli: Res<Cli>, tick: Res<FrameTick>, mut exit: MessageWriter<AppExit>) {

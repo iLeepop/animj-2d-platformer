@@ -221,7 +221,9 @@ d  = 0.5·(v + v')·dt               // ← 关键：用旧速与新速的平均
 | `SUBSTEP_MAX_DISTANCE` | `16.0` | px | 单子步最大位移（推导见 §6.4.6） |
 | `SUBSTEP_HARD_CAP` | `8` | 个 | 单步最大子步数 |
 | `MAX_STEP_DISPLACEMENT` | `SUBSTEP_MAX_DISTANCE × SUBSTEP_HARD_CAP = 128.0` | px | 常量表硬约束上限（§6.4.6） |
-| `PLAYER_SIZE` | `(20.0, 28.0)` | px | 角色 AABB 宽 × 高 |
+| `PLAYER_SIZE` | `(20.0, 28.0)` | px | 角色 AABB 默认宽 × 高（实际值见 §6.5.1 全局配置） |
+| `PLAYER_SIZE_MIN` / `PLAYER_SIZE_MAX` | `4.0` / `64.0` | px | 玩家碰撞盒宽/高允许范围（§6.5.1） |
+| `PLAYER_OFFSET_MAX` | `64.0` | px | 玩家碰撞盒相对精灵脚底的最大单轴偏移（§6.5.1） |
 | `HAZARD_INSET` | `2.0` | px | Hazard 判定的角色 AABB 内缩量 |
 | `PICKUP_INFLATE` | `2.0` | px | 拾取判定的角色 AABB 外扩量 |
 | `PICKUP_SIZE` | `12.0` | px | 拾取物 AABB 边长 |
@@ -663,14 +665,33 @@ match (nearest_standable_top_below(aabb, world), vel.y) {
 
 | 项 | 值 / 约定 |
 |---|---|
-| 尺寸 | `PLAYER_SIZE = (20, 28)` px（见 §6.2.4） |
+| 尺寸 | **全局配置**，默认 `(20, 28)` px；保存于 `assets/config/player.ron`（§6.5.1.1） |
+| 允许范围 | 宽/高 `4..=64` px；偏移每轴 `-64..=64` px（`PLAYER_SIZE_MIN/MAX`、`PLAYER_OFFSET_MAX`，`06` 所有） |
 | 表示 | `Aabb { min: Vec2, max: Vec2 }`，世界像素 |
-| 关卡文件 `at` | 该 AABB 的**中心**（房间局部坐标，+Y 向下），见 `00` §0.3 |
-| 初始化 | `center = room_local_to_world(col, row, grid_rows, at)`（`00` 的唯一转换函数）；`aabb = Aabb::from_center_size(center, PLAYER_SIZE)` |
-| 水平余量 | 20 px 宽 ⇒ 1 瓦片宽（32 px）的竖直通道两侧各余 6 px（不卡通道） |
-| 竖直余量 | 28 px 高 ⇒ 1 瓦片高通道余 4 px |
-| Sprite 对齐 | sprite 32×32 + `Anchor::BOTTOM_CENTER`（【已验证】`bevy::sprite::Anchor::BOTTOM_CENTER` 存在，<https://docs.rs/bevy/0.20.0/bevy/sprite/struct.Anchor.html>）；渲染位置 = `AABB` 底边中点取整（§6.8） |
-| 尺寸变化的允许范围 | 若未来改 `PLAYER_SIZE`，必须重跑 §6.9 全部断言 |
+| 关卡文件 `at` | 该 AABB 的**中心**（房间局部坐标，+Y 向下），见 `00` §0.3；改变尺寸不改变 `at` 的语义 |
+| 初始化 | `center = room_local_to_world(...)`；`aabb = Aabb::from_center_size(center, player_size)`（`Body::at_center_with`） |
+| 水平/竖直余量 | 默认 20×28 时：1 瓦片宽通道两侧各余 6 px、1 瓦片高通道余 4 px；改尺寸后需重新核对关卡通道 |
+| Sprite 对齐 | sprite 32×32 + `Anchor::BOTTOM_CENTER`；**精灵底边中点 = AABB 底边中点 − offset**（§6.8.2） |
+| 生效范围 | **所有玩家**（单机 / 本地双人 / 联机主机与客户端预测）共用同一尺寸/偏移 |
+| 尺寸变化的允许范围 | 任何非默认值都必须重跑 §6.9 全部断言；编辑器「玩家」标签页提供 UI |
+
+#### 6.5.1.1 全局玩家碰撞配置（`assets/config/player.ron`）
+
+```ron
+(
+    version: 1,
+    size: (20.0, 28.0),      // AABB 宽 × 高（px）
+    offset: (0.0, 0.0),      // AABB 底边中点相对精灵底边中点的偏移（+x 右、+y 上）
+)
+```
+
+- **不是关卡数据**：所有关卡共用；`EditorSession.doc` / undo 栈不包含它。
+- 读取：`PlayerCollision::load()`；文件不存在/解析失败/`version` 不符 ⇒ 回退默认并 warn（不 panic）。
+- 写入：编辑器「玩家」标签页的「保存」走 `PlayerCollision::persist()`（`save::write_atomic`，`.tmp` + rename）。
+- `offset = (0, 0)` 与旧版本**逐位一致**：AABB 底边中点 = 精灵脚底中点。
+- `offset` 只影响**渲染投影**（sprite 相对碰撞盒的位置），不改变 `at`/AABB 中心/物理求解。
+- 游戏进程在启动时读取；编辑器保存后，游戏需重启生效；编辑器内试玩立即使用内存中的当前值。
+- 默认重生点 `default_spawn_local(player_height)` 使用当前高度：`480 − height/2`（`02` §2.5）。
 
 ### 6.5.2 瓦片语义 → 交互矩阵
 
@@ -907,12 +928,13 @@ PlayerInput ──► physics::step ──► Body { aabb, vel, … } ──►�
 ### 6.8.2 渲染投影的取整
 
 ```
-render_pos = (aabb.center().x.round(), aabb.min.y.round())     // f32::round，std
+render_pos = (aabb.center().x − offset.x,
+              aabb.min.y    − offset.y)                        // f32::round，std
 transform.translation = (render_pos.x, render_pos.y, Z)        // Z 由 07 给定
 ```
 
-- **位置语义 = `AABB` 底边中点（脚底中点）**，配合全局统一的 `Anchor::BOTTOM_CENTER`（`04` §4）。
-  这样 sprite 的视觉脚底与碰撞体底边严格重合，玩家能从画面上准确读出落脚点。
+- **位置语义 = 精灵底边中点**（`Anchor::BOTTOM_CENTER`）。默认 `offset = (0,0)` 时它等于
+  `AABB` 底边中点（旧行为）；自定义偏移时，精灵相对碰撞盒平移，玩家能从画面上准确读出碰撞盒位置。
 - 取整用 `f32::round()`（标准库），**不**对 `Aabb` 本体取整。
 - 取整后的像素位移序列（如 3.33 px/步 → 3/4/3 px 交替）是像素风游戏的正常表现，**不做子像素补偿**。
 - **不做**固定步长的渲染插值（官方 `physics_in_fixed_timestep` 示例的 `overstep_fraction` 插值）。
@@ -1110,3 +1132,14 @@ transform.translation = (render_pos.x, render_pos.y, Z)        // Z 由 07 给�
   判据是块必须与**移动后的盒子水平重叠**。
 - **T25l 从下方/上方嵌入不吸附**：身体顶部尚未高过自定义块顶（下落）或底部尚未低于块底（上升）时，
   不得被吸到块顶/块底；整格埋入地板的修复（R1/R2）不受影响。
+
+### T26 全局玩家碰撞配置（`06` §6.5.1，2026-11-08）
+
+- **T26a 配置读写**：`PlayerCollision` 默认 = `20×28 / (0,0)`；`persist_to` → `load_from` 无损往返；
+  文件缺失、版本不符、解析失败都回退默认；超范围值在读取/保存时被钳制。
+- **T26b 自定义尺寸物理**：`PhysicsConfig { player_size: (12,20), .. }` + `Body::at_center_with`：
+  每步 `aabb.size()` 保持 `(12,20)`，落地脚底贴合地面。
+- **T26c 渲染偏移**：`sync_player_transform` 的渲染位置 = `AABB 底边中点 − offset`；
+  默认 `(0,0)` 与旧行为一致。
+- **T26d 全链路自检**：用临时资产根把 `player.ron` 改成 `16×24 / (0,2)`，发布 bin 的
+  `VERIFY: player transform == aabb` 与 `VERIFY: player collider size` 仍为 PASS。

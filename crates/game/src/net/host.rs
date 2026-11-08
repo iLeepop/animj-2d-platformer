@@ -86,6 +86,7 @@ pub fn poll_host(
     tiles: Option<Res<LevelTiles>>,
     sheet: Option<Res<PlayerSheet>>,
     anim: Option<Res<ActiveAnim>>,
+    collision: Res<crate::player::collision::PlayerCollision>,
     players: Query<&PlayerMotion>,
 ) {
     let Some(host) = host.as_mut() else {
@@ -229,12 +230,18 @@ pub fn poll_host(
                 };
                 // 加入点：**关卡出生点**（`player_spawn` 所在房间的重生点），不是主机当前位置。
                 // 出生点被实心瓦片/已有玩家占用时，就近找空位。
-                let (_, _, base) = crate::world::initial_spawn(&loaded.level);
+                let (_, _, base) = crate::world::initial_spawn(&loaded.level, collision.size.1);
                 let occupied: Vec<crate::physics::Aabb> =
                     players.iter().map(|motion| motion.0.aabb).collect();
-                let center = nearest_free_spawn(base, tiles, &occupied);
-                let entity =
-                    spawn_player(&mut commands, sheet, &anim.set, PlayerId(player_id), center);
+                let center = nearest_free_spawn(base, tiles, &occupied, collision.size_vec());
+                let entity = spawn_player(
+                    &mut commands,
+                    sheet,
+                    &anim.set,
+                    PlayerId(player_id),
+                    center,
+                    &collision,
+                );
                 host.clients.push(ClientConn {
                     addr,
                     client_id,

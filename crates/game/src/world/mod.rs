@@ -24,15 +24,21 @@ pub struct CurrentRoom {
 
 /// 房间重生点（世界像素，玩家 AABB 中心）。
 ///
-/// 优先级：房间的 `spawn` 字段 > 引擎默认值（`config::room::DEFAULT_SPAWN_LOCAL`）。见 `02` §2.5。
-pub fn room_spawn_center(level: &level_format::Level, col: u32, row: u32) -> Vec2 {
+/// 优先级：房间的 `spawn` 字段 > 引擎默认值（`config::room::default_spawn_local`）。见 `02` §2.5。
+/// `player_height` 用于默认值（玩家碰撞配置可改，见 `06` §6.5.1）。
+pub fn room_spawn_center(
+    level: &level_format::Level,
+    col: u32,
+    row: u32,
+    player_height: f32,
+) -> Vec2 {
     let index = level_format::room_index(col, row, level.grid.cols);
     let local = level
         .rooms
         .get(index)
         .and_then(|room| room.spawn)
         .map(|(x, y)| Vec2::new(x as f32, y as f32))
-        .unwrap_or(crate::config::room::DEFAULT_SPAWN_LOCAL);
+        .unwrap_or_else(|| crate::config::room::default_spawn_local(player_height));
     crate::coords::room_local_to_world(col, row, level.grid.rows, local)
 }
 
@@ -40,7 +46,7 @@ pub fn room_spawn_center(level: &level_format::Level, col: u32, row: u32) -> Vec
 ///
 /// 这是没有存档点时的死亡回退位置，也是首次启动的出生位置（`02` §2.5）。
 /// 若关卡缺少 `player_spawn`（校验会拦截），回退到 `start` 房间。
-pub fn initial_spawn(level: &level_format::Level) -> (u32, u32, Vec2) {
+pub fn initial_spawn(level: &level_format::Level, player_height: f32) -> (u32, u32, Vec2) {
     let spawn_room = level
         .rooms
         .iter()
@@ -51,7 +57,7 @@ pub fn initial_spawn(level: &level_format::Level) -> (u32, u32, Vec2) {
             level_format::room_index(level.start.col, level.start.row, level.grid.cols) as u32
         });
     let (col, row) = (spawn_room % level.grid.cols, spawn_room / level.grid.cols);
-    (col, row, room_spawn_center(level, col, row))
+    (col, row, room_spawn_center(level, col, row, player_height))
 }
 
 pub struct WorldPlugin;

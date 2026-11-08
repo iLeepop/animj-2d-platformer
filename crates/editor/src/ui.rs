@@ -5,10 +5,12 @@
 
 use bevy::prelude::*;
 use bevy_egui::{EguiContexts, EguiPrimaryContextPass, egui};
+use game::player::collision::PlayerCollision;
 
 use crate::EditorMode;
 use crate::anim_tool::{AnimEdit, SheetTexture, ensure_sheet_texture};
 use crate::camera::{EditorCamera, room_size};
+use crate::player_tool::PlayerEdit;
 use crate::session::{EditorSession, Tool};
 use crate::tile_tool::{TileTexture, TileTool, ensure_tile_texture};
 use crate::tools::PlaytestRequest;
@@ -234,6 +236,7 @@ pub enum BottomTab {
     Tiles,
     Animation,
     Background,
+    Player,
 }
 
 /// 面板根 Ui。egui 0.36 的 `Panel::show` 以传入 Ui 的可用矩形为容器，
@@ -739,6 +742,8 @@ fn bottom_panel(
     anim_edit: Option<&mut AnimEdit>,
     sheet_texture: &SheetTexture,
     tile_texture: &TileTexture,
+    player_collision: &mut PlayerCollision,
+    player_edit: &mut PlayerEdit,
     bottom_tab: &mut BottomTab,
     bottom_height: &mut BottomHeight,
     picker: &mut crate::tile_tool::AssetPickerState,
@@ -809,6 +814,12 @@ fn bottom_panel(
                     .clicked()
                 {
                     *bottom_tab = BottomTab::Background;
+                }
+                if ui
+                    .selectable_label(*bottom_tab == BottomTab::Player, "玩家")
+                    .clicked()
+                {
+                    *bottom_tab = BottomTab::Player;
                 }
                 // 外部改动（`08` §8.7.4）：显式确认，绝不自动覆盖编辑缓冲
                 if session.pending_external.is_some() {
@@ -900,6 +911,12 @@ fn bottom_panel(
                             ui.label("动画数据尚未加载");
                         }
                     },
+                    BottomTab::Player => crate::player_tool::player_panel(
+                        ui,
+                        player_collision,
+                        player_edit,
+                        sheet_texture.0.as_ref(),
+                    ),
                 });
         });
 }
@@ -1017,6 +1034,8 @@ fn panels(
     mut bottom_tab: ResMut<BottomTab>,
     mut bottom_height: ResMut<BottomHeight>,
     mut picker: ResMut<crate::tile_tool::AssetPickerState>,
+    mut player_collision: ResMut<PlayerCollision>,
+    mut player_edit: ResMut<PlayerEdit>,
 ) -> Result {
     let ctx = contexts.ctx_mut()?;
     let mut root = ui_root(ctx);
@@ -1039,6 +1058,8 @@ fn panels(
         anim_edit.as_mut().map(|edit| &mut **edit),
         &sheet_texture,
         &tile_texture,
+        &mut player_collision,
+        &mut player_edit,
         &mut bottom_tab,
         &mut bottom_height,
         &mut picker,

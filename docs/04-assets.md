@@ -497,7 +497,7 @@ animj-dev gen-placeholder-assets [--out assets] [--force]
 
 | 输出文件 | 网格（列×行） | 像素尺寸 | 帧数 | 内容 |
 |---|---|---|---|---|
-| `assets/sprites/player/cat_sheet.png` | `6 × 4` | `192 × 128` | 24 格（有效 14 帧，其余透明） | 行 = `idle/run/jump/fall`，帧序见 §5.2。**占位身体 = `PLAYER_SIZE`（20×28）且底对齐**：看到的就是撞到的；满 32×32 的身体会让 6 px / 4 px 的视觉外沿被误认为穿模 |
+| `assets/sprites/player/cat_sheet.png` | `6 × 4` | `192 × 128` | 24 格（有效 14 帧，其余透明） | 行 = `idle/run/jump/fall`，帧序见 §5.2。**占位身体 = `PLAYER_SIZE`（默认 20×28）且底对齐**：看到的就是撞到的；满 32×32 的身体会让 6 px / 4 px 的视觉外沿被误认为穿模。注意：`PLAYER_SIZE` 是**默认值**，运行时由 `assets/config/player.ron` 覆盖（`06` §6.5.1）；修改全局碰撞后占位图不会自动重画，需要重新生成/绘制 |
 | `assets/sprites/tiles/tileset.png` | `TILESET_COLUMNS × N` | `(32·TILESET_COLUMNS) × (32·N)` | `TILESET_COLUMNS × N` | 每格带索引数字；`N` 由 `03` §3.3 的**可渲染**条目数决定（算法见 §10）。**轮廓必须表达物理语义**（`06` §6.4.5）：`#` 实心 = 满格纯色；`=` 单向平台 = 顶部 8 px 薄板（下方全透明）；`^` 尖刺 = 锯齿；装饰 = 内缩小块。历史上四类都画成满格方块，导致玩家把单向平台当成实心块、误以为"跳跃穿模" |
 | `assets/sprites/decorations/<id>.png` | `1 × 1` | `32 × 32` | 1 | 每个 id 一张：**背景全透明**，只在角色画布坐标上画识别图形（居中色块 + 指纹刻度 + 索引角标）；`<id>` 为所有关卡 `reward` 字段的并集（`03` §3.2）。**不得整格不透明**：装饰品是叠加层（§6.1），全不透明会遮住角色本体 |
 | `assets/sprites/ui/ui_atlas.png` | 见 §9 | 同规则 | — | UI 图标占位 |

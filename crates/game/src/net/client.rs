@@ -331,6 +331,7 @@ pub fn apply_snapshot(
     sheet: Option<Res<PlayerSheet>>,
     anim: Option<Res<ActiveAnim>>,
     tiles: Option<Res<LevelTiles>>,
+    collision: Res<crate::player::collision::PlayerCollision>,
     mut progress: Option<ResMut<LevelProgress>>,
     mut active: Option<ResMut<ActiveCheckpoint>>,
     mut picked: Option<ResMut<PickedZones>>,
@@ -363,7 +364,7 @@ pub fn apply_snapshot(
         .collect();
 
     for snap in &snapshot.players {
-        let mut body = Body::at_center(Vec2::new(snap.x, snap.y));
+        let mut body = Body::at_center_with(Vec2::new(snap.x, snap.y), collision.size_vec());
         body.vel = Vec2::new(snap.vx, snap.vy);
         body.grounded = snap.grounded;
         body.airborne_since = if snap.grounded { 0 } else { COYOTE_STEPS + 1 };
@@ -384,6 +385,7 @@ pub fn apply_snapshot(
                 &anim.set,
                 PlayerId(snap.id),
                 Vec2::new(snap.x, snap.y),
+                &collision,
             );
             // 只有远端玩家走渲染插值；本地玩家由预测位置直接投影。
             if client.player_id != Some(snap.id) {
@@ -411,21 +413,20 @@ pub fn apply_snapshot(
             players.iter_mut().find(|(_, id, _, _, _)| id.0 == local_id),
         ) {
             // 与主机同一物理函数；其他玩家用本快照的 AABB 当实心障碍。
+            let mut cfg = DEFAULT_PHYSICS;
+            cfg.player_size = collision.size_vec();
             let others: Vec<Aabb> = snapshot
                 .players
                 .iter()
                 .filter(|player| player.id != local_id)
                 .map(|player| {
-                    Aabb::from_center_size(
-                        Vec2::new(player.x, player.y),
-                        DEFAULT_PHYSICS.player_size,
-                    )
+                    Aabb::from_center_size(Vec2::new(player.x, player.y), cfg.player_size)
                 })
                 .collect();
             for (_, input) in &client.pending_inputs {
                 let mut out = StepOutcome::default();
                 step_with_players(
-                    &DEFAULT_PHYSICS,
+                    &cfg,
                     tiles.as_ref(),
                     &mut motion.0,
                     StepInput {
@@ -551,6 +552,7 @@ pub fn send_input_and_predict(
     mut client: Option<ResMut<ClientNet>>,
     state: Res<State<GameState>>,
     tiles: Option<Res<LevelTiles>>,
+    collision: Res<crate::player::collision::PlayerCollision>,
     mut inputs: ResMut<PlayerInputs>,
     mut players: Query<(
         &PlayerId,
@@ -615,8 +617,10 @@ pub fn send_input_and_predict(
         return; // 本地玩家实体还没由第一份快照生成
     };
     let mut out = StepOutcome::default();
+    let mut cfg = DEFAULT_PHYSICS;
+    cfg.player_size = collision.size_vec();
     step_with_players(
-        &DEFAULT_PHYSICS,
+        &cfg,
         tiles.as_ref(),
         &mut motion.0,
         StepInput {

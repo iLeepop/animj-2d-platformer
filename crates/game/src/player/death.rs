@@ -88,6 +88,7 @@ pub struct RespawnPoint {
 pub fn respawn_target(
     level: &level_format::Level,
     checkpoint: Option<CheckpointPoint>,
+    player_height: f32,
 ) -> RespawnPoint {
     if let Some(point) = checkpoint.filter(|point| crate::checkpoint::exists(level, *point)) {
         return RespawnPoint {
@@ -96,7 +97,7 @@ pub fn respawn_target(
             from_checkpoint: true,
         };
     }
-    let (col, row, center) = crate::world::initial_spawn(level);
+    let (col, row, center) = crate::world::initial_spawn(level, player_height);
     RespawnPoint {
         center,
         room: (col, row),
@@ -111,6 +112,7 @@ pub fn respawn_on_death(
     mut current: Option<ResMut<CurrentRoom>>,
     active: Option<Res<ActiveCheckpoint>>,
     tiles: Option<Res<LevelTiles>>,
+    collision: Res<crate::player::collision::PlayerCollision>,
     mut players: Query<(&PlayerId, &mut PlayerMotion, &mut PlayerStepOutcome)>,
 ) {
     let dead: Vec<PlayerId> = died.read().map(|message| message.player_id).collect();
@@ -122,7 +124,7 @@ pub fn respawn_on_death(
     };
     let now = (current.col, current.row);
     let checkpoint = active.and_then(|active| active.0);
-    let target = respawn_target(&loaded.level, checkpoint);
+    let target = respawn_target(&loaded.level, checkpoint, collision.size.1);
     if target.room != now {
         // 存档点/出生点可能在别的房间：显式切房间，避免滞回判定让相机/裁剪滞后一帧以上。
         current.col = target.room.0;
@@ -157,7 +159,12 @@ pub fn respawn_on_death(
     let centers = tiles
         .as_ref()
         .map(|tiles| {
-            crate::player::spawn::player_spawn_centers(target.center, count, tiles.as_ref())
+            crate::player::spawn::player_spawn_centers(
+                target.center,
+                count,
+                tiles.as_ref(),
+                collision.size_vec(),
+            )
         })
         .unwrap_or_else(|| vec![target.center; count]);
 
@@ -166,8 +173,8 @@ pub fn respawn_on_death(
             continue;
         }
         let center = centers.get(id.index()).copied().unwrap_or(target.center);
-        // `Body::at_center` 保证「土狼时间用尽」，因此重生后不得凭空起跳（`06` §6.5.3 / T21）
-        motion.0 = crate::physics::Body::at_center(center);
+        // `Body::at_center_with` 保证「土狼时间用尽」，因此重生后不得凭空起跳（`06` §6.5.3 / T21）
+        motion.0 = crate::physics::Body::at_center_with(center, collision.size_vec());
         outcome.0 = crate::physics::StepOutcome::default();
     }
 }
@@ -223,7 +230,7 @@ mod tests {
     }
 
     fn level_spawn(level: &level_format::Level) -> (u32, u32, Vec2) {
-        crate::world::initial_spawn(level)
+        crate::world::initial_spawn(level, crate::config::physics::PLAYER_SIZE.y)
     }
 
     /// 没有存档点 ⇒ 回**关卡出生点**，而不是死亡时所在房间的重生点（`02` §2.5）。
@@ -231,7 +238,7 @@ mod tests {
     fn no_checkpoint_falls_back_to_level_spawn_in_any_room() {
         let level = level_with_checkpoint(None);
         let (col, row, center) = level_spawn(&level);
-        let target = respawn_target(&level, None);
+        let target = respawn_target(&level, None, crate::config::physics::PLAYER_SIZE.y);
         assert_eq!(target.center, center);
         assert_eq!(target.room, (col, row));
         assert_eq!(target.room, (0, 0), "落点必须是出生房间");
@@ -244,7 +251,7 @@ mod tests {
         let at = (100, 464);
         let level = level_with_checkpoint(Some(at));
         let point = CheckpointPoint { col: 0, row: 0, at };
-        let target = respawn_target(&level, Some(point));
+        let target = respawn_target(&level, Some(point), crate::config::physics::PLAYER_SIZE.y);
         assert_eq!(target.center, point.world_center(level.grid.rows));
         assert_eq!(target.room, (0, 0));
         assert!(target.from_checkpoint);
@@ -260,7 +267,7 @@ mod tests {
             at: (100, 464),
         };
         let (col, row, center) = level_spawn(&level);
-        let target = respawn_target(&level, Some(point));
+        let target = respawn_target(&level, Some(point), crate::config::physics::PLAYER_SIZE.y);
         assert!(!target.from_checkpoint);
         assert_eq!(target.room, (col, row));
         assert_eq!(target.center, center);
@@ -278,6 +285,7 @@ mod tests {
         let mut app = App::new();
         app.add_message::<PlayerDied>()
             .init_resource::<ActiveCheckpoint>()
+            .insert_resource(crate::player::collision::PlayerCollision::default())
             .insert_resource(LoadedLevel {
                 level: level.clone(),
                 handle: Handle::default(),
