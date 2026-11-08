@@ -57,7 +57,8 @@ pub struct EntitySpec {
     pub at: (i32, i32),          // 房间局部坐标，AABB 中心，单位像素
     pub size: Option<(i32, i32)>,// 默认 (32, 32)
     pub id: Option<String>,      // 可选稳定标识，供编辑器与后续逻辑引用
-    pub item: Option<ItemKind>,  // 仅 kind == "item" 时有效（V24）
+    pub item: Option<ItemKind>,  // 仅 item / item_spawner 时有效（V24）
+    pub sprite: Option<String>,  // 道具贴图（相对 assets/ 的 PNG）；仅 item 类有效（V25）
 }
 ```
 
@@ -156,7 +157,8 @@ pub struct EntitySpec {
 |---|---|---|---|
 | `player_spawn` | `(32, 32)` | 全关卡**恰好 1 个**，**可以位于任意房间**（V12）；游戏从它所在房间开始 | 玩家初始位置 |
 | `goal` | `(32, 32)` | 全关卡**恰好 1 个**（V23） | **终点**：玩家 AABB 与它相交即该玩家到达终点（`01` §1.4） |
-| `item` | `(12, 12)` | 每房间 `0..=255` 个；**必须**带 `item` 字段（V24） | 可拾取道具；拾取后覆盖角色当前道具（`01` §1.5、`06` §6.12） |
+| `item` | `(12, 12)` | 每房间 `0..=255` 个；**必须**带 `item` 字段（V24）；`sprite` 可选（V25） | 可拾取道具；拾取后覆盖角色当前道具并**销毁**（`01` §1.5、`06` §6.12） |
+| `item_spawner` | `(12, 12)` | 每房间 `0..=255` 个；**必须**带 `item` 字段（V24）；`sprite` 可选（V25） | **道具生成器**：在自身位置生成道具；被拾取后隐藏 1.5 s 再重新生成（`01` §1.5） |
 | `fruit` | `(12, 12)` | 每房间 `0..=255` 个 | 可选收集品（当前只播放拾取反馈与计入存档，不参与通关） |
 | `checkpoint` | `(32, 32)` | 每房间 `0..=255` 个 | 存档点区域；玩家在内按 `E` 激活并写盘（`02` §2.5）。`at` = 重生时的 AABB 中心，必须摆在地面上 |
 
@@ -173,7 +175,9 @@ pub enum ItemKind {
 ```
 
 - 角色**同一时刻至多携带一个道具**；再次拾取直接覆盖，不叠加（`01` §1.5）。
-- 道具实体在拾取后销毁；死亡**不清空**道具，避免一次性道具被消耗后卡死关卡。
+- `item` 实体在拾取后销毁；`item_spawner` 生成的实体拾取后隐藏，`ITEM_RESPAWN_SECS = 1.5` 秒后重新生成。
+- 道具贴图：`sprite: Some("sprites/items/speed.png")`（相对 `assets/` 的 PNG）。未设置时按类型用占位色块。
+- 死亡**不清空**当前道具；避免一次性道具被消耗后无法继续。
 - 具体倍率归 `06` §6.12；这里是 RON 枚举名（`item: Some(SuperJump)`）。
 
 ## 3.6 完整示例
@@ -313,7 +317,8 @@ pub fn validate(level: &Level) -> Vec<LevelIssue>
 | V21 | `palette[*].collision` 结构非法：顶点数不在 `3..=32`、坐标超出 `0..=32`、顶点重合、面积为 0、或边自交 | Error |
 | V22 | `palette[*].collision` 实际不生效：`behavior == None`，或栅格化后不覆盖任何像素中心 | Warning |
 | V23 | 全关卡 `goal` 实体数 `== 1` | Error |
-| V24 | `kind == "item"` 必须带 `item` 字段；其它 `kind` 不得带 `item` | Error |
+| V24 | `kind == "item" / "item_spawner"` 必须带 `item` 字段；其它 `kind` 不得带 `item` | Error |
+| V25 | `sprite` 仅 `item` / `item_spawner` 可设置；必须是相对 `assets/` 的 `.png` 路径 | Error |
 
 > **V7–V11 已移除**：房间目标机制与装饰品奖励在 v3 删除。编号不复用，避免与历史错误输出混淆。
 >
@@ -339,3 +344,4 @@ pub fn validate(level: &Level) -> Vec<LevelIssue>
 | `2`（校验放宽） | 2026-10-19 | **移除 V7**（`goals` 非空）：每房至少一个目标改为纯设计约束；空列表运行时永不通关 |
 | `2`（增补） | 2026-11-08 | `palette[]` 新增可选字段 `collision`（§3.9，V21/V22）；**不升版本**，旧文件读取为 `None`（整格） |
 | `3` | 2026-11-08 | **破坏性**：删除房间级 `goals` / `reward`；新增全关卡唯一 `goal` 终点（V23）与 `item` 道具实体 + `ItemKind`（V24）；旧文件迁移时 `exit` → `goal`、丢弃目标/奖励字段 |
+| `3`（增补） | 2026-11-08 | 新增 `item_spawner` 实体与 `sprite` 可选字段（V24/V25）；旧文件 `sprite` 缺省 = 占位色块 |

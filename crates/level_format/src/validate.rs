@@ -13,13 +13,26 @@ const MAX_ROOMS: u64 = 256;
 const ROOMS_WARN_THRESHOLD: u64 = 64;
 /// 当前版本注册的实体 kind，见 `docs/03-level-format.md` §3.4。
 /// 旧版的 `exit` 由格式迁移改写成 `goal`；v3 不再接受 `exit`。
-const ENTITY_KINDS: &[&str] = &["player_spawn", "goal", "fruit", "checkpoint", "item"];
+const ENTITY_KINDS: &[&str] = &[
+    "player_spawn",
+    "goal",
+    "fruit",
+    "checkpoint",
+    "item",
+    "item_spawner",
+];
 /// 玩家出生点实体 kind，见 `docs/03-level-format.md` §3.4。
 const PLAYER_SPAWN_KIND: &str = "player_spawn";
 /// 终点实体 kind：全关卡恰好 1 个（V23）。
 const GOAL_KIND: &str = "goal";
 /// 道具实体 kind：必须带 `item` 字段（V24）。
 const ITEM_KIND: &str = "item";
+/// 道具生成器：必须带 `item` 字段；会在自身位置生成/重生道具（V24/V25）。
+const ITEM_SPAWNER_KIND: &str = "item_spawner";
+
+fn is_item_entity(kind: &str) -> bool {
+    kind == ITEM_KIND || kind == ITEM_SPAWNER_KIND
+}
 
 /// 校验关卡，返回**全部**问题（不短路）。
 ///
@@ -215,24 +228,59 @@ fn check_entity_specs(i: usize, room: &Room, issues: &mut Vec<LevelIssue>) {
             );
         }
         match (spec.kind.as_str(), spec.item) {
-            (ITEM_KIND, None) => push(
+            (kind, None) if is_item_entity(kind) => push(
                 issues,
                 Severity::Error,
                 &format!("{path}.item"),
                 "V24",
-                "kind = \"item\" 必须指定道具类型 item: SuperJump / Speed / DoubleJump".to_string(),
+                "item / item_spawner 必须指定道具类型 item: SuperJump / Speed / DoubleJump"
+                    .to_string(),
             ),
-            (kind, Some(item)) if kind != ITEM_KIND => push(
+            (kind, Some(item)) if !is_item_entity(kind) => push(
                 issues,
                 Severity::Error,
                 &format!("{path}.item"),
                 "V24",
                 format!(
-                    "只有 kind = \"item\" 可以带道具类型，本实体 kind = '{kind}'（{:?}）",
+                    "只有 item / item_spawner 可以带道具类型，本实体 kind = '{kind}'（{:?}）",
                     item
                 ),
             ),
             _ => {}
+        }
+
+        // V25：贴图路径只有 item 类实体可用，且必须是相对 assets/ 的 .png
+        if let Some(sprite) = &spec.sprite {
+            let sprite_path = format!("{path}.sprite");
+            if !is_item_entity(&spec.kind) {
+                push(
+                    issues,
+                    Severity::Error,
+                    &sprite_path,
+                    "V25",
+                    format!(
+                        "只有 item / item_spawner 可以设置贴图，本实体 kind = '{}'",
+                        spec.kind
+                    ),
+                );
+            }
+            match crate::types::normalize_asset_path(sprite) {
+                None => push(
+                    issues,
+                    Severity::Error,
+                    &sprite_path,
+                    "V25",
+                    "贴图路径不能为空".to_string(),
+                ),
+                Some(path) if !path.to_ascii_lowercase().ends_with(".png") => push(
+                    issues,
+                    Severity::Error,
+                    &sprite_path,
+                    "V25",
+                    format!("贴图必须是 PNG（相对 assets/ 的路径），实际 '{sprite}'"),
+                ),
+                Some(_) => {}
+            }
         }
 
         let (x, y) = spec.at;

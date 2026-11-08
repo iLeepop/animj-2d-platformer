@@ -416,6 +416,21 @@ mod placeholder {
         raster
     }
 
+    /// 道具占位贴图：32×32、背景透明，居中色块 + 索引角标。
+    /// 供关卡 `item` / `item_spawner` 的 `sprite` 字段使用（`03` V25）。
+    pub fn item_icon(kind: level_format::ItemKind, index: u32) -> Raster {
+        let mut raster = Raster::new(CELL_PX as u32, CELL_PX as u32);
+        let color = match kind {
+            level_format::ItemKind::SuperJump => ACCENT,
+            level_format::ItemKind::Speed => MARKER,
+            level_format::ItemKind::DoubleJump => PRIMARY,
+        };
+        raster.fill_rect(6, 6, 20, 20, color);
+        raster.stroke_rect(6, 6, 20, 20, OUTLINE);
+        glyph::draw_index_tag(&mut raster, 8, 8, index);
+        raster
+    }
+
     /// UI 图集：4 列 × 2 行 = 128×64。见 `docs/04-assets.md` §9（M0 只需确定性的占位格）。
     pub fn ui_atlas() -> Raster {
         let mut raster = Raster::new(
@@ -685,6 +700,19 @@ fn plan_jobs() -> Result<Vec<(String, Vec<u8>)>, String> {
         UI_ATLAS_PATH.to_owned(),
         raster::encode_png(&placeholder::ui_atlas())?,
     ));
+    for (index, (kind, id)) in [
+        (level_format::ItemKind::SuperJump, "super_jump"),
+        (level_format::ItemKind::Speed, "speed"),
+        (level_format::ItemKind::DoubleJump, "double_jump"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        jobs.push((
+            format!("sprites/items/{id}.png"),
+            raster::encode_png(&placeholder::item_icon(kind, index as u32))?,
+        ));
+    }
     // 音效占位（`04` §6.9）：cue → (频率, 时长, 方波?)
     for (cue, freq, secs, square) in [
         ("jump", 660.0, 0.09, true),

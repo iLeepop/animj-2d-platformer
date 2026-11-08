@@ -294,6 +294,38 @@ impl EditorSession {
 
     // ---------- 实体（工具 6） ----------
 
+    /// 设置某个实体的道具类型（仅 item / item_spawner）。
+    pub fn set_entity_item(&mut self, index: usize, item: Option<level_format::ItemKind>) -> bool {
+        let Some(spec) = self.room_mut().entities.get_mut(index) else {
+            return false;
+        };
+        if spec.item == item {
+            return false;
+        }
+        self.begin_edit();
+        // begin_edit 会重建可变借用，重新取一次。
+        if let Some(spec) = self.room_mut().entities.get_mut(index) {
+            spec.item = item;
+        }
+        true
+    }
+
+    /// 设置某个实体的道具贴图（相对 `assets/` 的 PNG；空串 / 非法路径 = 清除）。
+    pub fn set_entity_sprite(&mut self, index: usize, sprite: Option<String>) -> bool {
+        let normalized = sprite.and_then(|path| level_format::normalize_asset_path(&path));
+        let Some(spec) = self.room_mut().entities.get_mut(index) else {
+            return false;
+        };
+        if spec.sprite == normalized {
+            return false;
+        }
+        self.begin_edit();
+        if let Some(spec) = self.room_mut().entities.get_mut(index) {
+            spec.sprite = normalized;
+        }
+        true
+    }
+
     /// 房间里每个实体的世界 AABB 中心与尺寸（占位尺寸规则与投影一致）。
     pub fn entity_boxes(&self) -> Vec<(usize, (u32, u32), Vec2, Vec2)> {
         let rows = self.doc.grid.rows;
@@ -639,6 +671,7 @@ mod tests {
             size: None,
             id: None,
             item: None,
+            sprite: None,
         });
         let mut second = level.rooms[0].clone();
         second.entities[0].at = (200, 200);
@@ -679,6 +712,7 @@ mod tests {
             size: None,
             id: None,
             item: None,
+            sprite: None,
         });
         let mut session = EditorSession::new(level, None);
         session.begin_edit();
@@ -700,6 +734,7 @@ mod tests {
             size: None,
             id: None,
             item: Some(session.entity_item),
+            sprite: None,
         };
         session.room_mut().entities.push(spec.clone());
         assert_eq!(
@@ -715,6 +750,33 @@ mod tests {
         assert_eq!(session.room().entities[0].item, None);
     }
 
+    /// 道具贴图：路径 normalize 后写入；清除 = None。
+    #[test]
+    fn item_sprite_edits_go_through_snapshot() {
+        let mut level = sample_level();
+        level.rooms[0].entities.push(level_format::EntitySpec {
+            kind: "item".into(),
+            at: (96, 96),
+            size: None,
+            id: None,
+            item: Some(level_format::ItemKind::Speed),
+            sprite: None,
+        });
+        let mut session = EditorSession::new(level, None);
+        assert!(session.set_entity_sprite(0, Some("assets/sprites/items/speed.png".into())));
+        assert_eq!(
+            session.room().entities[0].sprite.as_deref(),
+            Some("sprites/items/speed.png")
+        );
+        assert!(session.set_entity_sprite(0, None));
+        assert_eq!(session.room().entities[0].sprite, None);
+        assert!(session.undo());
+        assert_eq!(
+            session.room().entities[0].sprite.as_deref(),
+            Some("sprites/items/speed.png")
+        );
+    }
+
     /// 工具 6：实体的世界 AABB 命中测试与吸附位置。
     #[test]
     fn entity_hit_test_and_snapped_move() {
@@ -725,6 +787,7 @@ mod tests {
             size: None,
             id: None,
             item: None,
+            sprite: None,
         });
         let mut session = EditorSession::new(level, None);
         let boxes = session.entity_boxes();
@@ -805,6 +868,7 @@ mod tests {
             size: None,
             id: None,
             item: None,
+            sprite: None,
         };
         // 起始房间：2 个 spawn、2 个 goal、1 个 fruit
         level.rooms[0].entities = vec![
@@ -853,6 +917,7 @@ mod tests {
             size: None,
             id: None,
             item: None,
+            sprite: None,
         });
         let mut session = EditorSession::new(level, None);
         let before = session.doc.rooms[1].entities.len();

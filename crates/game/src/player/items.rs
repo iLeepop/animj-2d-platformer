@@ -7,9 +7,11 @@
 use bevy::prelude::*;
 use level_format::ItemKind;
 
+use crate::config::item::ITEM_RESPAWN_SECS;
 use crate::config::physics::{
-    ITEM_DOUBLE_JUMP_MAX_AIR_JUMPS, ITEM_DOUBLE_JUMP_VELOCITY_MULT, ITEM_SPEED_ACCEL_MULT,
-    ITEM_SPEED_MAX_MULT, ITEM_SUPER_JUMP_VELOCITY_MULT, PICKUP_INFLATE, PhysicsConfig,
+    FIXED_DT, ITEM_DOUBLE_JUMP_MAX_AIR_JUMPS, ITEM_DOUBLE_JUMP_VELOCITY_MULT,
+    ITEM_SPEED_ACCEL_MULT, ITEM_SPEED_MAX_MULT, ITEM_SUPER_JUMP_VELOCITY_MULT, PICKUP_INFLATE,
+    PhysicsConfig,
 };
 use crate::player::{PlayerId, PlayerMotion};
 use crate::room::{PickedZones, RoomZone, RoomZoneKind, ZoneId, aabb_overlaps};
@@ -21,6 +23,25 @@ pub struct CarriedItem(pub Option<ItemKind>);
 impl CarriedItem {
     pub fn get(self) -> Option<ItemKind> {
         self.0
+    }
+}
+
+/// 道具生成器生成的道具：被拾取后隐藏，`ITEM_RESPAWN_SECS` 后重新激活。
+///
+/// 只有 `item_spawner` 生成的道具有这个组件；普通 `item` 实体拾取后直接销毁。
+#[derive(Component, Debug, Clone, Copy, PartialEq)]
+pub struct SpawnerItem {
+    pub active: bool,
+    /// 剩余重生时间（秒）；仅在 `active == false` 时有意义。
+    pub respawn_left: f32,
+}
+
+impl Default for SpawnerItem {
+    fn default() -> Self {
+        Self {
+            active: true,
+            respawn_left: 0.0,
+        }
     }
 }
 
@@ -71,7 +92,8 @@ impl Plugin for ItemPlugin {
     fn build(&self, app: &mut App) {
         app.add_message::<ItemPicked>().add_systems(
             FixedUpdate,
-            pickup_items
+            (pickup_items, tick_item_spawners)
+                .chain()
                 .after(crate::player::apply_player_physics)
                 .in_set(crate::state::GameSet::Physics)
                 .run_if(crate::net::not_client),
@@ -82,17 +104,28 @@ impl Plugin for ItemPlugin {
 /// 玩家 AABB 与道具区域相交 ⇒ 拾取并覆盖当前道具，销毁道具实体。
 ///
 /// 每个道具每个固定步只被一名玩家拾取（`find` 的第一名）；多人同时踩住不会复制。
+#[allow(clippy::type_complexity)]
 fn pickup_items(
     mut commands: Commands,
     mut players: Query<(&PlayerId, &PlayerMotion, &mut CarriedItem)>,
-    zones: Query<(Entity, &RoomZone, Option<&ZoneId>)>,
+    mut zones: Query<(
+        Entity,
+        &RoomZone,
+        Option<&ZoneId>,
+        Option<&mut SpawnerItem>,
+        Option<&mut Visibility>,
+    )>,
     mut picked_zones: ResMut<PickedZones>,
     mut picked: MessageWriter<ItemPicked>,
 ) {
-    for (entity, zone, zone_id) in &zones {
+    for (entity, zone, zone_id, mut spawner, mut visibility) in &mut zones {
         let RoomZoneKind::Item(kind) = zone.kind else {
             continue;
         };
+        // 生成器道具在重生倒计时期间不可拾取。
+        if spawner.as_ref().is_some_and(|spawner| !spawner.active) {
+            continue;
+        }
         let Some((id, _, mut carried)) = players.iter_mut().find(|(_, motion, _)| {
             aabb_overlaps(&motion.0.aabb.inset(-PICKUP_INFLATE), &zone.aabb)
         }) else {
@@ -100,24 +133,61 @@ fn pickup_items(
         };
         let replaced = carried.0;
         carried.0 = Some(kind);
-        if let Some(zone_id) = zone_id {
-            picked_zones.0.insert(zone_id.0);
+        match spawner.as_mut() {
+            Some(spawner) => {
+                // 生成器：隐藏并开始 1.5 s 重生倒计时，不销毁实体。
+                spawner.active = false;
+                spawner.respawn_left = ITEM_RESPAWN_SECS;
+                if let Some(visibility) = visibility.as_mut() {
+                    **visibility = Visibility::Hidden;
+                }
+            }
+            None => {
+                // 一次性道具：销毁并记录，供客户端同步。
+                if let Some(zone_id) = zone_id {
+                    picked_zones.0.insert(zone_id.0);
+                }
+                commands.entity(entity).despawn();
+            }
         }
-        commands.entity(entity).despawn();
         picked.write(ItemPicked {
             player: *id,
             kind,
             replaced,
         });
         info!(
-            "玩家 {} 拾取道具：{}（{}）",
+            "玩家 {} 拾取道具：{}（{}）{}",
             id.0,
             kind.id(),
             match replaced {
                 Some(previous) => format!("覆盖 {}", previous.id()),
                 None => "空手".to_string(),
+            },
+            if spawner.is_some() {
+                format!("，生成器 {ITEM_RESPAWN_SECS} 秒后重生")
+            } else {
+                String::new()
             }
         );
+    }
+}
+
+/// 生成器道具的 1.5 s 重生倒计时（固定步，主机权威）。
+fn tick_item_spawners(mut spawners: Query<(&mut SpawnerItem, &mut Visibility, &RoomZone)>) {
+    for (mut spawner, mut visibility, zone) in &mut spawners {
+        if spawner.active {
+            continue;
+        }
+        spawner.respawn_left -= FIXED_DT;
+        if spawner.respawn_left > 0.0 {
+            continue;
+        }
+        spawner.active = true;
+        spawner.respawn_left = 0.0;
+        *visibility = Visibility::Inherited;
+        if let RoomZoneKind::Item(kind) = zone.kind {
+            info!("道具生成器：重新生成 {}", kind.id());
+        }
     }
 }
 
@@ -159,6 +229,66 @@ mod tests {
         assert_eq!(cfg.max_air_jumps, ITEM_DOUBLE_JUMP_MAX_AIR_JUMPS);
         assert!(cfg.air_jump_velocity > 0.0);
         assert_eq!(cfg.max_run_speed, DEFAULT_PHYSICS.max_run_speed);
+    }
+
+    /// 生成器道具被拾取后隐藏并进入倒计时；倒计时结束后重新激活。
+    #[test]
+    fn spawner_item_respawns_after_the_configured_delay() {
+        use bevy::ecs::system::RunSystemOnce;
+
+        use crate::physics::{Aabb, Body};
+        use crate::room::{PickedZones, RoomZone, RoomZoneKind, ZoneId};
+
+        let mut app = App::new();
+        app.init_resource::<PickedZones>()
+            .add_message::<ItemPicked>();
+        let center = Vec2::new(100.0, 100.0);
+        app.world_mut().spawn((
+            PlayerId(0),
+            PlayerMotion(Body::at_center(center)),
+            CarriedItem::default(),
+        ));
+        let zone = app
+            .world_mut()
+            .spawn((
+                RoomZone {
+                    room_index: 0,
+                    kind: RoomZoneKind::Item(ItemKind::Speed),
+                    aabb: Aabb::from_center_size(center, Vec2::splat(12.0)),
+                    at: (100, 100),
+                },
+                ZoneId(3),
+                SpawnerItem::default(),
+                Visibility::Inherited,
+            ))
+            .id();
+        app.world_mut()
+            .run_system_once(pickup_items)
+            .expect("拾取系统");
+        assert!(app.world().get_entity(zone).is_ok(), "生成器道具不销毁");
+        assert!(
+            !app.world().get::<SpawnerItem>(zone).unwrap().active,
+            "拾取后进入未激活"
+        );
+        assert_eq!(
+            app.world().get::<SpawnerItem>(zone).unwrap().respawn_left,
+            ITEM_RESPAWN_SECS
+        );
+        assert!(!app.world().resource::<PickedZones>().0.contains(&3));
+
+        // 倒计时结束：重新激活 + 可见
+        {
+            let mut entity = app.world_mut().entity_mut(zone);
+            entity.get_mut::<SpawnerItem>().unwrap().respawn_left = FIXED_DT * 0.5;
+        }
+        app.world_mut()
+            .run_system_once(tick_item_spawners)
+            .expect("重生系统");
+        assert!(app.world().get::<SpawnerItem>(zone).unwrap().active);
+        assert_ne!(
+            *app.world().get::<Visibility>(zone).unwrap(),
+            Visibility::Hidden
+        );
     }
 
     /// 拾取写入角色组件、销毁道具实体；二次拾取覆盖而不是叠加。

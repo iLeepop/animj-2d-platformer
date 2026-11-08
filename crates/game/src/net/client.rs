@@ -336,6 +336,11 @@ pub fn apply_snapshot(
     mut active: Option<ResMut<ActiveCheckpoint>>,
     mut picked: Option<ResMut<PickedZones>>,
     run: Option<ResMut<crate::run::RunState>>,
+    mut spawners: Query<(
+        &ZoneId,
+        &mut crate::player::items::SpawnerItem,
+        &mut Visibility,
+    )>,
     mut players: Query<(
         Entity,
         &PlayerId,
@@ -474,6 +479,18 @@ pub fn apply_snapshot(
                 commands.entity(entity).despawn();
             }
         }
+    }
+    // 生成器状态：快照只列**未激活**的，其余恢复为激活/可见。
+    let inactive: BTreeSet<u32> = snapshot.inactive_item_spawners.iter().copied().collect();
+    for (id, mut spawner, mut visibility) in &mut spawners {
+        let active = !inactive.contains(&id.0);
+        spawner.active = active;
+        spawner.respawn_left = 0.0;
+        *visibility = if active {
+            Visibility::Inherited
+        } else {
+            Visibility::Hidden
+        };
     }
     if let Some(active) = active.as_mut() {
         active.0 = snapshot.checkpoint.map(|(col, row, x, y)| CheckpointPoint {
@@ -683,6 +700,7 @@ mod tests {
             }],
             fruits: Vec::new(),
             picked: Vec::new(),
+            inactive_item_spawners: Vec::new(),
             checkpoint: None,
         }
     }

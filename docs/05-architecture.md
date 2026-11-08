@@ -50,8 +50,9 @@ flowchart LR
 | `level_asset.rs` | `Level` 的 Bevy `Asset` 包装 + `AssetLoader` 注册 + `Asset` 事件热重载 |
 | `world/load.rs` | `StartRequest`/`LoadMode` → 校验 → 生成瓦片 sprite → 生成实体与角色 → 放置玩家 |
 | `world/progress.rs` | `LevelProgress` / `RoomProgress`（见 `02` §2.3） |
-| `player/items.rs` | 道具拾取/覆盖（`CarriedItem`）、能力修正（`apply_item_to_physics`，`01` §1.5、`06` §6.12） |
+| `player/items.rs` | 道具拾取/覆盖（`CarriedItem`）、生成器 1.5 s 重生（`SpawnerItem`）、能力修正（`apply_item_to_physics`，`01` §1.5、`06` §6.12） |
 | `run.rs` | 本局计时、终点判定、全员到达后的结算与分数（`RunState`，`01` §1.4–§1.6） |
+| `config/item.rs` | 道具生成器常量（`ITEM_RESPAWN_SECS = 1.5`，`01` §1.5） |
 | `checkpoint.rs` | 存档点：`E` 激活、`ActiveCheckpoint`、死亡/启动落点（`02` §2.5） |
 | `camera/rig.rs` | 每个视图的相机跟随：自己的玩家 AABB 中心 + 地图钳制（无平滑，`02` §2.2） |
 | `room/mod.rs` | 当前房间判定（含滞回）、房间实体传感器（果实） |
@@ -232,6 +233,7 @@ flowchart TB
 | `CheckpointActivated` | `Message` | `point: CheckpointPoint`（房间 + 局部 `at`） | `checkpoint` → 存档（立即写盘） |
 | `RoomEntered` | `Message` | `room_index: u32` | `room` → HUD/调试/编辑器 |
 | `ItemPicked` | `Message` | `player: PlayerId`, `kind: ItemKind`, `replaced: Option<ItemKind>` | `player/items` → HUD/音效 |
+| `SpawnerItem` | 组件 | `active: bool`, `respawn_left: f32` | `item_spawner` 生成的道具；主机倒计时，客户端按快照同步 |
 | `PlayerFinished` | `Message` | `player: PlayerId`, `time: f32` | `run::detect_goal_touch` → HUD/音效 |
 | `CollectiblePicked` | `Message` | `room_index: u32` | `room` 传感器 → 音效（`06` §6.5.4） |
 | `RunState` | 资源 | `elapsed`, `finished: [Option<f32>; MAX_PLAYERS]`, `complete` | `run` 写；HUD/结算读；主机快照同步 |
@@ -396,7 +398,7 @@ pub struct GameSettings {
   - 发现/加入/输入等低频消息：`TAG_RON` + RON 文本（与关卡/存档同一套 `serde`）。
   - 每固定步快照：`TAG_SNAPSHOT` + 定长小端二进制。布局见源码头注释；单包 ≤ `MAX_PACKET_BYTES = 1200`，
     超限直接丢弃（避免 IP 分片）。
-- 协议版本 `PROTOCOL_VERSION = 4`（v4：移除通关房间位图，增加本局计时、每名玩家的道具 / 二段跳状态 / 通关时间）。发现响应带版本，不匹配不显示。
+- 协议版本 `PROTOCOL_VERSION = 5`（v5：快照增加 `inactive_item_spawners`；v4 已移除通关房间位图并增加计时/道具/通关时间）。发现响应带版本，不匹配不显示。
 - `Input { samples: Vec<InputSample> }`：每个固定步发送最近 `INPUT_REDUNDANCY` 条未确认输入（按 `seq` 升序）。
   单个 UDP 包丢失时，后续包会补上；主机按 `seq` 去重。
 - 其余常量（`config/net.rs`，本文拥有）：`MAX_PLAYERS = 4`、`MAX_PACKETS_PER_FRAME = 64`、
@@ -410,7 +412,7 @@ pub struct GameSettings {
 | 方向 | 频率 | 内容 |
 |---|---|---|
 | 客户端 → 主机 `Input` | 每固定步（60 Hz） | 最近 `INPUT_REDUNDANCY` 条未确认输入（含序号与 `PlayerInput` 四个字段）；主机去重后排队 |
-| 主机 → 客户端 `Snapshot` | 每固定步（60 Hz） | `run_elapsed`；全部玩家 `(id, x, y, vx, vy, grounded, facing, item, air_jumps_used, finish, last_input_seq)`；果实计数、已拾取 `ZoneId`、当前存档点 |
+| 主机 → 客户端 `Snapshot` | 每固定步（60 Hz） | `run_elapsed`；全部玩家 `(id, x, y, vx, vy, grounded, facing, item, air_jumps_used, finish, last_input_seq)`；果实计数、已拾取 `ZoneId`、未激活的道具生成器 `ZoneId`、当前存档点 |
 | `Join` / `Welcome` / `Reject` | 0.25 s 重试 / 事件 | 加入握手；`Join` 带持久 `client_id`。主机分配最小空闲 `PlayerId(1..MAX_PLAYERS)`，在**关卡出生点**生成角色；出生点被墙/已有玩家占用时就近找空位。**同一 `client_id` 从新端口重连时复用原玩家编号/实体**，不新增角色 |
 | `Discover` / `RoomInfo` | 1 s 查询 + 响应 | 房间搜索（§5.15.4） |
 | `Bye` / 超时 | 离开 / 5 s 静默 | 客户端收到 `WindowCloseRequested`（点击关闭按钮）或 `AppExit` 时主动发 `Bye`，主机立即移除；异常退出（崩溃/强杀）则 5 s 超时清理 |

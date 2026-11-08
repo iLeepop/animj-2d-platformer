@@ -33,6 +33,7 @@ fn entity(kind: &str, at: (i32, i32)) -> EntitySpec {
         size: None,
         id: None,
         item: None,
+        sprite: None,
     }
 }
 
@@ -127,6 +128,7 @@ fn featureful_level() -> Level {
             size: Some((24, 24)),
             id: Some("f1".to_string()),
             item: None,
+            sprite: None,
         },
         entity("fruit", (272, 464)),
     ]);
@@ -140,6 +142,7 @@ fn featureful_level() -> Level {
             size: None,
             id: Some("super_jump".to_string()),
             item: Some(ItemKind::SuperJump),
+            sprite: None,
         },
         EntitySpec {
             kind: "item".to_string(),
@@ -147,6 +150,7 @@ fn featureful_level() -> Level {
             size: None,
             id: Some("speed".to_string()),
             item: Some(ItemKind::Speed),
+            sprite: Some("sprites/items/speed.png".to_string()),
         },
     ]);
     item_room.name = Some("c".to_string());
@@ -170,6 +174,7 @@ fn featureful_level() -> Level {
                 size: None,
                 id: None,
                 item: Some(ItemKind::DoubleJump),
+                sprite: None,
             }]),
         ],
     }
@@ -503,6 +508,7 @@ fn write_read_round_trip() {
         size: Some((1, 1)),
         id: Some(String::new()),
         item: None,
+        sprite: None,
     }];
 
     for level in [
@@ -1029,11 +1035,65 @@ fn v24_item_field_matches_kind() {
         size: None,
         id: None,
         item: Some(ItemKind::Speed),
+        sprite: None,
     });
     let issues = issues_of(&level, "V24");
     assert_eq!(issues.len(), 1);
     assert_eq!(issues[0].path, "rooms[0].entities[2].item");
-    assert!(issues[0].message.contains("只有 kind = \"item\""));
+    assert!(issues[0].message.contains("只有 item / item_spawner"));
+
+    // 反例：item_spawner 缺 item 字段
+    let mut level = valid_level();
+    level.rooms[0]
+        .entities
+        .push(entity("item_spawner", (96, 464)));
+    let issues = issues_of(&level, "V24");
+    assert_eq!(issues.len(), 1);
+    assert_eq!(issues[0].path, "rooms[0].entities[2].item");
+}
+
+/// V25：贴图只能挂在 item 类实体上，且必须是相对 assets/ 的 PNG。
+#[test]
+fn v25_item_sprite_path_validation() {
+    assert!(issues_of(&featureful_level(), "V25").is_empty());
+
+    // 反例：非 item 实体带贴图
+    let mut level = valid_level();
+    let mut goal = entity("goal", (320, 464));
+    goal.sprite = Some("sprites/items/speed.png".to_string());
+    level.rooms[0].entities.push(goal);
+    let issues = issues_of(&level, "V25");
+    assert_eq!(issues.len(), 1);
+    assert_eq!(issues[0].path, "rooms[0].entities[2].sprite");
+    assert!(issues[0].message.contains("只有 item / item_spawner"));
+
+    // 反例：空路径
+    let mut level = valid_level();
+    let mut item = entity("item", (96, 464));
+    item.item = Some(ItemKind::Speed);
+    item.sprite = Some("   ".to_string());
+    level.rooms[0].entities.push(item);
+    let issues = issues_of(&level, "V25");
+    assert_eq!(issues.len(), 1);
+    assert!(issues[0].message.contains("不能为空"));
+
+    // 反例：非 PNG
+    let mut level = valid_level();
+    let mut item = entity("item", (96, 464));
+    item.item = Some(ItemKind::Speed);
+    item.sprite = Some("sprites/items/speed.jpg".to_string());
+    level.rooms[0].entities.push(item);
+    let issues = issues_of(&level, "V25");
+    assert_eq!(issues.len(), 1);
+    assert!(issues[0].message.contains("必须是 PNG"));
+
+    // 正例：item_spawner + PNG
+    let mut level = valid_level();
+    let mut spawner = entity("item_spawner", (96, 464));
+    spawner.item = Some(ItemKind::DoubleJump);
+    spawner.sprite = Some("assets/sprites/items/double_jump.png".to_string());
+    level.rooms[0].entities.push(spawner);
+    assert!(issues_of(&level, "V25").is_empty());
 }
 
 #[test]
@@ -1400,6 +1460,7 @@ fn v19_rejects_bad_palette_entries() {
                     size: None,
                     id: None,
                     item: None,
+                    sprite: None,
                 },
                 level_format::EntitySpec {
                     kind: "goal".into(),
@@ -1407,6 +1468,7 @@ fn v19_rejects_bad_palette_entries() {
                     size: None,
                     id: None,
                     item: None,
+                    sprite: None,
                 },
             ],
         }],

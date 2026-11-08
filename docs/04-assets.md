@@ -36,7 +36,8 @@ assets/
 │  │  └─ cat_sheet.png              # 角色动画图集（§3.2 / §5）
 │  ├─ tiles/
 │  │  └─ tileset.png                # 唯一瓦片图集（§3.3 / §10）
-│  ├─ player/
+│  ├─ items/
+│  │  └─ <item>.png                 # 道具贴图（§6）；关卡 sprite 字段引用
 │  ├─ backgrounds/
 │  │  └─ <name>.png                 # 视差背景层（`03` §3.10 / `07` §7.13）；尺寸自定
 │  └─ ui/
@@ -58,7 +59,7 @@ assets/
 |---|---|---|---|
 | 角色图集 | 固定文件名 `assets/sprites/player/cat_sheet.png` | — | `00` §0.6 |
 | 瓦片图集 | 占位资产固定为 `assets/sprites/tiles/tileset.png`；真实美术可由关卡 `tileset` 字段指向独立文件（如 `tileset_n.png`），并用该关卡的 `tileset_columns` 描述列数 | — | `00` §0.5 / §0.6、本文 §7.3 |
-| 道具（将来真美术） | `snake_case`，与 `ItemKind` 一致 | `SuperJump` → `assets/sprites/items/super_jump.png` | `03` §3.5 |
+| 道具 | `snake_case`，与 `ItemKind` 一致 | `SuperJump` → `assets/sprites/items/super_jump.png` | `03` §3.5 |
 | 背景层 | `snake_case`，可自由命名；尺寸自定（建议 ≥ 512×512），必须能无缝平铺 | `assets/sprites/backgrounds/sky.png` | `03` §3.10 / `07` §7.13 |
 | 关卡文件 | `assets/levels/<level_id>.level.ron`，文件内 `name` 必须等于 `<level_id>` | — | `00` §0.5 |
 | 字体 | `<font_name>.ttf`，`snake_case` | `assets/fonts/pixel_sans.ttf` | 本文 §9 |
@@ -144,7 +145,7 @@ index(row, col) = row * COLUMNS + col        // 0-based
 |---|---|---|---|---|
 | 角色 | `assets/sprites/player/cat_sheet.png` | `6 × 4` | `192 × 128` | 见 §5 |
 | 瓦片 | `assets/sprites/tiles/tileset.png` | `TILESET_COLUMNS × N`（§10） | `(32·TILESET_COLUMNS) × (32·N)` | 由 `03` legend 固定 |
-| 道具（当前占位） | 运行时色块 | `1 × 1` | `12 × 12`（`PICKUP_SIZE`） | 无贴图资产 |
+| 道具（当前占位） | `assets/sprites/items/<item>.png`（生成器输出）；关卡 `sprite` 可指向任意 `assets/` 下的 PNG | 1 张 | `32 × 32` | 背景透明的单帧；运行时按 32×32 显示 |
 | UI | `assets/sprites/ui/ui_atlas.png` | 由 §9 决定 | 同上规则 | UI 专用 |
 
 验证整除：`192 = 32×6`，`128 = 32×4` ✓。
@@ -345,20 +346,24 @@ fn spawn_player(mut commands: Commands, assets: Res<AssetServer>,
 - 重画只允许覆盖 PNG 字节；`TILE_PX`、图集行列数、帧序列（§3、§5）不变。
 - mtime 精度不足的文件系统（如 1 s 粒度）可能在同秒内漏掉一次改动；保存后隔一秒再观察即可。
 
-## 6. 道具占位表现
+## 6. 道具表现
 
 v3 起**没有装饰品图层**（`01` §1.5）：角色不叠加任何外观配件，`DECORATION_LAYERS` / `player/decor.rs` / `sprites/decorations/` 均已删除。
 
-道具当前不引入贴图资产，而是由运行时按类型绘制 12×12 占位色块（与 `fruit` 同一拾取层 Z，见 `00` §0.4）：
+道具贴图由关卡实体的 `sprite` 字段指定（`03` V25），相对 `assets/`：
 
-| 道具 | 颜色（`player::items::item_color`） |
+| 项 | 约定 |
+|---|---|
+| 路径 | `assets/sprites/items/<id>.png`，32×32、背景透明（`04` §3.3） |
+| 未设置 | 运行时按类型绘制 12×12 占位色块（颜色见下表） |
+| 显示尺寸 | 真贴图按 32×32 显示；判定盒仍是 12×12（`PICKUP_SIZE`） |
+| 生成器 | `item_spawner` 使用同一张贴图；拾取后隐藏，1.5 s 后重新显示 |
+
+| 道具 | 占位色（`player::items::item_color`） |
 |---|---|
 | `SuperJump` | 橙 `0.98, 0.55, 0.20` |
 | `Speed` | 青 `0.35, 0.85, 0.95` |
 | `DoubleJump` | 紫 `0.85, 0.40, 0.95` |
-
-- 拾取后实体销毁；HUD 显示当前道具名（文案见 `05` §5.14）。
-- 将来若换成真美术：新增 `assets/sprites/items/<kind>.png`（严格 32×32）即可，不改格式与物理。
 
 ---
 
@@ -446,10 +451,11 @@ animj-dev gen-placeholder-assets [--out assets] [--force]
 | `assets/sprites/player/cat_sheet.png` | `6 × 4` | `192 × 128` | 24 格（有效 14 帧，其余透明） | 行 = `idle/run/jump/fall`，帧序见 §5.2。**占位身体 = `PLAYER_SIZE`（默认 20×28）且底对齐**：看到的就是撞到的；满 32×32 的身体会让 6 px / 4 px 的视觉外沿被误认为穿模。注意：`PLAYER_SIZE` 是**默认值**，运行时由 `assets/config/player.ron` 覆盖（`06` §6.5.1）；修改全局碰撞后占位图不会自动重画，需要重新生成/绘制 |
 | `assets/sprites/tiles/tileset.png` | `TILESET_COLUMNS × N` | `(32·TILESET_COLUMNS) × (32·N)` | `TILESET_COLUMNS × N` | 每格带索引数字；`N` 由 `03` §3.3 的**可渲染**条目数决定（算法见 §10）。**轮廓必须表达物理语义**（`06` §6.4.5）：`#` 实心 = 满格纯色；`=` 单向平台 = 顶部 8 px 薄板（下方全透明）；`^` 尖刺 = 锯齿；装饰 = 内缩小块。历史上四类都画成满格方块，导致玩家把单向平台当成实心块、误以为"跳跃穿模" |
 | `assets/sprites/ui/ui_atlas.png` | 见 §9 | 同规则 | — | UI 图标占位 |
+| `assets/sprites/items/{super_jump,speed,double_jump}.png` | `1 × 1` | `32 × 32` | 1 | 道具占位贴图（背景透明）；关卡 `sprite` 字段引用 |
 | `assets/fonts/<font_name>.ttf` | — | — | — | **不生成**；字体为随仓库提交的静态资产 |
 
 - `tileset.png` 的行数 `N` 与索引**语义**由 `03` 的 legend 唯一决定；生成器**读取 legend**（或由 `03` 提供的等价表）后输出，**不得**内置一套独立映射（§10）。
-- v3 起不再生成装饰品贴图；道具占位由运行时色块绘制（§6），因此生成器不扫描关卡内容。
+- v3 起不再生成装饰品贴图；道具占位图由生成器输出，运行时优先使用关卡 `sprite` 字段。
 
 ### 7.4 占位调色板（8 色）
 

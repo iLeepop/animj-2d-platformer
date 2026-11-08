@@ -47,6 +47,8 @@ pub struct Snapshot {
     pub fruits: Vec<(u32, u32)>,
     /// 已拾取并销毁的房间实体编号（`room::ZoneId`）。
     pub picked: Vec<u32>,
+    /// 处于重生倒计时（隐藏）的道具生成器 `ZoneId`；未列出的生成器都是激活状态。
+    pub inactive_item_spawners: Vec<u32>,
     /// 已激活存档点：`(col, row, at.x, at.y)`。
     pub checkpoint: Option<(u32, u32, i32, i32)>,
 }
@@ -135,6 +137,7 @@ pub fn decode(bytes: &[u8]) -> Option<NetMessage> {
 //   × n: [id u8, x/y/vx/vy f32, flags u8, item u8, finish u8(+f32 if 1), last_input_seq u32]
 //   fruits u8 | [(room u8, count u16)] × n
 //   picked u16 | [zone u16] × n
+//   item_spawners u16 | [zone u16] × n（只列**未激活**的生成器）
 //   checkpoint u8（0/1）| [col u16, row u16, x i16, y i16]
 //
 // flags: bit0 grounded，bit1 facing_right，bits2–3 air_jumps_used（夹取到 0..=3）。
@@ -187,6 +190,16 @@ fn encode_snapshot(snapshot: &Snapshot) -> Option<Vec<u8>> {
         .collect::<Vec<_>>();
     out.extend_from_slice(&(picked.len() as u16).to_le_bytes());
     for zone in picked {
+        out.extend_from_slice(&((*zone).min(u16::MAX as u32) as u16).to_le_bytes());
+    }
+
+    let spawners = snapshot
+        .inactive_item_spawners
+        .iter()
+        .take(u16::MAX as usize)
+        .collect::<Vec<_>>();
+    out.extend_from_slice(&(spawners.len() as u16).to_le_bytes());
+    for zone in spawners {
         out.extend_from_slice(&((*zone).min(u16::MAX as u32) as u16).to_le_bytes());
     }
 
@@ -292,6 +305,12 @@ fn decode_snapshot(bytes: &[u8]) -> Option<Snapshot> {
         picked.push(reader.u16()? as u32);
     }
 
+    let spawner_count = reader.u16()? as usize;
+    let mut inactive_item_spawners = Vec::with_capacity(spawner_count);
+    for _ in 0..spawner_count {
+        inactive_item_spawners.push(reader.u16()? as u32);
+    }
+
     let checkpoint = match reader.u8()? {
         0 => None,
         _ => Some((
@@ -307,6 +326,7 @@ fn decode_snapshot(bytes: &[u8]) -> Option<Snapshot> {
         players,
         fruits,
         picked,
+        inactive_item_spawners,
         checkpoint,
     })
 }
@@ -338,6 +358,7 @@ mod tests {
             }],
             fruits: vec![(1, 2)],
             picked: vec![4, 5],
+            inactive_item_spawners: vec![6],
             checkpoint: Some((0, 0, 96, 464)),
         })
     }
@@ -423,6 +444,7 @@ mod tests {
                 .collect(),
             fruits: (0..64).map(|i| (i, 99)).collect(),
             picked: (0..256).collect(),
+            inactive_item_spawners: (0..16).collect(),
             checkpoint: Some((9, 2, -123, 4567)),
         });
         let bytes = encode(&message).expect("完整快照必须可编码");

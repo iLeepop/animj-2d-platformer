@@ -218,6 +218,7 @@ mod tests {
                         size: None,
                         id: None,
                         item: None,
+                        sprite: None,
                     }],
                 },
                 Room {

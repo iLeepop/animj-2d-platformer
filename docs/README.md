@@ -11,7 +11,7 @@ Bevy **0.20** 像素风 2D 平台跳跃游戏的规范文档集。**本目录是
 | `crates/level_format/` | 关卡数据结构、legend、`read`/`write`、V1–V18 校验（**零 bevy 依赖**，36 个测试） |
 | `crates/game/` | 玩法 crate：**主菜单 / 关卡选择 / 设置（音量、全屏、中/英语言，默认中文；UI 窗口相机）**、**存档读档**、暂停菜单、**角色帧动画**、双层像素相机、像素吸附、瓦片渲染 + 房间裁剪、关卡加载 + 校验 + 热重载、房间判定（8 px 滞回）、**相机跟随玩家（钳制在地图内）**、**道具拾取/覆盖、终点判定、计时与分数结算**、HUD（计时 + 道具 + 提示条 + 结算面板）、调试叠层；bin `animj` |
 | `crates/editor/` | lib `editor`（会话/撤销/相机/投影/Gizmos/工具/面板/试玩）+ bin `animj-editor`、bin `animj-dev`（`validate-levels` / `gen-placeholder-assets`） |
-| `assets/` | 占位资产（图集 + 6 个音效 WAV + `anim/player.anim.ron`，规格符合 `04`）+ `world_01.level.ron`（10×3 = 30 房间；两处竖井带单向台阶可上行，保存即热重载） |
+| `assets/` | 占位资产（图集 + 3 张道具贴图 + 6 个音效 WAV + `anim/player.anim.ron`，规格符合 `04`）+ `world_01.level.ron`（10×3 = 30 房间；两处竖井带单向台阶可上行，保存即热重载） |
 
 常用命令（别名见 `.cargo/config.toml`，纪律与判据见 `AGENTS.md` §4）：
 

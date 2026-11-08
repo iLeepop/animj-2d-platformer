@@ -447,9 +447,13 @@ pub struct EntitySpec {
     /// 可选稳定标识，供编辑器与后续逻辑引用。
     #[serde(default)]
     pub id: Option<String>,
-    /// 道具类型；仅 `kind == "item"` 时有效（V24）。
+    /// 道具类型；仅 `kind == "item"` / `"item_spawner"` 时有效（V24）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub item: Option<ItemKind>,
+    /// 道具贴图（相对 `assets/` 的 PNG）；仅 item 类实体有效（V25）。
+    /// `None` = 运行时使用按道具类型着色的 12×12 占位块。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sprite: Option<String>,
 }
 
 /// 可拾取道具的**能力类型**。见 `docs/03-level-format.md` §3.4、`docs/06-physics-and-movement.md` §6.12。
@@ -544,7 +548,7 @@ impl EntitySpec {
     /// `fruit` / `item` = [`PICKUP_SIZE`]，其余 = `TILE_PX`。
     pub fn size_or_default(&self) -> (i32, i32) {
         let default = match self.kind.as_str() {
-            "fruit" | "item" => (PICKUP_SIZE, PICKUP_SIZE),
+            "fruit" | "item" | "item_spawner" => (PICKUP_SIZE, PICKUP_SIZE),
             _ => (TILE_PX, TILE_PX),
         };
         self.size.unwrap_or(default)

@@ -370,22 +370,28 @@ pub(crate) fn hot_reload_level(
     );
 }
 
-/// 生成关卡实体（`goal` / `item` / `fruit` / `checkpoint`）：常驻，按房间持有世界 AABB（`02` §2.4）。
+/// 生成关卡实体（`goal` / `item` / `item_spawner` / `fruit` / `checkpoint`）：常驻，按房间持有世界 AABB（`02` §2.4）。
 ///
-/// 视觉是占位色块，尺寸**等于判定尺寸**（拾取物 12×12、区域用声明尺寸/默认 32×32）。
-fn spawn_room_entities(commands: &mut Commands, level: &Level) {
+/// 视觉默认是占位色块；`item` / `item_spawner` 的 `sprite` 字段可指定相对 `assets/` 的 PNG（`03` V25）。
+/// 生成器道具用同一个 [`crate::player::items::SpawnerItem`] 标记，被拾取后隐藏并在 1.5 s 后重新显示。
+fn spawn_room_entities(commands: &mut Commands, level: &Level, assets: &AssetServer) {
     let (cols, rows) = (level.grid.cols, level.grid.rows);
     let mut zone_id = 0u32;
     for (index, room) in level.rooms.iter().enumerate() {
         let (col, row) = ((index as u32) % cols, (index as u32) / cols);
         for spec in &room.entities {
-            let kind = match spec.kind.as_str() {
-                "goal" => RoomZoneKind::Goal,
-                "item" => {
-                    RoomZoneKind::Item(spec.item.unwrap_or(level_format::ItemKind::SuperJump))
-                }
-                "fruit" => RoomZoneKind::Fruit,
-                crate::checkpoint::KIND => RoomZoneKind::Checkpoint,
+            let (kind, spawner) = match spec.kind.as_str() {
+                "goal" => (RoomZoneKind::Goal, false),
+                "item" => (
+                    RoomZoneKind::Item(spec.item.unwrap_or(level_format::ItemKind::SuperJump)),
+                    false,
+                ),
+                "item_spawner" => (
+                    RoomZoneKind::Item(spec.item.unwrap_or(level_format::ItemKind::SuperJump)),
+                    true,
+                ),
+                "fruit" => (RoomZoneKind::Fruit, false),
+                crate::checkpoint::KIND => (RoomZoneKind::Checkpoint, false),
                 // `player_spawn` 只用于放置玩家；未知 kind 由校验拦截（V 规则）
                 _ => continue,
             };
@@ -406,7 +412,27 @@ fn spawn_room_entities(commands: &mut Commands, level: &Level) {
                 // 存档点单独一层：可能与终点/果实重叠（`00` §0.4 禁止共享 Z）。
                 RoomZoneKind::Checkpoint => (crate::checkpoint::ZONE_COLOR, z::CHECKPOINT),
             };
-            commands.spawn((
+            let sprite = match (&kind, &spec.sprite, assets) {
+                (RoomZoneKind::Item(_), Some(path), assets) => {
+                    match level_format::normalize_asset_path(path)
+                        .filter(|path| crate::assets::texture_stamp(path).is_some())
+                    {
+                        Some(path) => {
+                            let handle = assets.load(path.clone());
+                            let mut sprite = Sprite::from_image(handle);
+                            // 真贴图按 32×32 显示；判定盒仍是 12×12（`03` §3.4）。
+                            sprite.custom_size = Some(Vec2::splat(level_format::TILE_PX as f32));
+                            sprite
+                        }
+                        None => {
+                            warn!("道具贴图 '{path}' 不存在，使用占位色块");
+                            Sprite::from_color(color, size)
+                        }
+                    }
+                }
+                _ => Sprite::from_color(color, size),
+            };
+            let mut entity = commands.spawn((
                 RoomZone {
                     room_index: index as u32,
                     kind,
@@ -414,11 +440,14 @@ fn spawn_room_entities(commands: &mut Commands, level: &Level) {
                     at: spec.at,
                 },
                 ZoneId(zone_id),
-                Sprite::from_color(color, size),
+                sprite,
                 Anchor::BOTTOM_CENTER,
                 Transform::from_xyz(center.x, aabb.min.y, zone_z),
                 PIXEL_PERFECT_LAYERS,
             ));
+            if spawner {
+                entity.insert(crate::player::items::SpawnerItem::default());
+            }
             zone_id += 1;
         }
     }
@@ -428,6 +457,7 @@ fn spawn_room_entities(commands: &mut Commands, level: &Level) {
 pub(crate) fn sync_room_entities(
     mut commands: Commands,
     loaded: Option<Res<LoadedLevel>>,
+    assets: Res<AssetServer>,
     old: Query<Entity, With<RoomZone>>,
 ) {
     let Some(loaded) = loaded else {
@@ -436,7 +466,7 @@ pub(crate) fn sync_room_entities(
     for entity in &old {
         commands.entity(entity).despawn();
     }
-    spawn_room_entities(&mut commands, &loaded.level);
+    spawn_room_entities(&mut commands, &loaded.level, &assets);
 }
 
 #[cfg(test)]

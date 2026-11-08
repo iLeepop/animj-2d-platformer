@@ -98,7 +98,7 @@ Bevy 0.17 → 0.20 之间发生了大量破坏性重命名（buffered event 体�
 |---|---|---|
 | `level_format` 任何改动 | `cargo test -p level_format`（无 bevy 依赖，秒级） | 全绿；新增校验规则必须配正/反例 |
 | 30 房间内容（示例关卡） | `cargo dev-cli -- validate-levels --deny-warnings` + `cargo test -p game`（R4 逐房重生点） | 0 error / 0 warning；30 个房间的重生点全部落在实地上且不压在 `Hazard` 上 |
-| 关卡格式 v3（终点 / 道具） | `cargo test -p level_format`（v1/v2 迁移、自定义字符、V19、V23/V24）+ `cargo dev-cli -- validate-levels --deny-warnings` | 全绿；示例关卡 0 error / 0 warning |
+| 关卡格式 v3（终点 / 道具） | `cargo test -p level_format`（v1/v2 迁移、自定义字符、V19、V23/V24/V25）+ `cargo dev-cli -- validate-levels --deny-warnings` | 全绿；示例关卡 0 error / 0 warning |
 | 关卡数据 / legend / 校验规则 | 上一行 + `cargo dev-cli -- validate-levels --deny-warnings` | 退出码 0；示例关卡无 Error/Warning |
 | 占位资产 / 图集布局 | `cargo dev-cli -- gen-placeholder-assets --check` | 退出码 0（生成物与仓库文件逐字节一致） |
 | 坐标换算 | `cargo test -p level_format` 与 `cargo test --workspace --features dev` 里的 `coords::` 用例 | 往返换算与四角边界全绿 |
@@ -108,7 +108,7 @@ Bevy 0.17 → 0.20 之间发生了大量破坏性重命名（buffered event 体�
 | 关卡热重载（M3+） | 运行中改 `assets/levels/*.level.ron`（进程必须仍存活：窗口失焦时 >200 fps，`--frames N` 会**远早于**预期结束，见 `10` E9） | 日志出现 `检测到关卡文件变化` + `关卡热重载：…（N 个瓦片）`，且 N 与改动一致；非法改动则出现 `[字段路径] 规则编号 …` 与 `热重载被拒绝`，且旧关卡继续生效 |
 | 角色帧动画（M6） | `cargo game -- --demo jump --frames 3000` | 日志有 `动画数据已加载：4 个状态`（资产生效）与 `动画：Idle → Run → Jump → Fall`（行选择由 grounded/速度符号驱动）；`cargo test -p game` 覆盖内置默认值与自定义帧序列（`04` §5.5） |
 | 动画数据资产（工具） | 改 `assets/anim/player.anim.ron` 后重启或热重载 | 日志 `动画数据已加载`；校验失败（空帧/越界/时长越界）时回退内置默认并只 warn |
-| 音效（M6） | `cargo dev-cli -- gen-placeholder-assets --check` + `cargo game -- --demo jump --frames 3000` | 9 个资产逐字节一致（含 6 个 WAV）；日志出现 `音效：audio/jump.wav`、`audio/land.wav`（walk 还会出现 `audio/death.wav`）；无 panic |
+| 音效（M6） | `cargo dev-cli -- gen-placeholder-assets --check` + `cargo game -- --demo jump --frames 3000` | 12 个资产逐字节一致（含 6 个 WAV 与 3 张道具贴图）；日志出现 `音效：audio/jump.wav`、`audio/land.wav`（walk 还会出现 `audio/death.wav`）；无 panic |
 | 存档（M6） | `cargo test -p game` + 两次运行：`ANIMJ_SAVE_DIR=target/save cargo game -- --demo walk --frames 3000` 再 `ANIMJ_SAVE_DIR=target/save cargo game -- --frames 90` | 第一次出现 `存档已写`；第二次出现 `读档：…`，且不 panic |
 | 暂停菜单（M6） | `cargo game -- --demo pause --frames 120 --screenshot target/pause` | 日志 `[demo pause] 已打开暂停菜单`、退出码 0、两张截图生成；菜单含 `SETTINGS` / `MAIN MENU`（`Esc` 与鼠标在无头会话不可注入，按钮交互需人工点一次） |
 | 主菜单 / 关卡选择 / 设置（M7） | `ANIMJ_SAVE_DIR=target/ui cargo game -- --demo menu --frames 90 --screenshot target/menu`（`--demo levels` / `--demo settings` 同理）；`--demo click --frames 120`；`--demo menu-start --frames 200`；`--demo restart --frames 200`；先 `--demo walk` 生成存档后 `--demo load-save --frames 90` | UI 渲染在**窗口**（画布为纯黑是正常的，因为 UI 不再进入离屏纹理）：窗口截图 640² 且有面板/文字像素；`--demo click` 日志 `点击生效：已进入关卡选择`（真实 `PointerInput` → 拾取 → `Pressed` → `PointerClick` → `Activate` 链路；键盘 Tab/Enter 需人工验证）；settings 日志 `音量 -> 80%` / `全屏：开` / `全屏：关`，`settings.ron` 落盘 `volume: 0.8`；menu-start 出现 `已进入游戏`；restart 第二轮 `玩家 1，房间根 30` 且 `VERIFY: PASS`；load-save 出现 `读档：…`。**全屏居中**：在 `ANIMJ_SAVE_DIR` 预置 `settings.ron`（`fullscreen:true`）后跑 `--demo menu --frames 90 --screenshot target/fullscreen`，窗口截图中非黑区域必须是居中的 `k×320` 正方形（2560×1440 ⇒ 1280² @ (640,80)）；`--demo click` 在全屏下也必须出现 `点击生效`。`--demo` / `--frames` 入口直接进关卡，无参数启动才进主菜单 |
@@ -117,7 +117,7 @@ Bevy 0.17 → 0.20 之间发生了大量破坏性重命名（buffered event 体�
 | 局域网联机（M8） | 两个进程（先构建一次，直接跑 exe 并设 `CARGO_MANIFEST_DIR=…\crates\game`）：主机 `ANIMJ_SAVE_DIR=target/net animj.exe --host --seconds 18`，5 秒后客户端 `ANIMJ_SAVE_DIR=target/net animj.exe --join 127.0.0.1:42345 --seconds 8`（同机多开客户端时给每个实例设置不同的 `ANIMJ_CLIENT_ID`） | 主机：`房间已开启（UDP 42345…）`、`客户端已加入 —— 玩家 1`、`开始广播快照（2 名玩家 → 1 个客户端）`；客户端：`已连接 —— 玩家 1`、`已接收快照（seq …，2 名玩家）`；双方 0 panic。**不要用 `--frames` 做联机判据**：高帧率下两个进程等不到彼此 |
 | 局域网房间搜索（M8） | 主机运行中，另开 `animj.exe --demo online --seconds 6`（或菜单进「联机游戏」） | 日志 `联机：开始搜索局域网房间（UDP 42345）` 与 `发现房间：animj LAN（world_01，1/4）@ …`；列表出现可点击房间；0 panic |
 | 存档点 | `cargo game -- --demo checkpoint --frames 3000`，随后 `cargo game -- --frames 30` | 第一次日志出现 `存档点已设置` 与 `角色死亡：回到存档点`；第二次出现 `读档：…存档点已恢复` 且玩家从存档点位置开始；`cargo test -p game` 覆盖激活/失效回退/存档往返 |
-| 道具 / 终点 / 计时（M9） | `cargo test -p game`（`player::items` / `run` / `physics::tests` 二段跳）+ `cargo game -- --demo jump --frames 3000` | 单测锁定拾取覆盖、三种道具的物理修正、触碰终点锁定时间、全员到达结算、分数公式；实机 0 panic、日志出现 `DEMO 峰值上升` |
+| 道具 / 终点 / 计时（M9） | `cargo test -p game`（`player::items` / `run` / `physics::tests` 二段跳）+ `cargo game -- --demo walk --frames 300` + `cargo game -- --demo goal --frames 300` | 单测锁定拾取覆盖、生成器 1.5s 重生、三种道具的物理修正、触碰终点锁定时间、全员到达结算、分数公式；walk 日志出现 `生成器 1.5 秒后重生` 与 `重新生成`；goal 日志出现 `到达终点` 与结算 |
 | 编辑器 | `cargo test -p editor` + `cargo editor -- --frames 90 --screenshot target/editor` + `cargo editor -- --frames 140 --demo-play` + `cargo editor -- --frames 90 --demo-collision '#' --screenshot target/editor_collision` + `cargo editor -- --frames 90 --demo-player --screenshot target/editor_player` | 单测全绿（撤销/保存/索引/实体按房间管理/实体命中与拖动/**外部改动确认/另存为**/地块碰撞范围编辑/玩家碰撞配置）；退出码 0、无 panic、截图非空；**试玩往返**日志出现 `试玩往返后编辑缓冲一致 = true（dirty = false）`，且 `--demo-play` 注入右移后日志 `试玩诊断：… 投影误差 ≤ 0.5px`（证明试玩时贴图跟随物理位置）；`--demo-collision` 截图里「碰撞范围」面板可见（整格/自定义多边形按钮、顶点计数、绿色栅格碰撞块）；`--demo-player` 截图里「玩家碰撞（全局）」面板可见（宽高/偏移控件、精灵+绿色碰撞盒预览） |
 | 依赖 / Cargo 配置 | `cargo build-all` | 全绿；`09` 已同步 |
 | 仅文档 | 交叉引用自查（§ 编号存在、无自相矛盾） | — |

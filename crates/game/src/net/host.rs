@@ -18,7 +18,7 @@ use crate::config::net::{
 };
 use crate::player::spawn::{PlayerSheet, nearest_free_spawn, spawn_player};
 use crate::player::{PlayerFacing, PlayerId, PlayerInput, PlayerInputs, PlayerMotion};
-use crate::room::PickedZones;
+use crate::room::{PickedZones, ZoneId};
 use crate::state::SessionMode;
 use crate::tiles::LevelTiles;
 use crate::world::load::LoadedLevel;
@@ -387,6 +387,7 @@ fn remove_client(
 }
 
 /// 每个固定步广播权威快照（`05` §5.15.3）。
+#[allow(clippy::too_many_arguments)]
 pub fn broadcast_snapshot(
     mut host: Option<ResMut<HostNet>>,
     loaded: Option<Res<LoadedLevel>>,
@@ -400,6 +401,7 @@ pub fn broadcast_snapshot(
         &PlayerFacing,
         &crate::player::items::CarriedItem,
     )>,
+    spawners: Query<(&ZoneId, &crate::player::items::SpawnerItem)>,
 ) {
     let Some(host) = host.as_mut() else {
         return;
@@ -454,6 +456,11 @@ pub fn broadcast_snapshot(
         .as_ref()
         .and_then(|active| active.0)
         .map(|point| (point.col, point.row, point.at.0, point.at.1));
+    let inactive_item_spawners: Vec<u32> = spawners
+        .iter()
+        .filter(|(_, spawner)| !spawner.active)
+        .map(|(id, _)| id.0)
+        .collect();
 
     let player_count = snaps.len();
     let message = NetMessage::Snapshot(Snapshot {
@@ -462,6 +469,7 @@ pub fn broadcast_snapshot(
         players: snaps,
         fruits,
         picked: picked_zones,
+        inactive_item_spawners,
         checkpoint,
     });
     let Some(bytes) = protocol::encode(&message) else {
