@@ -41,14 +41,6 @@
             name: "平地",
             behavior: Solid,
             cell: 1,
-            collision: Some((
-                vertices: [
-                    (0, 16),
-                    (32, 16),
-                    (32, 32),
-                    (0, 32),
-                ],
-            )),
         ),
         (
             char: '1',
@@ -176,7 +168,7 @@
                 ),
                 (
                     kind: "item_spawner",
-                    at: (96, 486),
+                    at: (112, 432),
                     size: None,
                     id: None,
                     item: Some(Speed),
@@ -184,7 +176,7 @@
                 ),
                 (
                     kind: "item_spawner",
-                    at: (200, 486),
+                    at: (208, 464),
                     size: None,
                     id: None,
                     item: Some(SuperJump),
@@ -259,29 +251,7 @@
                 "................",
             ],
             spawn: Some((64, 464)),
-            entities: [
-                (
-                    kind: "item",
-                    at: (256, 464),
-                    size: None,
-                    id: None,
-                    item: Some(SuperJump),
-                ),
-                (
-                    kind: "item",
-                    at: (320, 464),
-                    size: None,
-                    id: None,
-                    item: Some(Speed),
-                ),
-                (
-                    kind: "item",
-                    at: (384, 464),
-                    size: None,
-                    id: None,
-                    item: Some(DoubleJump),
-                ),
-            ],
+            entities: [],
         ),
         (
             name: Some("r04"),
@@ -741,7 +711,29 @@
                 "################",
             ],
             spawn: Some((64, 464)),
-            entities: [],
+            entities: [
+                (
+                    kind: "item_spawner",
+                    at: (208, 464),
+                    size: None,
+                    id: None,
+                    item: Some(SuperJump),
+                ),
+                (
+                    kind: "item_spawner",
+                    at: (304, 464),
+                    size: None,
+                    id: None,
+                    item: Some(Speed),
+                ),
+                (
+                    kind: "item_spawner",
+                    at: (400, 464),
+                    size: None,
+                    id: None,
+                    item: Some(DoubleJump),
+                ),
+            ],
         ),
         (
             name: Some("r24"),
@@ -882,7 +874,7 @@
             entities: [
                 (
                     kind: "goal",
-                    at: (448, 464),
+                    at: (432, 464),
                     size: None,
                     id: None,
                 ),
