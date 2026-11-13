@@ -313,8 +313,40 @@ pub struct Level {
     /// 背景视差层（`07` §7.13）。缺省 / 空 ⇒ 无背景（只显示房间背景板）。
     #[serde(default)]
     pub background: Option<Background>,
+    /// **按道具类型**共享的表现与持续配置（`01` §1.5）。
+    ///
+    /// 贴图/贴图格/持续时间都属于 `ItemKind`，不按单个实体设置；缺省 = 无贴图 + 10 秒。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub items: Vec<ItemDef>,
     /// 行主序排列的房间，`len() == grid.cols * grid.rows`，`row 0` 是地图最上一行。
     pub rooms: Vec<Room>,
+}
+
+/// 某一种道具在整张关卡内共享的配置。见 `docs/03-level-format.md` §3.5
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ItemDef {
+    pub kind: ItemKind,
+    /// 贴图（相对 `assets/` 的 PNG，按 32×32 网格切分）；`None` = 占位色块。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sprite: Option<String>,
+    /// 贴图内 32×32 格索引（列主序）；`None` = 第 0 格。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sprite_cell: Option<u32>,
+    /// buff 持续秒数；`None` = 默认 10 秒。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_secs: Option<f32>,
+}
+
+/// 道具 buff 的默认持续时间（秒）。见 `docs/01-game-design.md` §1.5
+pub const DEFAULT_ITEM_DURATION_SECS: f32 = 10.0;
+
+/// 解析后的道具配置（把缺省值补齐）。
+#[derive(Clone, Debug, PartialEq)]
+pub struct ItemConfig {
+    pub sprite: Option<String>,
+    pub sprite_cell: u32,
+    pub duration_secs: f32,
 }
 
 /// 由贴图宽度推导 `tileset_columns`（每格 `TILE_PX` 宽）。
@@ -395,6 +427,53 @@ impl Level {
     pub fn cell_of(&self, ch: char) -> Option<u32> {
         self.entry_of(ch).map(|entry| entry.cell)
     }
+
+    /// 某种道具的显式配置；未配置时返回 `None`。
+    pub fn item_def(&self, kind: ItemKind) -> Option<&ItemDef> {
+        self.items.iter().find(|def| def.kind == kind)
+    }
+
+    /// 某种道具的生效配置（贴图/格/持续时间，缺省值已补齐）。
+    pub fn item_config(&self, kind: ItemKind) -> ItemConfig {
+        let def = self.item_def(kind);
+        ItemConfig {
+            sprite: def.and_then(|def| def.sprite.clone()),
+            sprite_cell: def.and_then(|def| def.sprite_cell).unwrap_or(0),
+            duration_secs: def
+                .and_then(|def| def.duration_secs)
+                .unwrap_or(DEFAULT_ITEM_DURATION_SECS),
+        }
+    }
+
+    /// 把旧版**实体级** `sprite` / `sprite_cell` 迁移到关卡级 `items`（每 kind 取第一个）。
+    ///
+    /// v3 之前允许每个 item 实体单独设贴图；现在贴图按道具类型共享。读取时自动迁移，
+    /// 写盘时这两个旧字段不再序列化（见 `EntitySpec`）。
+    pub fn normalize_legacy_item_sprites(&mut self) {
+        let mut migrated = Vec::new();
+        for room in &mut self.rooms {
+            for spec in &mut room.entities {
+                let Some(sprite) = spec.sprite.take() else {
+                    continue;
+                };
+                let Some(kind) = spec.item else {
+                    continue;
+                };
+                migrated.push(ItemDef {
+                    kind,
+                    sprite: Some(sprite),
+                    sprite_cell: spec.sprite_cell.take(),
+                    duration_secs: None,
+                });
+            }
+        }
+        for def in migrated {
+            if self.items.iter().any(|existing| existing.kind == def.kind) {
+                continue;
+            }
+            self.items.push(def);
+        }
+    }
 }
 
 /// 关卡的房间网格尺寸。见 `docs/03-level-format.md` §3.2
@@ -450,12 +529,11 @@ pub struct EntitySpec {
     /// 道具类型；仅 `kind == "item"` / `"item_spawner"` 时有效（V24）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub item: Option<ItemKind>,
-    /// 道具贴图（相对 `assets/` 的 PNG）；仅 item 类实体有效（V25）。
-    /// `None` = 运行时使用按道具类型着色的 12×12 占位块。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// **已废弃**：旧版实体级道具贴图。读取时迁移到 `Level::items`；写盘不再输出。
+    #[serde(default, skip_serializing)]
     pub sprite: Option<String>,
-    /// 贴图内的 32×32 格索引（列主序）；`None` = 第 0 格。仅 item 类实体有效。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// **已废弃**：旧版实体级贴图格。读取时迁移到 `Level::items`；写盘不再输出。
+    #[serde(default, skip_serializing)]
     pub sprite_cell: Option<u32>,
 }
 

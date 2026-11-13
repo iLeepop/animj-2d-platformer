@@ -61,6 +61,7 @@ fn valid_level() -> Level {
         tileset_columns: 8,
         palette: Vec::new(),
         background: None,
+        items: Vec::new(),
         rooms: vec![Room {
             name: None,
             tiles,
@@ -84,6 +85,7 @@ fn valid_level_2x1() -> Level {
         tileset_columns: 8,
         palette: Vec::new(),
         background: None,
+        items: Vec::new(),
         rooms: vec![
             plain_room(vec![
                 entity("player_spawn", (64, 464)),
@@ -105,6 +107,7 @@ fn valid_level_1x2() -> Level {
         tileset_columns: 8,
         palette: Vec::new(),
         background: None,
+        items: Vec::new(),
         rooms: vec![
             plain_room(vec![
                 entity("player_spawn", (64, 464)),
@@ -153,8 +156,8 @@ fn featureful_level() -> Level {
             size: None,
             id: Some("speed".to_string()),
             item: Some(ItemKind::Speed),
-            sprite: Some("sprites/items/speed.png".to_string()),
-            sprite_cell: Some(2),
+            sprite: None,
+            sprite_cell: None,
         },
     ]);
     item_room.name = Some("c".to_string());
@@ -168,6 +171,12 @@ fn featureful_level() -> Level {
         tileset_columns: 8,
         palette: Vec::new(),
         background: None,
+        items: vec![level_format::ItemDef {
+            kind: ItemKind::Speed,
+            sprite: Some("sprites/items/speed.png".to_string()),
+            sprite_cell: Some(2),
+            duration_secs: Some(12.5),
+        }],
         rooms: vec![
             left_room,
             start_room,
@@ -1059,47 +1068,89 @@ fn v24_item_field_matches_kind() {
     assert_eq!(issues[0].path, "rooms[0].entities[2].item");
 }
 
-/// V25：贴图只能挂在 item 类实体上，且必须是相对 assets/ 的 PNG。
+/// 道具共享配置：缺省值与显式值都要正确解析。
 #[test]
-fn v25_item_sprite_path_validation() {
+fn item_config_resolves_defaults_and_overrides() {
+    let level = featureful_level();
+    let speed = level.item_config(ItemKind::Speed);
+    assert_eq!(speed.sprite.as_deref(), Some("sprites/items/speed.png"));
+    assert_eq!(speed.sprite_cell, 2);
+    assert_eq!(speed.duration_secs, 12.5);
+    let jump = level.item_config(ItemKind::SuperJump);
+    assert_eq!(jump.sprite, None);
+    assert_eq!(jump.sprite_cell, 0);
+    assert_eq!(jump.duration_secs, level_format::DEFAULT_ITEM_DURATION_SECS);
+}
+
+/// V25：关卡级道具配置——kind 唯一、贴图为 PNG、持续时间为正。
+#[test]
+fn v25_item_config_validation() {
     assert!(issues_of(&featureful_level(), "V25").is_empty());
 
-    // 反例：非 item 实体带贴图
+    // 反例：同一 kind 重复
     let mut level = valid_level();
-    let mut goal = entity("goal", (320, 464));
-    goal.sprite = Some("sprites/items/speed.png".to_string());
-    level.rooms[0].entities.push(goal);
+    level.items = vec![
+        level_format::ItemDef {
+            kind: ItemKind::Speed,
+            sprite: None,
+            sprite_cell: None,
+            duration_secs: None,
+        },
+        level_format::ItemDef {
+            kind: ItemKind::Speed,
+            sprite: None,
+            sprite_cell: None,
+            duration_secs: None,
+        },
+    ];
     let issues = issues_of(&level, "V25");
     assert_eq!(issues.len(), 1);
-    assert_eq!(issues[0].path, "rooms[0].entities[2].sprite");
-    assert!(issues[0].message.contains("只有 item / item_spawner"));
+    assert_eq!(issues[0].path, "items[1].kind");
+    assert!(issues[0].message.contains("重复配置"));
 
-    // 反例：空路径
+    // 反例：空路径 / 非 PNG / 持续时间非法
+    for (sprite, duration, needle) in [
+        (Some("   ".to_string()), None, "不能为空"),
+        (
+            Some("sprites/items/speed.jpg".to_string()),
+            None,
+            "必须是 PNG",
+        ),
+        (None, Some(0.0), "持续时间"),
+        (None, Some(601.0), "持续时间"),
+    ] {
+        let mut level = valid_level();
+        level.items = vec![level_format::ItemDef {
+            kind: ItemKind::Speed,
+            sprite,
+            sprite_cell: None,
+            duration_secs: duration,
+        }];
+        let issues = issues_of(&level, "V25");
+        assert_eq!(issues.len(), 1, "{needle}: {issues:?}");
+        assert!(issues[0].message.contains(needle));
+    }
+
+    // 反例：没有贴图却指定贴图格
     let mut level = valid_level();
-    let mut item = entity("item", (96, 464));
-    item.item = Some(ItemKind::Speed);
-    item.sprite = Some("   ".to_string());
-    level.rooms[0].entities.push(item);
+    level.items = vec![level_format::ItemDef {
+        kind: ItemKind::Speed,
+        sprite: None,
+        sprite_cell: Some(3),
+        duration_secs: None,
+    }];
     let issues = issues_of(&level, "V25");
     assert_eq!(issues.len(), 1);
-    assert!(issues[0].message.contains("不能为空"));
+    assert!(issues[0].message.contains("不能指定 sprite_cell"));
 
-    // 反例：非 PNG
+    // 正例：PNG + 合法持续时间
     let mut level = valid_level();
-    let mut item = entity("item", (96, 464));
-    item.item = Some(ItemKind::Speed);
-    item.sprite = Some("sprites/items/speed.jpg".to_string());
-    level.rooms[0].entities.push(item);
-    let issues = issues_of(&level, "V25");
-    assert_eq!(issues.len(), 1);
-    assert!(issues[0].message.contains("必须是 PNG"));
-
-    // 正例：item_spawner + PNG
-    let mut level = valid_level();
-    let mut spawner = entity("item_spawner", (96, 464));
-    spawner.item = Some(ItemKind::DoubleJump);
-    spawner.sprite = Some("assets/sprites/items/double_jump.png".to_string());
-    level.rooms[0].entities.push(spawner);
+    level.items = vec![level_format::ItemDef {
+        kind: ItemKind::DoubleJump,
+        sprite: Some("assets/sprites/items/double_jump.png".to_string()),
+        sprite_cell: Some(0),
+        duration_secs: Some(3.5),
+    }];
     assert!(issues_of(&level, "V25").is_empty());
 }
 
@@ -1388,6 +1439,41 @@ fn v1_files_migrate_to_v3_with_builtin_palette_and_goal() {
     );
 }
 
+/// 旧版实体级道具贴图在读取时迁移到关卡级 `items`，写盘不再输出实体字段。
+#[test]
+fn legacy_entity_item_sprite_migrates_to_level_items() {
+    let tiles = vec!["\"................\""; ROOM_TILES].join(", ");
+    let text = format!(
+        r#"(
+            version: 3,
+            name: "legacy",
+            grid: (cols: 1, rows: 1),
+            start: (col: 0, row: 0),
+            rooms: [(
+                tiles: [{tiles}],
+                entities: [
+                    (kind: "player_spawn", at: (64, 464)),
+                    (kind: "goal", at: (448, 464)),
+                    (kind: "item", item: Some(Speed), at: (96, 464),
+                     sprite: Some("sprites/items/speed.png"), sprite_cell: Some(2)),
+                ],
+            )],
+        )"#
+    );
+    let level = read(&text).expect("旧格式必须可读");
+    assert_eq!(level.items.len(), 1);
+    assert_eq!(level.items[0].kind, ItemKind::Speed);
+    assert_eq!(
+        level.items[0].sprite.as_deref(),
+        Some("sprites/items/speed.png")
+    );
+    assert_eq!(level.items[0].sprite_cell, Some(2));
+    assert_eq!(level.rooms[0].entities[2].sprite, None);
+    assert_eq!(level.rooms[0].entities[2].sprite_cell, None);
+    let written = write(&level);
+    assert_eq!(read(&written), Ok(level), "迁移后必须能无损往返");
+}
+
 #[test]
 fn v2_custom_palette_resolves_behavior_and_cell() {
     let text = r#"(
@@ -1454,6 +1540,7 @@ fn v19_rejects_bad_palette_entries() {
             },
         ],
         background: None,
+        items: Vec::new(),
         grid: level_format::Grid { cols: 1, rows: 1 },
         start: level_format::RoomCoord { col: 0, row: 0 },
         rooms: vec![level_format::Room {

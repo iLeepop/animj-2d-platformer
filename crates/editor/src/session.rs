@@ -67,10 +67,6 @@ pub struct EditorSession {
     pub entity_kind: String,
     /// `entity_kind == "item"` 时放置的道具类型。
     pub entity_item: level_format::ItemKind,
-    /// 放置 item 类实体时使用的贴图（相对 assets/ 的 PNG）。
-    pub entity_sprite: Option<String>,
-    /// 放置 item 类实体时使用的 32×32 贴图格。
-    pub entity_sprite_cell: u32,
     /// 面板里选中的房间实体下标。
     pub selected_entity: Option<usize>,
     /// 状态栏文字（保存结果、拦截原因等）。
@@ -106,8 +102,6 @@ impl EditorSession {
             brush_char: '#',
             entity_kind: "fruit".to_string(),
             entity_item: level_format::ItemKind::SuperJump,
-            entity_sprite: None,
-            entity_sprite_cell: 0,
             selected_entity: None,
             status: String::new(),
             doc_revision: 0,
@@ -298,18 +292,75 @@ impl EditorSession {
         true
     }
 
-    /// 设置某个实体的道具贴图格（32×32 网格的列主序索引）。
-    pub fn set_entity_sprite_cell(&mut self, index: usize, cell: u32) -> bool {
-        let Some(spec) = self.room_mut().entities.get_mut(index) else {
-            return false;
-        };
-        if spec.sprite_cell == Some(cell) {
+    // ---------- 道具（关卡级配置） ----------
+
+    /// 取得某道具的配置（缺省值已补齐）；供 UI 显示。
+    pub fn item_config(&self, kind: level_format::ItemKind) -> level_format::ItemConfig {
+        self.doc.item_config(kind)
+    }
+
+    fn item_def_mut(&mut self, kind: level_format::ItemKind) -> &mut level_format::ItemDef {
+        if let Some(index) = self.doc.items.iter().position(|def| def.kind == kind) {
+            return &mut self.doc.items[index];
+        }
+        self.doc.items.push(level_format::ItemDef {
+            kind,
+            sprite: None,
+            sprite_cell: None,
+            duration_secs: None,
+        });
+        self.doc.items.last_mut().expect("刚 push")
+    }
+
+    /// 设置道具共享贴图（相对 `assets/` 的 PNG；空串 / 非法路径 = 清除）。
+    pub fn set_item_sprite(
+        &mut self,
+        kind: level_format::ItemKind,
+        sprite: Option<String>,
+    ) -> bool {
+        let normalized = sprite.and_then(|path| level_format::normalize_asset_path(&path));
+        let current = self.doc.item_def(kind).and_then(|def| def.sprite.clone());
+        if current == normalized {
             return false;
         }
         self.begin_edit();
-        if let Some(spec) = self.room_mut().entities.get_mut(index) {
-            spec.sprite_cell = Some(cell);
+        let def = self.item_def_mut(kind);
+        let path_changed = def.sprite != normalized;
+        def.sprite = normalized;
+        if path_changed || def.sprite.is_none() {
+            def.sprite_cell = None;
         }
+        true
+    }
+
+    /// 设置道具共享贴图内的 32×32 格。
+    pub fn set_item_sprite_cell(&mut self, kind: level_format::ItemKind, cell: u32) -> bool {
+        if self.doc.item_config(kind).sprite_cell == cell
+            && self
+                .doc
+                .item_def(kind)
+                .is_some_and(|def| def.sprite_cell == Some(cell))
+        {
+            return false;
+        }
+        self.begin_edit();
+        self.item_def_mut(kind).sprite_cell = Some(cell);
+        true
+    }
+
+    /// 设置道具 buff 持续时间（秒）。
+    pub fn set_item_duration(&mut self, kind: level_format::ItemKind, secs: f32) -> bool {
+        let secs = secs.clamp(0.1, 600.0);
+        if self
+            .doc
+            .item_def(kind)
+            .and_then(|def| def.duration_secs)
+            .is_some_and(|current| (current - secs).abs() < f32::EPSILON)
+        {
+            return false;
+        }
+        self.begin_edit();
+        self.item_def_mut(kind).duration_secs = Some(secs);
         true
     }
 
@@ -327,22 +378,6 @@ impl EditorSession {
         // begin_edit 会重建可变借用，重新取一次。
         if let Some(spec) = self.room_mut().entities.get_mut(index) {
             spec.item = item;
-        }
-        true
-    }
-
-    /// 设置某个实体的道具贴图（相对 `assets/` 的 PNG；空串 / 非法路径 = 清除）。
-    pub fn set_entity_sprite(&mut self, index: usize, sprite: Option<String>) -> bool {
-        let normalized = sprite.and_then(|path| level_format::normalize_asset_path(&path));
-        let Some(spec) = self.room_mut().entities.get_mut(index) else {
-            return false;
-        };
-        if spec.sprite == normalized {
-            return false;
-        }
-        self.begin_edit();
-        if let Some(spec) = self.room_mut().entities.get_mut(index) {
-            spec.sprite = normalized;
         }
         true
     }
@@ -604,6 +639,7 @@ mod tests {
             tileset_columns: 8,
             palette: Vec::new(),
             background: None,
+            items: Vec::new(),
             rooms: vec![Room {
                 name: None,
                 spawn: None,
@@ -774,53 +810,44 @@ mod tests {
         assert_eq!(session.room().entities[0].item, None);
     }
 
-    /// 道具贴图格：写入 / 清除 / 撤销。
+    /// 道具贴图 / 格 / 持续时间：按 ItemKind 共享，修改走 undo 快照。
     #[test]
-    fn item_sprite_cell_edits_go_through_snapshot() {
-        let mut level = sample_level();
-        level.rooms[0].entities.push(level_format::EntitySpec {
-            kind: "item".into(),
-            at: (96, 96),
-            size: None,
-            id: None,
-            item: Some(level_format::ItemKind::Speed),
-            sprite: Some("sprites/items/speed.png".into()),
-            sprite_cell: None,
-        });
-        let mut session = EditorSession::new(level, None);
-        assert!(session.set_entity_sprite_cell(0, 7));
-        assert_eq!(session.room().entities[0].sprite_cell, Some(7));
-        assert!(session.set_entity_sprite_cell(0, 3));
-        assert_eq!(session.room().entities[0].sprite_cell, Some(3));
-        assert!(session.undo());
-        assert_eq!(session.room().entities[0].sprite_cell, Some(7));
-    }
-
-    /// 道具贴图：路径 normalize 后写入；清除 = None。
-    #[test]
-    fn item_sprite_edits_go_through_snapshot() {
-        let mut level = sample_level();
-        level.rooms[0].entities.push(level_format::EntitySpec {
-            kind: "item".into(),
-            at: (96, 96),
-            size: None,
-            id: None,
-            item: Some(level_format::ItemKind::Speed),
-            sprite: None,
-            sprite_cell: None,
-        });
-        let mut session = EditorSession::new(level, None);
-        assert!(session.set_entity_sprite(0, Some("assets/sprites/items/speed.png".into())));
+    fn item_def_edits_go_through_snapshot() {
+        let mut session = EditorSession::new(sample_level(), None);
+        assert!(session.set_item_sprite(
+            level_format::ItemKind::Speed,
+            Some("assets/sprites/items/speed.png".into())
+        ));
         assert_eq!(
-            session.room().entities[0].sprite.as_deref(),
+            session
+                .item_config(level_format::ItemKind::Speed)
+                .sprite
+                .as_deref(),
             Some("sprites/items/speed.png")
         );
-        assert!(session.set_entity_sprite(0, None));
-        assert_eq!(session.room().entities[0].sprite, None);
+        assert!(session.set_item_sprite_cell(level_format::ItemKind::Speed, 7));
+        assert_eq!(
+            session
+                .item_config(level_format::ItemKind::Speed)
+                .sprite_cell,
+            7
+        );
+        assert!(session.set_item_duration(level_format::ItemKind::Speed, 3.5));
+        assert_eq!(
+            session
+                .item_config(level_format::ItemKind::Speed)
+                .duration_secs,
+            3.5
+        );
+        // 单一 kind 只有一条配置
+        assert_eq!(session.doc.items.len(), 1);
         assert!(session.undo());
         assert_eq!(
-            session.room().entities[0].sprite.as_deref(),
-            Some("sprites/items/speed.png")
+            session
+                .item_config(level_format::ItemKind::Speed)
+                .duration_secs,
+            10.0,
+            "撤销后回落默认值"
         );
     }
 

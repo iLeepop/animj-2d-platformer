@@ -876,6 +876,7 @@ mod tests {
             tileset_columns: 8,
             palette: Vec::new(),
             background: None,
+            items: Vec::new(),
             grid: level_format::Grid { cols: 1, rows: 1 },
             start: level_format::RoomCoord { col: 0, row: 0 },
             rooms: vec![level_format::Room {

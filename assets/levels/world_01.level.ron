@@ -29,6 +29,14 @@
             name: "spike",
             behavior: Hazard,
             cell: 6,
+            collision: Some((
+                vertices: [
+                    (15, 0),
+                    (17, 0),
+                    (32, 32),
+                    (0, 32),
+                ],
+            )),
         ),
         (
             char: '*',
@@ -51,7 +59,8 @@
                 vertices: [
                     (0, 0),
                     (32, 0),
-                    (16, 32),
+                    (17, 32),
+                    (15, 32),
                 ],
             )),
         ),
@@ -60,12 +69,28 @@
             name: "左刺",
             behavior: Hazard,
             cell: 8,
+            collision: Some((
+                vertices: [
+                    (0, 0),
+                    (32, 15),
+                    (32, 17),
+                    (0, 32),
+                ],
+            )),
         ),
         (
             char: '3',
             name: "右刺",
             behavior: Hazard,
             cell: 9,
+            collision: Some((
+                vertices: [
+                    (0, 15),
+                    (32, 0),
+                    (32, 32),
+                    (0, 17),
+                ],
+            )),
         ),
         (
             char: '4',
@@ -137,6 +162,20 @@
             ),
         ],
     )),
+    items: [
+        (
+            kind: SuperJump,
+            sprite: Some("sprites/items/super_jump.png"),
+        ),
+        (
+            kind: Speed,
+            sprite: Some("sprites/items/speed.png"),
+        ),
+        (
+            kind: DoubleJump,
+            sprite: Some("sprites/items/double_jump.png"),
+        ),
+    ],
     rooms: [
         (
             name: Some("r00"),
@@ -150,7 +189,7 @@
                 "#.....^^^+2.....",
                 "#....+++++++++..",
                 "#......+++++....",
-                "#.+....+...+...+",
+                "#.+........+...+",
                 "#.++...+...+..+.",
                 "#.....++7*7++++.",
                 "#....++.........",
@@ -172,7 +211,6 @@
                     size: None,
                     id: None,
                     item: Some(Speed),
-                    sprite: Some("sprites/items/speed.png"),
                 ),
                 (
                     kind: "item_spawner",
@@ -180,7 +218,6 @@
                     size: None,
                     id: None,
                     item: Some(SuperJump),
-                    sprite: Some("sprites/items/super_jump.png"),
                 ),
             ],
         ),

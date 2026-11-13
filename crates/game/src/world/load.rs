@@ -417,10 +417,13 @@ fn spawn_room_entities(
                 // 存档点单独一层：可能与终点/果实重叠（`00` §0.4 禁止共享 Z）。
                 RoomZoneKind::Checkpoint => (crate::checkpoint::ZONE_COLOR, z::CHECKPOINT),
             };
-            let sprite = match (&kind, &spec.sprite) {
-                (RoomZoneKind::Item(_), Some(path)) => {
-                    match level_format::normalize_asset_path(path)
-                        .and_then(|path| crate::render::tiles::load_image(&path, images))
+            let sprite = match kind {
+                RoomZoneKind::Item(item) => {
+                    let config = level.item_config(item);
+                    match config
+                        .sprite
+                        .as_deref()
+                        .and_then(|path| crate::render::tiles::load_image(path, images))
                     {
                         Some(image) => {
                             let columns = images
@@ -434,7 +437,7 @@ fn spawn_room_entities(
                                 None,
                                 None,
                             ));
-                            let index = (spec.sprite_cell.unwrap_or(0) as usize) % columns as usize;
+                            let index = (config.sprite_cell as usize) % columns as usize;
                             let mut sprite =
                                 Sprite::from_atlas_image(image, TextureAtlas { layout, index });
                             // 真贴图按 32×32 显示；判定盒仍是 12×12（`03` §3.4）。
@@ -442,7 +445,9 @@ fn spawn_room_entities(
                             sprite
                         }
                         None => {
-                            warn!("道具贴图 '{path}' 不存在，使用占位色块");
+                            if let Some(path) = &config.sprite {
+                                warn!("道具贴图 '{path}' 不存在，使用占位色块");
+                            }
                             Sprite::from_color(color, size)
                         }
                     }
@@ -516,6 +521,7 @@ mod tests {
             tileset_columns: 8,
             palette: Vec::new(),
             background: None,
+            items: Vec::new(),
             rooms: vec![level_format::Room {
                 name: None,
                 spawn: None,

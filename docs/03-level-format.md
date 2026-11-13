@@ -32,7 +32,15 @@ pub struct Level {
     pub tileset_columns: u32,    // 贴图列数（§3.9）
     pub palette: Vec<PaletteEntry>, // 地块调色板（§3.9）
     pub background: Option<Background>, // 背景视差层（§3.10）；None = 无背景
+    pub items: Vec<ItemDef>,     // 按道具类型共享的贴图/贴图格/持续时间（§3.5）
     pub rooms: Vec<Room>,        // 行主序，len == cols * rows，row 0 = 地图最上一行
+}
+
+pub struct ItemDef {
+    pub kind: ItemKind,
+    pub sprite: Option<String>,  // 相对 assets/ 的 PNG；None = 占位色块
+    pub sprite_cell: Option<u32>,// 32×32 格索引（列主序）；None = 第 0 格
+    pub duration_secs: Option<f32>, // buff 秒数；None = 默认 10 秒
 }
 
 pub struct Background { pub layers: Vec<BackgroundLayer> }       // 最多 3 层（V20）
@@ -58,8 +66,7 @@ pub struct EntitySpec {
     pub size: Option<(i32, i32)>,// 默认 (32, 32)
     pub id: Option<String>,      // 可选稳定标识，供编辑器与后续逻辑引用
     pub item: Option<ItemKind>,  // 仅 item / item_spawner 时有效（V24）
-    pub sprite: Option<String>,  // 道具贴图（相对 assets/ 的 PNG）；仅 item 类有效（V25）
-    pub sprite_cell: Option<u32>,// 贴图内 32×32 格索引（列主序）；None = 第 0 格
+    // 旧版实体级 sprite/sprite_cell 已废弃：读取时迁移到 Level::items，写盘不再输出
 }
 ```
 
@@ -158,14 +165,14 @@ pub struct EntitySpec {
 |---|---|---|---|
 | `player_spawn` | `(32, 32)` | 全关卡**恰好 1 个**，**可以位于任意房间**（V12）；游戏从它所在房间开始 | 玩家初始位置 |
 | `goal` | `(32, 32)` | 全关卡**恰好 1 个**（V23） | **终点**：玩家 AABB 与它相交即该玩家到达终点（`01` §1.4） |
-| `item` | `(12, 12)` | 每房间 `0..=255` 个；**必须**带 `item` 字段（V24）；`sprite` 可选（V25） | 可拾取道具；拾取后覆盖角色当前道具并**销毁**（`01` §1.5、`06` §6.12） |
-| `item_spawner` | `(12, 12)` | 每房间 `0..=255` 个；**必须**带 `item` 字段（V24）；`sprite` 可选（V25） | **道具生成器**：在自身位置生成道具；被拾取后隐藏 1.5 s 再重新生成（`01` §1.5） |
+| `item` | `(12, 12)` | 每房间 `0..=255` 个；**必须**带 `item` 字段（V24） | 可拾取道具；贴图/持续时间由 `Level.items` 中对应 `ItemKind` 决定 |
+| `item_spawner` | `(12, 12)` | 每房间 `0..=255` 个；**必须**带 `item` 字段（V24） | **道具生成器**：在自身位置生成道具；被拾取后隐藏 1.5 s 再重新生成 |
 | `fruit` | `(12, 12)` | 每房间 `0..=255` 个 | 可选收集品（当前只播放拾取反馈与计入存档，不参与通关） |
 | `checkpoint` | `(32, 32)` | 每房间 `0..=255` 个 | 存档点区域；玩家在内按 `E` 激活并写盘（`02` §2.5）。`at` = 重生时的 AABB 中心，必须摆在地面上 |
 
 Roadmap（**格式保留位，v3 校验会拒绝**）：`enemy`、`switch`、`moving_platform`。
 
-## 3.5 道具类型枚举
+## 3.5 道具类型与共享配置
 
 ```rust
 pub enum ItemKind {
@@ -177,7 +184,11 @@ pub enum ItemKind {
 
 - 角色**同一时刻至多携带一个道具**；再次拾取直接覆盖，不叠加（`01` §1.5）。
 - `item` 实体在拾取后销毁；`item_spawner` 生成的实体拾取后隐藏，`ITEM_RESPAWN_SECS = 1.5` 秒后重新生成。
-- 道具贴图：`sprite: Some("sprites/items/speed.png")`（相对 `assets/` 的 PNG）+ `sprite_cell` 选择贴图内固定的 32×32 格（列主序，`None` = 第 0 格）。未设置时按类型用占位色块。
+- **贴图 / 贴图格 / 持续时间按 `ItemKind` 共享**，来自 `Level.items`；同一道具类型的所有实体表现一致，**不按单个实体设置**。
+  - `sprite`：相对 `assets/` 的 PNG；`None` = 按类型着色的 12×12 占位块。
+  - `sprite_cell`：32×32 网格的列主序索引；`None` = 第 0 格。
+  - `duration_secs`：buff 持续秒数；`None` = `DEFAULT_ITEM_DURATION_SECS = 10`。
+- 旧格式的实体级 `sprite` / `sprite_cell` 仍可读取，但 `read` 会把它迁移到 `Level.items`（每 kind 取第一个），写盘不再输出。
 - 死亡会**清除**当前道具 buff（`01` §1.5）。
 - 具体倍率归 `06` §6.12；这里是 RON 枚举名（`item: Some(SuperJump)`）。
 
@@ -319,7 +330,7 @@ pub fn validate(level: &Level) -> Vec<LevelIssue>
 | V22 | `palette[*].collision` 实际不生效：`behavior == None`，或栅格化后不覆盖任何像素中心 | Warning |
 | V23 | 全关卡 `goal` 实体数 `== 1` | Error |
 | V24 | `kind == "item" / "item_spawner"` 必须带 `item` 字段；其它 `kind` 不得带 `item` | Error |
-| V25 | `sprite` 仅 `item` / `item_spawner` 可设置；必须是相对 `assets/` 的 `.png` 路径；`sprite_cell` 为 32×32 网格的列主序索引（越界时运行时按贴图列数取模） | Error |
+| V25 | `items`：每种 `ItemKind` 至多一条；`sprite` 必须是相对 `assets/` 的 `.png`；未设置贴图不得指定 `sprite_cell`；`duration_secs` 必须在 `(0, 600]` 秒 | Error |
 
 > **V7–V11 已移除**：房间目标机制与装饰品奖励在 v3 删除。编号不复用，避免与历史错误输出混淆。
 >
@@ -346,3 +357,4 @@ pub fn validate(level: &Level) -> Vec<LevelIssue>
 | `2`（增补） | 2026-11-08 | `palette[]` 新增可选字段 `collision`（§3.9，V21/V22）；**不升版本**，旧文件读取为 `None`（整格） |
 | `3` | 2026-11-08 | **破坏性**：删除房间级 `goals` / `reward`；新增全关卡唯一 `goal` 终点（V23）与 `item` 道具实体 + `ItemKind`（V24）；旧文件迁移时 `exit` → `goal`、丢弃目标/奖励字段 |
 | `3`（增补） | 2026-11-08 | 新增 `item_spawner` 实体与 `sprite` / `sprite_cell` 可选字段（V24/V25）；旧文件缺省 = 占位色块 / 第 0 格 |
+| `3`（增补） | 2026-11-13 | 新增关卡级 `items`（按 `ItemKind` 共享 `sprite` / `sprite_cell` / `duration_secs`，V25）；实体级 `sprite` / `sprite_cell` 降级为旧格式读取字段，读取时自动迁移 |

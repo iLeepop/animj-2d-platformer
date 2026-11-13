@@ -89,6 +89,7 @@ mod tests {
             tileset_columns: 8,
             palette: Vec::new(),
             background: None,
+            items: Vec::new(),
             rooms: (0..cols * rows).map(|i| room(i as usize)).collect(),
         }
     }

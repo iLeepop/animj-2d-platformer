@@ -24,7 +24,7 @@ flowchart LR
 | 文件 | 内容 |
 |---|---|
 | `lib.rs` | 重导出 + crate 文档 |
-| `types.rs` | `Level` / `Room` / `EntitySpec` / `ItemKind` / `Grid` / `RoomCoord`（见 `03` §3.2） |
+| `types.rs` | `Level` / `Room` / `EntitySpec` / `ItemKind` / `ItemDef` / `Grid` / `RoomCoord`（见 `03` §3.2 / §3.5） |
 | `legend.rs` | 字符 ↔ `TileKind` 映射（见 `03` §3.3） |
 | `io.rs` | `read()` / `write()` 单入口（见 `03` §3.1） |
 | `validate.rs` | `validate()` 纯函数，返回全部 `LevelIssue`（见 `03` §3.7） |
@@ -233,7 +233,7 @@ flowchart TB
 | `CheckpointActivated` | `Message` | `point: CheckpointPoint`（房间 + 局部 `at`） | `checkpoint` → 存档（立即写盘） |
 | `RoomEntered` | `Message` | `room_index: u32` | `room` → HUD/调试/编辑器 |
 | `ItemPicked` | `Message` | `player: PlayerId`, `kind: ItemKind`, `replaced: Option<ItemKind>` | `player/items` → HUD/音效 |
-| `CarriedItem` | 组件 | `kind: Option<ItemKind>`, `remaining: f32`（10 秒 buff 倒计时） | 拾取/死亡/到期写；HUD 与客户端预测读 |
+| `CarriedItem` | 组件 | `kind: Option<ItemKind>`, `remaining: f32`（按关卡 `items` 配置倒计时，默认 10 秒） | 拾取/死亡/到期写；HUD 与客户端预测读 |
 | `SpawnerItem` | 组件 | `active: bool`, `respawn_left: f32` | `item_spawner` 生成的道具；主机倒计时，客户端按快照同步 |
 | `PlayerFinished` | `Message` | `player: PlayerId`, `time: f32` | `run::detect_goal_touch` → HUD/音效 |
 | `CollectiblePicked` | `Message` | `room_index: u32` | `room` 传感器 → 音效（`06` §6.5.4） |

@@ -22,13 +22,18 @@ pub fn read(text: &str) -> Result<Level, LevelError> {
         ron::from_str(text).map_err(|error| LevelError::Parse(error.to_string()))?;
     match probe.version {
         VERSION => {
-            ron::from_str::<Level>(text).map_err(|error| LevelError::Parse(error.to_string()))
+            let mut level: Level =
+                ron::from_str(text).map_err(|error| LevelError::Parse(error.to_string()))?;
+            level.normalize_legacy_item_sprites();
+            Ok(level)
         }
         // v1 是 v2 的子集（新增字段都有默认值），v1/v2 共用同一份旧结构。
         1 | 2 => {
             let legacy: LegacyLevel =
                 ron::from_str(text).map_err(|error| LevelError::Parse(error.to_string()))?;
-            Ok(migrate(legacy))
+            let mut level = migrate(legacy);
+            level.normalize_legacy_item_sprites();
+            Ok(level)
         }
         found => Err(LevelError::UnsupportedVersion {
             found,
@@ -105,6 +110,7 @@ fn migrate(legacy: LegacyLevel) -> Level {
         tileset_columns: legacy.tileset_columns,
         palette: legacy.palette,
         background: legacy.background,
+        items: Vec::new(),
         rooms: legacy
             .rooms
             .into_iter()

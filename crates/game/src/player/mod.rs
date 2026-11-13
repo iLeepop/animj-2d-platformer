@@ -256,6 +256,7 @@ mod tests {
             tileset_columns: 8,
             palette: Vec::new(),
             background: None,
+            items: Vec::new(),
             rooms: vec![Room {
                 name: None,
                 spawn: None,

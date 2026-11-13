@@ -273,6 +273,8 @@ fn drive_demo_item(
     tick: Res<FrameTick>,
     mut session: Option<ResMut<editor::session::EditorSession>>,
     mut window: Option<ResMut<editor::ui::ItemTextureWindow>>,
+    mut tab: ResMut<editor::ui::BottomTab>,
+    mut bottom_height: ResMut<editor::ui::BottomHeight>,
     mut done: Local<bool>,
 ) {
     if !cli.demo_item || *done || tick.0 < 10 {
@@ -282,20 +284,19 @@ fn drive_demo_item(
         return;
     };
     *done = true;
-    session.entity_kind = "item_spawner".to_string();
-    session.entity_item = level_format::ItemKind::Speed;
-    session.entity_sprite = Some("sprites/items/speed.png".to_string());
-    session.selected_entity = session
-        .room()
-        .entities
-        .iter()
-        .position(|spec| matches!(spec.kind.as_str(), "item" | "item_spawner"));
+    *tab = editor::ui::BottomTab::Items;
+    bottom_height.0 = 480.0;
+    session.set_item_sprite(
+        level_format::ItemKind::Speed,
+        Some("sprites/items/speed.png".to_string()),
+    );
     if let Some(window) = window.as_mut() {
         window.open = true;
+        window.kind = level_format::ItemKind::Speed;
     }
     println!(
-        "[demo-item] 已选中实体 {:?}，贴图 = {:?}，打开 32×32 框选窗口",
-        session.selected_entity, session.entity_sprite
+        "[demo-item] 打开底部「道具」面板与 32×32 框选窗口，Speed 配置 = {:?}",
+        session.item_config(level_format::ItemKind::Speed)
     );
 }
 

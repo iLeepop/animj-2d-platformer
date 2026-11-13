@@ -58,6 +58,7 @@ pub fn validate(level: &Level) -> Vec<LevelIssue> {
     check_goal_count(level, &mut issues);
     check_start(level, &mut issues);
     check_palette(level, &mut issues);
+    check_items(level, &mut issues);
     check_background(level, &mut issues);
     check_room_boundaries(level, &mut issues);
 
@@ -247,40 +248,6 @@ fn check_entity_specs(i: usize, room: &Room, issues: &mut Vec<LevelIssue>) {
                 ),
             ),
             _ => {}
-        }
-
-        // V25：贴图路径只有 item 类实体可用，且必须是相对 assets/ 的 .png
-        if let Some(sprite) = &spec.sprite {
-            let sprite_path = format!("{path}.sprite");
-            if !is_item_entity(&spec.kind) {
-                push(
-                    issues,
-                    Severity::Error,
-                    &sprite_path,
-                    "V25",
-                    format!(
-                        "只有 item / item_spawner 可以设置贴图，本实体 kind = '{}'",
-                        spec.kind
-                    ),
-                );
-            }
-            match crate::types::normalize_asset_path(sprite) {
-                None => push(
-                    issues,
-                    Severity::Error,
-                    &sprite_path,
-                    "V25",
-                    "贴图路径不能为空".to_string(),
-                ),
-                Some(path) if !path.to_ascii_lowercase().ends_with(".png") => push(
-                    issues,
-                    Severity::Error,
-                    &sprite_path,
-                    "V25",
-                    format!("贴图必须是 PNG（相对 assets/ 的路径），实际 '{sprite}'"),
-                ),
-                Some(_) => {}
-            }
         }
 
         let (x, y) = spec.at;
@@ -527,6 +494,64 @@ fn is_boundary_gap(a: TileKind, b: TileKind) -> bool {
         (a, b),
         (TileKind::Solid, TileKind::Air) | (TileKind::Air, TileKind::Solid)
     )
+}
+
+/// V25：关卡级道具配置——每种 `ItemKind` 至多一条；贴图必须是 PNG；持续时间必须为正。
+fn check_items(level: &Level, issues: &mut Vec<LevelIssue>) {
+    for (index, def) in level.items.iter().enumerate() {
+        let path = format!("items[{index}]");
+        if level.items[..index]
+            .iter()
+            .any(|other| other.kind == def.kind)
+        {
+            push(
+                issues,
+                Severity::Error,
+                &format!("{path}.kind"),
+                "V25",
+                format!("道具 {:?} 重复配置", def.kind),
+            );
+        }
+        if let Some(sprite) = &def.sprite {
+            match crate::types::normalize_asset_path(sprite) {
+                None => push(
+                    issues,
+                    Severity::Error,
+                    &format!("{path}.sprite"),
+                    "V25",
+                    "贴图路径不能为空".to_string(),
+                ),
+                Some(path) if !path.to_ascii_lowercase().ends_with(".png") => push(
+                    issues,
+                    Severity::Error,
+                    &format!("items[{index}].sprite"),
+                    "V25",
+                    format!("贴图必须是 PNG（相对 assets/ 的路径），实际 '{sprite}'"),
+                ),
+                Some(_) => {}
+            }
+        }
+        if def.sprite.is_none() && def.sprite_cell.is_some() {
+            push(
+                issues,
+                Severity::Error,
+                &format!("{path}.sprite_cell"),
+                "V25",
+                "未设置贴图时不能指定 sprite_cell".to_string(),
+            );
+        }
+        if let Some(duration) = def.duration_secs
+            && (!duration.is_finite() || duration <= 0.0 || duration > 600.0)
+        {
+            push(
+                issues,
+                Severity::Error,
+                &format!("{path}.duration_secs"),
+                "V25",
+                format!("持续时间必须在 (0, 600] 秒内，实际 {duration}"),
+            );
+        }
+    }
 }
 
 /// V19：调色板自身合法——字符唯一、非 `.`、名称非空。

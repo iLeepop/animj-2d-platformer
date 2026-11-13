@@ -18,10 +18,20 @@ use crate::view::{ERROR_COLOR, EditorViewFlags, GRID_COLOR, HOVER_COLOR, ROOM_BO
 
 pub struct EditorUiPlugin;
 
-/// 道具贴图框选窗口的开关（右栏「预览/框选」按钮打开）。
-#[derive(Resource, Default)]
+/// 道具贴图框选窗口的开关（底部「道具」面板的「预览/框选」打开）。
+#[derive(Resource)]
 pub struct ItemTextureWindow {
     pub open: bool,
+    pub kind: level_format::ItemKind,
+}
+
+impl Default for ItemTextureWindow {
+    fn default() -> Self {
+        Self {
+            open: false,
+            kind: level_format::ItemKind::SuperJump,
+        }
+    }
 }
 
 impl Plugin for EditorUiPlugin {
@@ -245,6 +255,7 @@ pub enum BottomTab {
     Animation,
     Background,
     Player,
+    Items,
 }
 
 /// 面板根 Ui。egui 0.36 的 `Panel::show` 以传入 Ui 的可用矩形为容器，
@@ -594,12 +605,7 @@ fn left_panel(ui: &mut egui::Ui, session: &mut EditorSession, tile_texture: &Til
 }
 
 /// 右栏：只做地图与选中房间的编辑（房间选择 / 实体 / 贴图）。
-fn right_panel(
-    ui: &mut egui::Ui,
-    session: &mut EditorSession,
-    picker: &mut crate::tile_tool::AssetPickerState,
-    window: &mut ItemTextureWindow,
-) {
+fn right_panel(ui: &mut egui::Ui, session: &mut EditorSession) {
     egui::Panel::right("animj_editor_right").show(ui, |ui| {
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
@@ -654,34 +660,7 @@ fn right_panel(
                             }
                         }
                     });
-                    let mut sprite = session.entity_sprite.clone().unwrap_or_default();
-                    let mut changed = false;
-                    ui.horizontal(|ui| {
-                        ui.label("放置贴图");
-                        changed |= ui
-                            .add(
-                                egui::TextEdit::singleline(&mut sprite)
-                                    .desired_width(150.0)
-                                    .hint_text("sprites/items/speed.png"),
-                            )
-                            .changed();
-                        if let Some(picked) =
-                            crate::tile_tool::asset_picker(ui, picker, "brush_item_sprite")
-                        {
-                            sprite = picked;
-                            changed = true;
-                        }
-                        if ui.small_button("清除").clicked() {
-                            session.entity_sprite = None;
-                        }
-                        if ui.small_button("预览/框选").clicked() {
-                            window.open = true;
-                        }
-                    });
-                    ui.label(format!("贴图格 #{}", session.entity_sprite_cell));
-                    if changed {
-                        session.entity_sprite = level_format::normalize_asset_path(&sprite);
-                    }
+                    ui.label("贴图与持续时间在底部「道具」面板统一设置。");
                 }
                 for kind in [
                     "fruit",
@@ -751,36 +730,8 @@ fn right_panel(
                                 }
                             }
                         });
-                        let mut sprite = spec.sprite.clone().unwrap_or_default();
-                        let mut changed = false;
-                        ui.horizontal(|ui| {
-                            ui.label("贴图");
-                            changed |= ui
-                                .add(
-                                    egui::TextEdit::singleline(&mut sprite)
-                                        .desired_width(180.0)
-                                        .hint_text("sprites/items/super_jump.png"),
-                                )
-                                .changed();
-                            if let Some(picked) =
-                                crate::tile_tool::asset_picker(ui, picker, "entity_sprite")
-                            {
-                                sprite = picked;
-                                changed = true;
-                            }
-                            if ui.small_button("清除").clicked() {
-                                session.set_entity_sprite(index, None);
-                            }
-                            if ui.small_button("预览/框选").clicked() {
-                                window.open = true;
-                            }
-                        });
-                        ui.label(format!("贴图格 #{}", spec.sprite_cell.unwrap_or(0)));
-                        if changed {
-                            session.set_entity_sprite(index, Some(sprite));
-                        }
                     } else {
-                        ui.label("只有 item / item_spawner 支持道具类型与贴图。");
+                        ui.label("只有 item / item_spawner 支持道具类型。");
                     }
                 }
                 if ui.button("去重：出生点 / 终点").clicked() {
@@ -790,14 +741,7 @@ fn right_panel(
     });
 }
 
-/// 选中实体（若为 item 类）或放置笔刷的道具贴图来源。
-#[derive(Clone, Copy)]
-enum ItemSpriteTarget {
-    Brush,
-    Entity(usize),
-}
-
-/// 「预览/框选」窗口：显示整张道具贴图，按固定 32×32 网格点击选格。
+/// 「预览/框选」窗口：显示当前道具（`ItemKind`）的整张贴图，按固定 32×32 网格点击选格。
 fn item_texture_window(
     ctx: &egui::Context,
     session: &mut EditorSession,
@@ -808,46 +752,21 @@ fn item_texture_window(
     if !window.open {
         return;
     }
-    let selected = session.selected_entity.and_then(|index| {
-        session
-            .room()
-            .entities
-            .get(index)
-            .filter(|spec| matches!(spec.kind.as_str(), "item" | "item_spawner"))
-            .map(|spec| (index, spec.sprite.clone(), spec.sprite_cell.unwrap_or(0)))
-    });
-    let brush_item = matches!(session.entity_kind.as_str(), "item" | "item_spawner");
-    let (target, path, cell) = match selected {
-        Some((index, path, cell)) => (ItemSpriteTarget::Entity(index), path, cell),
-        None if brush_item => (
-            ItemSpriteTarget::Brush,
-            session.entity_sprite.clone(),
-            session.entity_sprite_cell,
-        ),
-        None => {
-            let mut open = true;
-            egui::Window::new("道具贴图（32×32 框选）")
-                .open(&mut open)
-                .show(ctx, |ui| {
-                    ui.label("先选中一个 item / item_spawner 实体，或把实体笔刷切到 item。");
-                });
-            window.open = open;
-            return;
-        }
-    };
-    let Some(path) = path.filter(|path| !path.trim().is_empty()) else {
+    let kind = window.kind;
+    let config = session.item_config(kind);
+    let Some(path) = config.sprite.clone().filter(|path| !path.trim().is_empty()) else {
         let mut open = true;
-        egui::Window::new("道具贴图（32×32 框选）")
+        egui::Window::new(format!("道具贴图（32×32 框选）— {}", kind.label()))
             .open(&mut open)
             .show(ctx, |ui| {
-                ui.label("先在该实体的「贴图」输入框选择 PNG。");
+                ui.label("先在底部「道具」面板为该道具设置 PNG 贴图。");
             });
         window.open = open;
         return;
     };
     if !crate::tile_tool::ensure_item_texture(ctx, images, &path, store) {
         let mut open = true;
-        egui::Window::new("道具贴图（32×32 框选）")
+        egui::Window::new(format!("道具贴图（32×32 框选）— {}", kind.label()))
             .open(&mut open)
             .show(ctx, |ui| {
                 ui.colored_label(egui::Color32::RED, format!("贴图加载失败：{path}"));
@@ -862,8 +781,9 @@ fn item_texture_window(
     let cell_px = 32.0_f32;
     let cols = (sheet.x / cell_px).round().max(1.0) as usize;
     let rows = (sheet.y / cell_px).round().max(1.0) as usize;
+    let cell = config.sprite_cell;
     let mut open = true;
-    egui::Window::new("道具贴图（32×32 框选）")
+    egui::Window::new(format!("道具贴图（32×32 框选）— {}", kind.label()))
         .open(&mut open)
         .resizable(false)
         .show(ctx, |ui| {
@@ -881,13 +801,7 @@ fn item_texture_window(
                 let local = (pos - rect.min) / scale;
                 let col = ((local.x / cell_px).floor() as isize).clamp(0, cols as isize - 1) as u32;
                 let row = ((local.y / cell_px).floor() as isize).clamp(0, rows as isize - 1) as u32;
-                let index = row * cols as u32 + col;
-                match target {
-                    ItemSpriteTarget::Brush => session.entity_sprite_cell = index,
-                    ItemSpriteTarget::Entity(entity) => {
-                        session.set_entity_sprite_cell(entity, index);
-                    }
-                }
+                session.set_item_sprite_cell(kind, row * cols as u32 + col);
             }
             // 固定 32×32 网格 + 当前格高亮
             let painter = ui.painter();
@@ -912,9 +826,89 @@ fn item_texture_window(
                 egui::Stroke::new(2.0, egui::Color32::YELLOW),
                 egui::StrokeKind::Inside,
             );
-            ui.label("点击任意 32×32 格即可设为该道具的贴图格。");
+            ui.label("点击任意 32×32 格即可设为该道具的共享贴图格。");
         });
     window.open = open;
+}
+
+/// 底部「道具」面板：按 `ItemKind` 统一设置共享贴图 / 32×32 格 / buff 持续时间。
+///
+/// 贴图与持续时间**不属于单个实体**：同一道具类型在整张关卡共用一份配置（`03` §3.5）。
+fn item_panel(
+    ui: &mut egui::Ui,
+    session: &mut EditorSession,
+    picker: &mut crate::tile_tool::AssetPickerState,
+    window: &mut ItemTextureWindow,
+) {
+    const KINDS: [level_format::ItemKind; 3] = [
+        level_format::ItemKind::SuperJump,
+        level_format::ItemKind::Speed,
+        level_format::ItemKind::DoubleJump,
+    ];
+    const PICKER_IDS: [&str; 3] = [
+        "item_sprite_super_jump",
+        "item_sprite_speed",
+        "item_sprite_double_jump",
+    ];
+
+    ui.heading("道具（按类型共享）");
+    ui.label("贴图 / 贴图格 / 持续时间属于道具类型，关卡内所有 item 与 item_spawner 共用。");
+    for (index, kind) in KINDS.into_iter().enumerate() {
+        let config = session.item_config(kind);
+        let hint = match kind {
+            level_format::ItemKind::SuperJump => "sprites/items/super_jump.png",
+            level_format::ItemKind::Speed => "sprites/items/speed.png",
+            level_format::ItemKind::DoubleJump => "sprites/items/double_jump.png",
+        };
+        ui.group(|ui| {
+            ui.horizontal(|ui| {
+                ui.heading(kind.label());
+                ui.label(format!("格 #{}", config.sprite_cell));
+                if ui.small_button("预览/框选").clicked() {
+                    window.open = true;
+                    window.kind = kind;
+                }
+            });
+            let mut sprite = config.sprite.clone().unwrap_or_default();
+            let mut changed = false;
+            ui.horizontal(|ui| {
+                ui.label("贴图");
+                changed |= ui
+                    .add(
+                        egui::TextEdit::singleline(&mut sprite)
+                            .desired_width(320.0)
+                            .hint_text(hint),
+                    )
+                    .changed();
+                if let Some(picked) = crate::tile_tool::asset_picker(ui, picker, PICKER_IDS[index])
+                {
+                    sprite = picked;
+                    changed = true;
+                }
+                if ui.small_button("清除").clicked() {
+                    session.set_item_sprite(kind, None);
+                }
+            });
+            if changed {
+                session.set_item_sprite(kind, Some(sprite));
+            }
+            let mut duration = config.duration_secs;
+            ui.horizontal(|ui| {
+                ui.label("持续时间");
+                if ui
+                    .add(
+                        egui::DragValue::new(&mut duration)
+                            .range(0.1..=600.0)
+                            .speed(0.1)
+                            .suffix(" 秒"),
+                    )
+                    .changed()
+                {
+                    session.set_item_duration(kind, duration);
+                }
+            });
+        });
+    }
 }
 
 /// 底部栏：保存/试玩/撤销/重做 + 路径；标签页与外部改动提示同行；
@@ -932,6 +926,7 @@ fn bottom_panel(
     bottom_tab: &mut BottomTab,
     bottom_height: &mut BottomHeight,
     picker: &mut crate::tile_tool::AssetPickerState,
+    item_window: &mut ItemTextureWindow,
 ) {
     egui::Panel::bottom("animj_editor_bottom")
         // 自绘分隔条 + 固定高度：面板永远吸附窗口底边（内置 resizable 在自定义根 Ui 下会脱离底边）
@@ -1005,6 +1000,12 @@ fn bottom_panel(
                     .clicked()
                 {
                     *bottom_tab = BottomTab::Player;
+                }
+                if ui
+                    .selectable_label(*bottom_tab == BottomTab::Items, "道具")
+                    .clicked()
+                {
+                    *bottom_tab = BottomTab::Items;
                 }
                 // 外部改动（`08` §8.7.4）：显式确认，绝不自动覆盖编辑缓冲
                 if session.pending_external.is_some() {
@@ -1102,6 +1103,7 @@ fn bottom_panel(
                         player_edit,
                         sheet_texture.0.as_ref(),
                     ),
+                    BottomTab::Items => item_panel(ui, session, picker, item_window),
                 });
         });
 }
@@ -1257,14 +1259,10 @@ fn panels(
         &mut bottom_tab,
         &mut bottom_height,
         &mut item_ui.picker,
-    );
-    left_panel(&mut root, &mut session, &tile_texture);
-    right_panel(
-        &mut root,
-        &mut session,
-        &mut item_ui.picker,
         &mut item_ui.window,
     );
+    left_panel(&mut root, &mut session, &tile_texture);
+    right_panel(&mut root, &mut session);
     item_texture_window(
         ctx,
         &mut session,
@@ -1374,6 +1372,7 @@ mod tests {
             tileset_columns: 8,
             palette: Vec::new(),
             background: None,
+            items: Vec::new(),
             grid: level_format::Grid { cols: 2, rows: 3 },
             start: level_format::RoomCoord { col: 0, row: 0 },
             rooms: (0..6)

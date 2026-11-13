@@ -335,8 +335,13 @@ fn spawn_room(
                 .unwrap_or(Color::srgb(0.9, 0.9, 0.4)),
             _ => Color::srgb(0.9, 0.9, 0.4),
         };
-        let sprite = if item_like {
-            spec.sprite
+        let sprite = if let Some(config) = spec
+            .item
+            .filter(|_| item_like)
+            .map(|kind| doc.item_config(kind))
+        {
+            config
+                .sprite
                 .as_deref()
                 .and_then(|path| game::render::tiles::load_image(path, images))
                 .map(|handle| {
@@ -351,7 +356,7 @@ fn spawn_room(
                         None,
                         None,
                     ));
-                    let index = (spec.sprite_cell.unwrap_or(0) as usize) % columns as usize;
+                    let index = (config.sprite_cell as usize) % columns as usize;
                     let mut sprite =
                         Sprite::from_atlas_image(handle, TextureAtlas { layout, index });
                     sprite.custom_size = Some(Vec2::splat(level_format::TILE_PX as f32));
@@ -388,6 +393,7 @@ mod tests {
             tileset_columns: 8,
             palette: Vec::new(),
             background,
+            items: Vec::new(),
             rooms: Vec::new(),
         }
     }

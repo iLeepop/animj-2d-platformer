@@ -7,7 +7,7 @@
 use bevy::prelude::*;
 use level_format::ItemKind;
 
-use crate::config::item::{ITEM_DURATION_SECS, ITEM_RESPAWN_SECS};
+use crate::config::item::ITEM_RESPAWN_SECS;
 use crate::config::physics::{
     FIXED_DT, ITEM_DOUBLE_JUMP_MAX_AIR_JUMPS, ITEM_DOUBLE_JUMP_VELOCITY_MULT,
     ITEM_SPEED_ACCEL_MULT, ITEM_SPEED_MAX_MULT, ITEM_SUPER_JUMP_VELOCITY_MULT, PICKUP_INFLATE,
@@ -18,7 +18,7 @@ use crate::room::{PickedZones, RoomZone, RoomZoneKind, ZoneId, aabb_overlaps};
 
 /// 角色当前携带的道具（`kind` = `None` 表示空手）与剩余 buff 时间。
 ///
-/// 同一角色至多一个道具；再次拾取覆盖并重置 [`ITEM_DURATION_SECS`]。
+/// 同一角色至多一个道具；再次拾取覆盖并按关卡 `items` 配置重置持续时间。
 #[derive(Component, Debug, Clone, Copy, Default, PartialEq)]
 pub struct CarriedItem {
     pub kind: Option<ItemKind>,
@@ -31,10 +31,10 @@ impl CarriedItem {
         self.kind
     }
 
-    /// 拾取 / 覆盖道具，并把持续时间重置为满。
-    pub fn pick(&mut self, kind: ItemKind) {
+    /// 拾取 / 覆盖道具，并把持续时间重置为该道具在关卡里的配置值。
+    pub fn pick(&mut self, kind: ItemKind, duration_secs: f32) {
         self.kind = Some(kind);
-        self.remaining = ITEM_DURATION_SECS;
+        self.remaining = duration_secs.max(0.01);
     }
 
     /// 清除 buff（死亡或超时）。
@@ -125,6 +125,7 @@ impl Plugin for ItemPlugin {
 #[allow(clippy::type_complexity)]
 fn pickup_items(
     mut commands: Commands,
+    loaded: Option<Res<crate::world::load::LoadedLevel>>,
     mut players: Query<(&PlayerId, &PlayerMotion, &mut CarriedItem)>,
     mut zones: Query<(
         Entity,
@@ -150,7 +151,11 @@ fn pickup_items(
             continue;
         };
         let replaced = carried.kind;
-        carried.pick(kind);
+        let duration = loaded
+            .as_ref()
+            .map(|loaded| loaded.level.item_config(kind).duration_secs)
+            .unwrap_or(level_format::DEFAULT_ITEM_DURATION_SECS);
+        carried.pick(kind, duration);
         match spawner.as_mut() {
             Some(spawner) => {
                 // 生成器：隐藏并开始 1.5 s 重生倒计时，不销毁实体。
@@ -334,7 +339,27 @@ mod tests {
 
         let mut app = App::new();
         app.init_resource::<PickedZones>()
-            .add_message::<ItemPicked>();
+            .add_message::<ItemPicked>()
+            .insert_resource(crate::world::load::LoadedLevel {
+                level: level_format::Level {
+                    version: level_format::VERSION,
+                    name: "t".into(),
+                    grid: level_format::Grid { cols: 1, rows: 1 },
+                    start: level_format::RoomCoord { col: 0, row: 0 },
+                    tileset: None,
+                    tileset_columns: 8,
+                    palette: Vec::new(),
+                    background: None,
+                    items: vec![level_format::ItemDef {
+                        kind: ItemKind::Speed,
+                        sprite: None,
+                        sprite_cell: None,
+                        duration_secs: Some(3.0),
+                    }],
+                    rooms: Vec::new(),
+                },
+                handle: Default::default(),
+            });
         let center = Vec2::new(100.0, 100.0);
         let player = app
             .world_mut()
@@ -363,7 +388,8 @@ mod tests {
         );
         assert_eq!(
             app.world().get::<CarriedItem>(player).unwrap().remaining,
-            ITEM_DURATION_SECS
+            3.0,
+            "持续时间来自关卡 items 配置"
         );
         assert!(app.world().get_entity(speed).is_err(), "道具实体应销毁");
         assert!(app.world().resource::<PickedZones>().0.contains(&1));
@@ -380,7 +406,7 @@ mod tests {
         );
         assert_eq!(
             app.world().get::<CarriedItem>(player).unwrap().remaining,
-            ITEM_DURATION_SECS,
+            level_format::DEFAULT_ITEM_DURATION_SECS,
             "覆盖拾取重置 buff 时间"
         );
     }

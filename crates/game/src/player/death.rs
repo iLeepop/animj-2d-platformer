@@ -239,6 +239,7 @@ mod tests {
             tileset_columns: 8,
             palette: Vec::new(),
             background: None,
+            items: Vec::new(),
             rooms: vec![room(true, checkpoint_at), room(false, None)],
         }
     }

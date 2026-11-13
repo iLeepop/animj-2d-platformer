@@ -227,6 +227,7 @@ mod tests {
             tileset_columns: 8,
             palette: Vec::new(),
             background: None,
+            items: Vec::new(),
             rooms: vec![Room {
                 name: None,
                 tiles,
@@ -317,6 +318,7 @@ mod tests {
             tileset_columns: 8,
             palette: Vec::new(),
             background: None,
+            items: Vec::new(),
             rooms: vec![make_room(left), make_room(right)],
         }
     }
@@ -426,6 +428,7 @@ mod tests {
             tileset_columns: 8,
             palette: Vec::new(),
             background: None,
+            items: Vec::new(),
             rooms: vec![make_room(top), make_room(bottom)],
         };
         let tiles = LevelTiles::from_level(&level);
