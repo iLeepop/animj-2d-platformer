@@ -18,7 +18,7 @@ use crate::config::net::{
 };
 use crate::config::physics::{COYOTE_STEPS, DEFAULT_PHYSICS, FIXED_DT};
 use crate::config::render::VIEWPORT_W;
-use crate::physics::{Aabb, Body, StepInput, StepOutcome, step_with_players};
+use crate::physics::{Body, StepInput, StepOutcome, step};
 use crate::player::spawn::{PlayerSheet, spawn_player};
 use crate::player::{
     PlayerFacing, PlayerId, PlayerInput, PlayerInputs, PlayerMotion, PlayerStepOutcome, next_facing,
@@ -425,21 +425,13 @@ pub fn apply_snapshot(
                 .iter_mut()
                 .find(|(_, id, _, _, _, _)| id.0 == local_id),
         ) {
-            // 与主机同一物理函数；其他玩家用本快照的 AABB 当实心障碍。
+            // 与主机同一物理函数；玩家之间不碰撞（`06` §6.11），重放只受瓦片影响。
             let mut cfg = DEFAULT_PHYSICS;
             cfg.player_size = collision.size_vec();
             crate::player::items::apply_item_to_physics(&mut cfg, local_snap.item);
-            let others: Vec<Aabb> = snapshot
-                .players
-                .iter()
-                .filter(|player| player.id != local_id)
-                .map(|player| {
-                    Aabb::from_center_size(Vec2::new(player.x, player.y), cfg.player_size)
-                })
-                .collect();
             for (_, input) in &client.pending_inputs {
                 let mut out = StepOutcome::default();
-                step_with_players(
+                step(
                     &cfg,
                     tiles.as_ref(),
                     &mut motion.0,
@@ -448,7 +440,6 @@ pub fn apply_snapshot(
                         jump_pressed: input.jump_pressed,
                         jump_held: input.jump_held,
                     },
-                    &others,
                     &mut out,
                 );
                 outcome.0 = out;
@@ -645,11 +636,6 @@ pub fn send_input_and_predict(
     let Some(tiles) = tiles.as_ref() else {
         return;
     };
-    let others: Vec<Aabb> = players
-        .iter()
-        .filter(|(id, _, _, _, _)| id.0 != local_id)
-        .map(|(_, motion, _, _, _)| motion.0.aabb)
-        .collect();
     let Some((_, mut motion, mut outcome, mut facing, carried)) =
         players.iter_mut().find(|(id, _, _, _, _)| id.0 == local_id)
     else {
@@ -659,7 +645,7 @@ pub fn send_input_and_predict(
     let mut cfg = DEFAULT_PHYSICS;
     cfg.player_size = collision.size_vec();
     crate::player::items::apply_item_to_physics(&mut cfg, carried.kind);
-    step_with_players(
+    step(
         &cfg,
         tiles.as_ref(),
         &mut motion.0,
@@ -668,7 +654,6 @@ pub fn send_input_and_predict(
             jump_pressed: input.jump_pressed,
             jump_held: input.jump_held,
         },
-        &others,
         &mut out,
     );
     outcome.0 = out;

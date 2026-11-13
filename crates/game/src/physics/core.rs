@@ -70,27 +70,16 @@ pub struct StepOutcome {
     pub air_jumped: bool,
 }
 
-/// 推进一个固定步（玩家之间**不**碰撞）。等价于 [`step_with_players`] 的空障碍列表。
+/// 推进一个固定步。**唯一**的状态转移函数（`06` §6.1.4）。
+///
+/// 只与世界瓦片碰撞：**玩家之间不碰撞**（`06` §6.11，2026-11-13 移除）。
+/// 移除原因：客户端预测若把快照里的其他玩家当成实心障碍，会和主机的实时位置分叉，
+/// 表现为加入方角色被快照反复拉回。
 pub fn step(
     cfg: &PhysicsConfig,
     world: &dyn TileWorld,
     body: &mut Body,
     input: StepInput,
-    out: &mut StepOutcome,
-) {
-    step_with_players(cfg, world, body, input, &[], out);
-}
-
-/// 推进一个固定步，并把 `others`（其他玩家的 AABB）当作**实心**障碍。
-///
-/// **唯一**的状态转移函数。`others` 的顺序不影响结果：X/Y 分离总是取最近的面。
-/// 语义见 `06` §6.4.10：玩家互相当作可站立、可撞墙的实心盒，不做推挤。
-pub fn step_with_players(
-    cfg: &PhysicsConfig,
-    world: &dyn TileWorld,
-    body: &mut Body,
-    input: StepInput,
-    others: &[Aabb],
     out: &mut StepOutcome,
 ) {
     *out = StepOutcome::default();
@@ -181,12 +170,12 @@ pub fn step_with_players(
     let sub = displacement / n as f32;
     for _ in 0..n {
         if sub.x != 0.0 {
-            move_x(cfg, world, &mut body.aabb, sub.x, others, out);
+            move_x(cfg, world, &mut body.aabb, sub.x, out);
         }
         if sub.y != 0.0 {
             // `prev_foot` 在每个子步开始前刷新：单向平台的三条件依赖它（§6.4.1 / §6.4.5）
             let prev_foot = body.aabb.min.y;
-            move_y(cfg, world, &mut body.aabb, sub.y, prev_foot, others, out);
+            move_y(cfg, world, &mut body.aabb, sub.y, prev_foot, out);
         }
     }
 
@@ -202,7 +191,7 @@ pub fn step_with_players(
     // 若不加 `vel.y <= 0`，上升穿过单向平台时脚底一进入容差带就会被判为接地，
     // 该步 `a_y` 变成 0（丢掉一步重力 ⇒ 跳跃高度偏高且上升被"吸住"）。
     // 这是 T9 抓到的、06 §6.3.2 步骤 6 未覆盖的相互作用。
-    match nearest_standable_top_below(cfg, world, &body.aabb, others) {
+    match nearest_standable_top_below(cfg, world, &body.aabb) {
         Some(top) if body.vel.y <= 0.0 => {
             body.aabb.min.y = top; // 吸附到顶面：零 skin，面精确贴合
             body.aabb.max.y = top + cfg.player_size.y; // 保持尺寸（§6.4.9）
@@ -349,7 +338,6 @@ fn move_x(
     world: &dyn TileWorld,
     aabb: &mut Aabb,
     dx: f32,
-    others: &[Aabb],
     out: &mut StepOutcome,
 ) {
     let width = cfg.player_size.x;
@@ -396,19 +384,7 @@ fn move_x(
             });
         }
     }
-    // 其他玩家 = 实心盒（`06` §6.4.10）。竖直方向必须真的重叠才算挡路。
-    for other in others {
-        let vertical_overlap =
-            new.max.y > other.min.y + cfg.geom_eps && new.min.y < other.max.y - cfg.geom_eps;
-        if !vertical_overlap {
-            continue;
-        }
-        if dx > 0.0 && new.max.x > other.min.x + cfg.geom_eps {
-            push(other.min.x);
-        } else if dx < 0.0 && new.min.x < other.max.x - cfg.geom_eps {
-            push(other.max.x);
-        }
-    }
+    // 其他玩家不参与分离：玩家之间不碰撞（`06` §6.11）。
 
     let mut result = new;
     if let Some(l) = limit {
@@ -433,7 +409,6 @@ fn move_y(
     aabb: &mut Aabb,
     dy: f32,
     prev_foot: f32,
-    others: &[Aabb],
     out: &mut StepOutcome,
 ) {
     let height = cfg.player_size.y;
@@ -502,25 +477,7 @@ fn move_y(
         }
     }
 
-    // 其他玩家 = 实心盒（`06` §6.4.10）：可以站在头上，也会撞到脚底。
-    for other in others {
-        let horizontal_overlap =
-            new.max.x > other.min.x + cfg.geom_eps && new.min.x < other.max.x - cfg.geom_eps;
-        if !horizontal_overlap {
-            continue;
-        }
-        if dy < 0.0 {
-            let top = other.max.y;
-            if prev_foot >= top - cfg.geom_eps && new.min.y < top {
-                land_top = Some(land_top.map_or(top, |t: f32| t.max(top)));
-            }
-        } else if dy > 0.0 {
-            let bottom = other.min.y;
-            if prev.max.y <= bottom + cfg.geom_eps && new.max.y > bottom {
-                head_bottom = Some(head_bottom.map_or(bottom, |b: f32| b.min(bottom)));
-            }
-        }
-    }
+    // 其他玩家不参与 Y 轴分离（`06` §6.11）。
 
     let mut result = new;
     let mut resolved = false;
@@ -539,7 +496,7 @@ fn move_y(
     // 落地吸附：本子步没有任何分离时，检查脚底是否已在容差带内（浮点缝隙的唯一兜底）
     if !resolved
         && dy < 0.0
-        && let Some(top) = nearest_standable_top_below(cfg, world, &result, others)
+        && let Some(top) = nearest_standable_top_below(cfg, world, &result)
     {
         result.min.y = top;
         result.max.y = top + height;
@@ -556,7 +513,6 @@ pub(crate) fn nearest_standable_top_below(
     cfg: &PhysicsConfig,
     world: &dyn TileWorld,
     aabb: &Aabb,
-    others: &[Aabb],
 ) -> Option<f32> {
     let eps = cfg.geom_eps;
     let probe_min_x = aabb.min.x + eps;
@@ -581,22 +537,11 @@ pub(crate) fn nearest_standable_top_below(
                 }
                 let top = part.max.y;
                 // 只认可脚底下方 `CONTACT_TOLERANCE` 之内的顶面：整格时行范围已经隐含了这一点，
-                // 自定义块的顶面可以在格内任意高度，必须显式加下界（与其他玩家分支一致）。
+                // 自定义块的顶面可以在格内任意高度，必须显式加下界。
                 if top <= aabb.min.y + eps && top >= aabb.min.y - cfg.contact_tolerance {
                     best = Some(best.map_or(top, |b: f32| b.max(top)));
                 }
             });
-        }
-    }
-    // 站在其他玩家头上（`06` §6.4.10）：与瓦片同一条容差带。
-    for other in others {
-        let horizontal_overlap = probe_max_x >= other.min.x && probe_min_x <= other.max.x;
-        if !horizontal_overlap {
-            continue;
-        }
-        let top = other.max.y;
-        if top <= aabb.min.y + eps && top >= aabb.min.y - cfg.contact_tolerance {
-            best = Some(best.map_or(top, |b: f32| b.max(top)));
         }
     }
     best

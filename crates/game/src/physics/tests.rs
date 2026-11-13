@@ -1,4 +1,4 @@
-//! `docs/06-physics-and-movement.md` §6.9 的 T1–T21 不变量测试。
+//! `docs/06-physics-and-movement.md` §6.9 的 T1–T21 与 §6.11 的 T22–T24 不变量测试。
 //!
 //! 全部**不需要 Bevy App / 窗口 / GPU**：`TestWorld` 实现 [`TileWorld`] 只需要一个方法。
 //! T20 的房间映射部分在 `tiles.rs` 的测试里（那里才有真实的 `LevelTiles`）。
@@ -6,7 +6,7 @@
 use bevy::math::Vec2;
 
 use super::aabb::Aabb;
-use super::core::{TILE, overlaps_tile_kind, step, step_with_players, substep_count};
+use super::core::{TILE, overlaps_tile_kind, step, substep_count};
 use super::tile::{TileKind, TileParts, TileWorld};
 use super::{Body, StepInput, StepOutcome};
 use crate::config::physics::*;
@@ -1089,82 +1089,88 @@ fn t21_reset_gives_clean_state() {
     assert!(!out.jumped, "重置后第一步不得起跳");
 }
 
-// ---------- 玩家之间：实心盒（`06` §6.4.10）----------
+// ---------- 玩家之间：不碰撞（`06` §6.11，2026-11-13 移除实心语义）----------
 
-/// 另一个玩家挡在右边：水平移动被夹在对方左面，速度被吸收。
+/// 两个 AABB 是否真实相交（严格重叠，不算面贴合）。
+fn overlaps(a: Aabb, b: Aabb) -> bool {
+    a.min.x < b.max.x && b.min.x < a.max.x && a.min.y < b.max.y && b.min.y < a.max.y
+}
+
+/// 另一个玩家挡在右边：水平移动**穿过**对方，不被夹取、不产生撞墙。
 #[test]
-fn other_player_blocks_horizontal_movement() {
+fn players_pass_through_each_other_horizontally() {
     let world = flat_world();
     let cfg = DEFAULT_PHYSICS;
-    let mut body = Body::at_center(Vec2::new(100.0, TILE + PLAYER_SIZE.y / 2.0));
-    let other = Aabb::from_center_size(Vec2::new(160.0, TILE + PLAYER_SIZE.y / 2.0), PLAYER_SIZE);
+    let mut left = standing_on(100.0, TILE);
+    let right = standing_on(160.0, TILE);
+    let right_center = right.aabb.center();
     let mut out = StepOutcome::default();
+    let mut overlapped = false;
     for _ in 0..120 {
-        step_with_players(
+        step(
             &cfg,
             &world,
-            &mut body,
+            &mut left,
             StepInput {
                 move_x: 1,
                 ..Default::default()
             },
-            &[other],
             &mut out,
         );
+        overlapped |= overlaps(left.aabb, right.aabb);
     }
+    assert!(overlapped, "两个玩家的 AABB 必须在中途重叠（互相穿过）");
     assert!(
-        body.aabb.max.x <= other.min.x + 1e-3,
-        "不得穿过另一个玩家：max.x = {}，对方 min.x = {}",
-        body.aabb.max.x,
-        other.min.x
+        left.aabb.min.x > right.aabb.max.x,
+        "左玩家必须完全越过右玩家：{left_aabb:?} vs {right_aabb:?}",
+        left_aabb = left.aabb,
+        right_aabb = right.aabb
     );
-    assert_eq!(out.hit_wall_x, 1);
-    assert_box_invariant(&body, "撞到另一个玩家");
+    assert_box_invariant(&left, "穿过另一个玩家");
+    assert_eq!(out.hit_wall_x, 0, "玩家之间不产生撞墙");
+    assert_eq!(right.aabb.center(), right_center, "未推进的玩家不得移动");
 }
 
-/// 站在另一个玩家头上：支撑探测必须把他当可站立面，且不穿过去。
+/// 从上方落到另一个玩家所在处：穿过对方身体，只被瓦片地面接住。
 #[test]
-fn standing_on_another_player_grounds_the_body() {
+fn falling_player_passes_through_another_player() {
     let world = flat_world();
     let cfg = DEFAULT_PHYSICS;
-    // 对方站在地板上（脚底 = TILE），顶面 = TILE + 28。
-    let other = Aabb::from_center_size(Vec2::new(160.0, TILE + PLAYER_SIZE.y / 2.0), PLAYER_SIZE);
-    let top = other.max.y;
-    let mut body = Body::at_center(Vec2::new(160.0, top + PLAYER_SIZE.y / 2.0 + 1.0));
+    let mut below = standing_on(160.0, TILE);
+    let below_center = below.aabb.center();
+    // 起点：对方头顶再高 8 px。
+    let mut above = Body::at_center(Vec2::new(
+        160.0,
+        below.aabb.max.y + PLAYER_SIZE.y * 0.5 + 8.0,
+    ));
     let mut out = StepOutcome::default();
-    for _ in 0..60 {
-        step_with_players(
-            &cfg,
-            &world,
-            &mut body,
-            StepInput::default(),
-            &[other],
-            &mut out,
-        );
+    let mut overlapped = false;
+    for _ in 0..120 {
+        step(&cfg, &world, &mut above, StepInput::default(), &mut out);
+        step(&cfg, &world, &mut below, StepInput::default(), &mut out);
+        overlapped |= overlaps(above.aabb, below.aabb);
     }
-    assert!(body.grounded, "站在另一个玩家头上必须算 grounded");
+    assert!(overlapped, "下落必须穿过对方身体");
+    assert!(above.grounded, "最终必须落在瓦片地面上");
     assert!(
-        (body.aabb.min.y - top).abs() < 1e-3,
-        "脚底必须贴合对方顶面：{} vs {}",
-        body.aabb.min.y,
-        top
+        (above.aabb.min.y - TILE).abs() < 1e-3,
+        "脚底必须贴合地面，而不是对方头顶：{}",
+        above.aabb.min.y
     );
-    assert_box_invariant(&body, "站在另一个玩家头上");
+    assert_eq!(below.aabb.center(), below_center, "被穿过者不得移动");
 }
 
-/// 下方玩家跳起撞到上方玩家：撞头吸收上升速度，位置不重叠。
+/// 从下方起跳穿过上方玩家：不撞头、不吸收速度，可完整跳完并落回地面。
 #[test]
-fn other_player_blocks_jumping_through() {
+fn jumping_player_passes_through_a_player_above() {
     let world = flat_world();
     let cfg = DEFAULT_PHYSICS;
-    let other = Aabb::from_center_size(
-        Vec2::new(160.0, TILE + PLAYER_SIZE.y * 1.5 + 16.0),
-        PLAYER_SIZE,
-    );
-    let mut body = Body::at_center(Vec2::new(160.0, TILE + PLAYER_SIZE.y / 2.0));
+    let above = Body::at_center(Vec2::new(160.0, TILE + PLAYER_SIZE.y * 1.5 + 16.0));
+    let above_center = above.aabb.center();
+    let mut body = standing_on(160.0, TILE);
     let mut out = StepOutcome::default();
-    // 起跳
-    step_with_players(
+    let mut overlapped = false;
+    step(
         &cfg,
         &world,
         &mut body,
@@ -1173,11 +1179,10 @@ fn other_player_blocks_jumping_through() {
             jump_held: true,
             ..Default::default()
         },
-        &[other],
         &mut out,
     );
     for _ in 0..120 {
-        step_with_players(
+        step(
             &cfg,
             &world,
             &mut body,
@@ -1185,17 +1190,15 @@ fn other_player_blocks_jumping_through() {
                 jump_held: true,
                 ..Default::default()
             },
-            &[other],
             &mut out,
         );
-        assert!(
-            body.aabb.max.y <= other.min.y + 1e-3,
-            "不得穿过上方玩家：max.y = {}，对方 min.y = {}",
-            body.aabb.max.y,
-            other.min.y
-        );
+        assert!(!out.head_bumped, "玩家之间不得撞头");
+        overlapped |= overlaps(body.aabb, above.aabb);
     }
-    assert_box_invariant(&body, "撞到上方玩家");
+    assert!(overlapped, "起跳必须穿过上方玩家");
+    assert!(body.grounded, "必须完整落地");
+    assert_eq!(above.aabb.center(), above_center, "上方玩家不得移动");
+    assert_box_invariant(&body, "穿过上方玩家");
 }
 
 // ---------- 自定义瓦片碰撞范围（`03` §3.9）----------

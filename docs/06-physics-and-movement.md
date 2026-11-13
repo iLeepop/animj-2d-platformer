@@ -93,7 +93,7 @@ pub fn overlaps_tile_kind(world: &dyn TileWorld, aabb: Aabb,
 |---|---|---|
 | 数据 | `crates/game/src/physics/{aabb.rs,tile.rs,core.rs}` | `Aabb`、`TileKind`、`TileWorld`、`step` |
 | 常量 | `crates/game/src/config.rs` 的 `pub mod physics`（见 `00` §0.5） | §6.2 / §6.3 / §6.4 / §6.5 全部常量 + `PhysicsConfig` |
-| 适配 | `crates/game/src/player/mod.rs` | `PlayerMotion(Body)` + `PlayerId` 组件、按玩家槽位采样、调用 `step_with_players`、写回 |
+| 适配 | `crates/game/src/player/mod.rs` | `PlayerMotion(Body)` + `PlayerId` 组件、按玩家槽位采样、调用 `step`、写回 |
 | 传感器 | `crates/game/src/player/mod.rs` | Hazard / 拾取物 / 目标区域判定（§6.5） |
 | 投影 | `crates/game/src/render/`（见 `07`） | `Aabb → Transform`（取整），单向 |
 
@@ -102,7 +102,7 @@ pub fn overlaps_tile_kind(world: &dyn TileWorld, aabb: Aabb,
 | schedule | 系统（按序） | 说明 |
 |---|---|---|
 | `PreUpdate` | `sample_input` | `ButtonInput<KeyCode>` → `PlayerInputs.slots`（`00` D16），跳跃按下**锁存**（见下）。**必须 `.after(bevy::input::InputSystems)`**：`ButtonInput` 由 Bevy 的输入系统在同一 schedule 内更新，不排序会读到上一帧（表现为"按键被吞"） |
-| `FixedUpdate` | `apply_player_physics` | 按 `PlayerId` 升序对每个玩家调 `physics::step_with_players`（.after 输入采样；客户端不运行） |
+| `FixedUpdate` | `apply_player_physics` | 按 `PlayerId` 升序对每个玩家调 `physics::step`（.after 输入采样；客户端不运行） |
 | `FixedUpdate` | `check_hazards` | 死亡传感器（.after 物理） |
 | `FixedUpdate` | `check_pickups_and_zones` | 拾取与目标区域（.after 物理） |
 | `PostUpdate` | `sync_player_transform` | `Aabb → Transform` 取整；排在该帧 transform 传播系统集 `TransformSystems::Propagate` **之前**（【已验证：官方示例要求相关系统与 `TransformSystems::Propagate` 显式排序】<https://docs.rs/bevy/0.20.0/src/pixel_grid_snap/pixel_grid_snap.rs.html>）|
@@ -1095,25 +1095,36 @@ transform.translation = (render_pos.x, render_pos.y, Z)        // Z 由 07 给�
 > 本文不含**【UNVERIFIED】**条目：所有 Bevy API 断言均有 0.20.0 文档/示例源码直证，
 > 其余全部是本项目自研的数值推导与几何论证（可被 §6.9 的测试逐条检验）。
 
-## 6.11 多玩家碰撞（本地双人 / 联机）
+## 6.11 玩家之间不碰撞（本地双人 / 联机）
 
-- 玩家之间**互为实心 AABB**：不能互相穿过；可以撞到对方的侧面/头顶，也可以站到对方头上。
-  碰撞语义与 `#` 实心瓦片一致（`§6.4.3` / `§6.4.4`），但没有"单向"变体。
-- 入口：`physics::step_with_players(cfg, world, body, input, others: &[Aabb], out)`；
-  `step(...)` 等价于 `others = &[]`（单人路径不变）。
-- 求解顺序：`apply_player_physics` 按 `PlayerId` **升序**依次推进；每个玩家看到的是"其他玩家的当前位置"
-  （先推进者已更新）。顺序是确定的，远程/本机不会因查询迭代顺序不同而分叉。
-- 其他玩家参与两处：
-  1. X/Y 分离：取最近的面夹取（X 需竖直重叠；Y 需水平重叠且只认行进方向前方的面）。
-  2. 支撑探测：`nearest_standable_top_below` 把对方顶面当作可站立面（同一条 `CONTACT_TOLERANCE` 容差带）。
-- 不做推挤/挤压：被挡住就停，不会把对方推走；两人同时朝对方移动时会停在相邻位置。
-- 不做玩家间伤害；`Hazard` 仍只由瓦片触发（`§6.5.3`）。
-- 客户端不跑本算法：玩家位置来自主机快照（`05` §5.15.3）。ECS 适配层顺序由
-  `ecs_adapter_blocks_players_against_each_other` 锁定。
-- 测试（`physics/tests.rs`）：
-  - **T22** 另一个玩家挡在右边：120 步后 `aabb.max.x <= 对方.min.x + GEOM_EPS`，`hit_wall_x == 1`，尺寸不变。
-  - **T23** 站在另一个玩家头上：最终 `grounded == true` 且脚底贴合对方顶面，尺寸不变。
-  - **T24** 从下方起跳撞到上方玩家：每一步 `aabb.max.y <= 对方.min.y + GEOM_EPS`，尺寸不变。
+> 2026-11-13 移除玩家间碰撞：玩家只与世界瓦片碰撞，彼此可以互相穿过。
+
+### 6.11.1 语义
+
+- **唯一入口**：`physics::step(cfg, world, body, input, out)`；不存在 `others` 参数，
+  内核里也没有任何「其他玩家 = 实心盒」的分支。
+- `apply_player_physics` 按 `PlayerId` **升序**推进，但各玩家互相独立 ⇒ 推进顺序不影响结果
+  （顺序只用于让日志与快照顺序稳定）。
+- 不做推挤/挤压/玩家间伤害；`Hazard` 仍只由瓦片触发（`§6.5.3`）。
+- 多人出生仍按 `02` §2.5 就近避让（`nearest_free_spawn`），避免多人叠在同一格生成；
+  这只是生成期摆位，不是碰撞。
+- 客户端预测与主机走**同一个** `physics::step`（`05` §5.15.3），只含瓦片碰撞 ⇒
+  同一输入序列得到同一位置。
+
+### 6.11.2 为什么移除
+
+客户端只预测**自己的**角色，但它在预测时能拿到的其他玩家位置只有**上一份快照里的静态 AABB**；
+主机用的却是**实时推进中的 AABB**。只要两人相对位置稍有变化（尤其是原先的「挡住/站到头上/被推挤」），
+预测就会与主机分叉，快照到达时表现为加入方角色被反复拉回、瞬移——即联机时常见的「卡顿」。
+移除后预测与主机在碰撞上完全一致，剩下的分叉来源只有输入时序与未同步的计时器字段（`05` §5.15.5）。
+
+### 6.11.3 测试
+
+- **T22** 另一个玩家在右边：左玩家跑 120 步必须**完全越过**对方（途中两者 AABB 真实重叠过），
+  `hit_wall_x == 0`，未被推进的玩家不动，尺寸不变。
+- **T23** 从另一个玩家上方落下：穿过对方身体，最终站在瓦片地面上（脚底贴合地面，而不是对方头顶）。
+- **T24** 从下方起跳穿过上方玩家：每一步 `head_bumped == false`，可完整落回地面。
+- ECS 适配层：`ecs_adapter_players_pass_through_each_other` 锁定「适配层不把其他玩家当障碍」。
 
 ### T25 自定义碰撞范围（`03` §3.9，2026-11-08）
 

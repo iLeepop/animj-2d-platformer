@@ -3,7 +3,8 @@
 //! 只做三件事：取输入 → 调 [`crate::physics::step`] → 写回组件。**不含任何物理逻辑**。
 //!
 //! 多玩家：每个角色带 [`PlayerId`]，输入按 id 放在 [`PlayerInputs`] 的槽位里。
-//! 物理按 id 升序依次推进，后推进的玩家会撞到先推进玩家的新位置（确定性、无推挤抖动）。
+//! **玩家之间不碰撞**（`06` §6.11）：每个角色只与世界瓦片碰撞，因此推进顺序不影响结果；
+//! 这里仍按 id 升序处理，让日志与快照顺序稳定。
 
 pub mod collision;
 pub mod death;
@@ -14,7 +15,7 @@ pub mod spawn;
 use bevy::prelude::*;
 
 use crate::config::net::MAX_PLAYERS;
-use crate::physics::{Aabb, Body, StepInput, StepOutcome, step_with_players};
+use crate::physics::{Body, StepInput, StepOutcome, step};
 use crate::state::GameSet;
 use crate::tiles::LevelTiles;
 
@@ -139,7 +140,10 @@ fn update_player_facing(
     }
 }
 
-/// 把一个固定步推进到**所有**角色实体上（按 `PlayerId` 升序，确定性）。
+/// 把一个固定步推进到**所有**角色实体上。
+///
+/// 玩家之间不碰撞（`06` §6.11）：每个角色只与世界瓦片碰撞，所以推进顺序不影响结果；
+/// 按 `PlayerId` 升序只是让行为与日志可复现。
 pub fn apply_player_physics(
     mut inputs: ResMut<PlayerInputs>,
     collision: Res<collision::PlayerCollision>,
@@ -164,27 +168,15 @@ pub fn apply_player_physics(
         cfg
     };
 
-    // 查询迭代顺序不稳定：先按 id 排序，保证同一输入序列在所有机器上得到同一结果。
+    // 查询迭代顺序不稳定：先按 id 排序，让顺序确定。
     let mut order: Vec<(PlayerId, Entity)> = players
         .iter()
         .map(|(entity, id, _, _, _)| (*id, entity))
         .collect();
     order.sort_by_key(|(id, _)| *id);
 
-    let mut aabbs: Vec<(PlayerId, Aabb)> = players
-        .iter()
-        .map(|(_, id, motion, _, _)| (*id, motion.0.aabb))
-        .collect();
-    aabbs.sort_by_key(|(id, _)| *id);
-
     for (id, entity) in order {
         let input = inputs.get(id);
-        // 其余玩家的**当前**位置是障碍；先推进的玩家已经更新过，因此顺序决定结果。
-        let others: Vec<Aabb> = aabbs
-            .iter()
-            .filter(|(other, _)| *other != id)
-            .map(|(_, aabb)| *aabb)
-            .collect();
         let Ok((_, _, mut motion, mut outcome, carried)) = players.get_mut(entity) else {
             continue;
         };
@@ -192,7 +184,7 @@ pub fn apply_player_physics(
         let mut cfg = base_cfg;
         items::apply_item_to_physics(&mut cfg, carried.kind);
         let mut out = StepOutcome::default();
-        step_with_players(
+        step(
             &cfg,
             tiles.as_ref(),
             &mut motion.0,
@@ -201,13 +193,9 @@ pub fn apply_player_physics(
                 jump_pressed: input.jump_pressed,
                 jump_held: input.jump_held,
             },
-            &others,
             &mut out,
         );
         outcome.0 = out;
-        if let Some(entry) = aabbs.iter_mut().find(|(other, _)| *other == id) {
-            entry.1 = motion.0.aabb;
-        }
         // ★ 消费锁存：一个"按下"恰好被**一个**固定步看到。否则同帧两次固定步会把缓冲反复刷新，
         //   而没有固定步的帧会把按下吞掉（`06` §6.1.5）。
         inputs.get_mut(id).jump_pressed = false;
@@ -240,13 +228,15 @@ mod tests {
         assert_eq!(inputs.get(PlayerId(2)).move_x, 1);
     }
 
-    /// ECS 适配层必须真的把其他玩家传给物理内核（不只是内核自己支持）：
-    /// 两个玩家相邻，左边那个向右冲，一步后不得穿过右边那个（`06` §6.11）。
+    /// ECS 适配层不再把其他玩家当障碍（`06` §6.11）：
+    /// 两个玩家相向而行必须互相穿过，各自轨迹与单独推进一致。
     #[test]
-    fn ecs_adapter_blocks_players_against_each_other() {
+    fn ecs_adapter_players_pass_through_each_other() {
         use bevy::ecs::system::RunSystemOnce;
         use level_format::{Grid, Level, Room, RoomCoord};
 
+        let mut tiles = vec![".".repeat(level_format::ROOM_TILES); level_format::ROOM_TILES];
+        *tiles.last_mut().expect("至少一行") = "#".repeat(level_format::ROOM_TILES);
         let level = Level {
             version: level_format::VERSION,
             name: "t".into(),
@@ -260,7 +250,7 @@ mod tests {
             rooms: vec![Room {
                 name: None,
                 spawn: None,
-                tiles: vec![".".repeat(level_format::ROOM_TILES); level_format::ROOM_TILES],
+                tiles,
                 entities: vec![],
             }],
         };
@@ -269,8 +259,7 @@ mod tests {
             .insert_resource(crate::player::collision::PlayerCollision::default())
             .insert_resource(LevelTiles::from_level(&level));
 
-        let mut left = Body::at_center(Vec2::new(100.0, 100.0));
-        left.vel.x = crate::config::physics::MAX_RUN_SPEED;
+        let left = Body::at_center(Vec2::new(100.0, 100.0));
         let right = Body::at_center(Vec2::new(121.0, 100.0));
         let left_entity = app
             .world_mut()
@@ -278,22 +267,30 @@ mod tests {
                 PlayerId(0),
                 PlayerMotion(left),
                 PlayerStepOutcome::default(),
+                items::CarriedItem::default(),
             ))
             .id();
-        let right_center = right.aabb.center();
         let right_entity = app
             .world_mut()
             .spawn((
                 PlayerId(1),
                 PlayerMotion(right),
                 PlayerStepOutcome::default(),
+                items::CarriedItem::default(),
             ))
             .id();
-        app.world_mut().resource_mut::<PlayerInputs>().slots[0].move_x = 1;
+        {
+            let mut inputs = app.world_mut().resource_mut::<PlayerInputs>();
+            inputs.slots[0].move_x = 1;
+            inputs.slots[1].move_x = -1;
+            inputs.slots[0].jump_pressed = true;
+        }
 
-        app.world_mut()
-            .run_system_once(apply_player_physics)
-            .expect("物理适配层应能运行");
+        for _ in 0..60 {
+            app.world_mut()
+                .run_system_once(apply_player_physics)
+                .expect("物理适配层应能运行");
+        }
 
         let left_aabb = app.world().get::<PlayerMotion>(left_entity).unwrap().0.aabb;
         let right_aabb = app
@@ -302,14 +299,9 @@ mod tests {
             .unwrap()
             .0
             .aabb;
-        assert_eq!(
-            right_aabb.center().x,
-            right_center.x,
-            "静止玩家不该被水平推走"
-        );
         assert!(
-            left_aabb.max.x <= right_aabb.min.x + 1e-3,
-            "左玩家必须被右玩家挡住：{left_aabb:?} vs {right_aabb:?}"
+            left_aabb.min.x > right_aabb.max.x,
+            "玩家必须互相穿过：{left_aabb:?} vs {right_aabb:?}"
         );
         assert!(
             !app.world().resource::<PlayerInputs>().slots[0].jump_pressed,
