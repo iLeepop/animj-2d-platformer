@@ -79,7 +79,7 @@ impl Plugin for EditorPlugin {
             .init_resource::<crate::tile_tool::TileTool>()
             .init_resource::<crate::anim_tool::SheetTexture>()
             .init_resource::<crate::tile_tool::TileTexture>()
-            .init_resource::<crate::tile_tool::ItemTexture>()
+            .init_resource::<crate::tile_tool::ItemTextures>()
             .init_resource::<crate::ui::BottomTab>()
             .init_resource::<crate::tile_tool::AssetPickerState>()
             .configure_sets(

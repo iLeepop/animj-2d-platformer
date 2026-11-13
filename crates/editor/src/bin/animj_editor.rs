@@ -272,7 +272,6 @@ fn drive_demo_item(
     cli: Res<Cli>,
     tick: Res<FrameTick>,
     mut session: Option<ResMut<editor::session::EditorSession>>,
-    mut window: Option<ResMut<editor::ui::ItemTextureWindow>>,
     mut tab: ResMut<editor::ui::BottomTab>,
     mut bottom_height: ResMut<editor::ui::BottomHeight>,
     mut done: Local<bool>,
@@ -290,12 +289,8 @@ fn drive_demo_item(
         level_format::ItemKind::Speed,
         Some("sprites/items/speed.png".to_string()),
     );
-    if let Some(window) = window.as_mut() {
-        window.open = true;
-        window.kind = level_format::ItemKind::Speed;
-    }
     println!(
-        "[demo-item] 打开底部「道具」面板与 32×32 框选窗口，Speed 配置 = {:?}",
+        "[demo-item] 打开底部「道具」面板（内嵌 32×32 预览），Speed 配置 = {:?}",
         session.item_config(level_format::ItemKind::Speed)
     );
 }

@@ -17,6 +17,16 @@ pub struct ItemTexture {
     pub size: egui::Vec2,
 }
 
+/// 三种道具各自的贴图缓存（底部「道具」面板需要同时内嵌预览）。
+#[derive(Resource, Default)]
+pub struct ItemTextures(pub std::collections::HashMap<level_format::ItemKind, ItemTexture>);
+
+impl ItemTextures {
+    pub fn entry(&mut self, kind: level_format::ItemKind) -> &mut ItemTexture {
+        self.0.entry(kind).or_default()
+    }
+}
+
 /// 按路径同步加载道具贴图并上传到 egui；路径与 mtime 都未变时复用。
 pub fn ensure_item_texture(
     ctx: &egui::Context,
