@@ -126,7 +126,10 @@ impl Plugin for ItemPlugin {
 fn pickup_items(
     mut commands: Commands,
     loaded: Option<Res<crate::world::load::LoadedLevel>>,
-    mut players: Query<(&PlayerId, &PlayerMotion, &mut CarriedItem)>,
+    mut players: Query<
+        (&PlayerId, &PlayerMotion, &mut CarriedItem),
+        Without<crate::player::death::Dying>,
+    >,
     mut zones: Query<(
         Entity,
         &RoomZone,

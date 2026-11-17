@@ -16,7 +16,7 @@
 //! - `--seconds N`：按墙钟秒数退出（联机验证要两个进程同时存活）。
 //! - `--local-players 2`：本地双人；`--host`：开房；`--join <host:port>`：加入主机。
 //! - `--demo menu|levels|settings|menu-start|load-save|click|online`：界面冒烟，从主菜单开始。
-//! - `--demo walk|jump|hop|checkpoint|edge|pause|goal|item|fx|restart`：玩法冒烟，直接进默认关卡。
+//! - `--demo walk|jump|hop|checkpoint|edge|pause|goal|item|fx|death|restart`：玩法冒烟，直接进默认关卡。
 //!
 //! **入口规则**：带任何验证开关或 `--demo`（菜单类除外）时用 `StartupFlow::Direct`
 //! （`LoadMode::Auto`，与旧验证命令语义一致）；无参数启动才走主菜单。
@@ -435,6 +435,77 @@ fn drive_demo_item(
     }
 }
 
+/// 冒烟专用：把唯一玩家传送到**第一个 Hazard 瓦片**，验证「冻结 → 闪烁 → 重生」链路（`02` §2.5）。
+///
+/// 与 `goal` / `item` 一样是验证用传送：不依赖脚本路线，任何含尖刺的关卡都能复现。
+#[allow(clippy::too_many_arguments)]
+fn drive_demo_death(
+    tick: Res<FrameTick>,
+    host: Option<Res<game::net::host::HostNet>>,
+    loaded: Option<Res<game::world::load::LoadedLevel>>,
+    tiles: Option<Res<game::tiles::LevelTiles>>,
+    collision: Res<game::player::collision::PlayerCollision>,
+    mut players: Query<&mut game::player::PlayerMotion>,
+    mut done: Local<bool>,
+    mut joined: Local<Option<u32>>,
+) {
+    if *done || tick.0 < 40 {
+        return;
+    }
+    // Host 模式：等至少一名客户端加入、并给它 ~60 帧建好玩家实体后再传送，
+    // 这样联机验证能覆盖「已在场的玩家进入死亡」而不是只在首次快照里生成。
+    if let Some(host) = host.as_ref() {
+        if host.clients.is_empty() {
+            return;
+        }
+        let joined_at = *joined.get_or_insert(tick.0);
+        if tick.0 < joined_at + 60 {
+            return;
+        }
+    }
+    let (Some(loaded), Some(tiles)) = (loaded, tiles) else {
+        return;
+    };
+    let mut found = None;
+    'search: for row in 0..tiles.grid().1 {
+        for col in 0..tiles.grid().0 {
+            let Some(room) = tiles.room(col, row) else {
+                continue;
+            };
+            for ty in 0..level_format::ROOM_TILES {
+                for tx in 0..level_format::ROOM_TILES {
+                    if room.get(tx, ty) != level_format::TileKind::Spike {
+                        continue;
+                    }
+                    let tile = level_format::TILE_PX as f32;
+                    let local = Vec2::new(
+                        (tx as f32 + 0.5) * tile,
+                        (level_format::ROOM_TILES - 1 - ty) as f32 * tile + tile * 0.5,
+                    );
+                    found = Some((col, row, local));
+                    break 'search;
+                }
+            }
+        }
+    }
+    let Some((col, row, local)) = found else {
+        println!("[demo death] 关卡没有 Hazard 瓦片");
+        *done = true;
+        return;
+    };
+    let Some(mut motion) = players.iter_mut().next() else {
+        return;
+    };
+    let center = game::coords::room_local_to_world(col, row, loaded.level.grid.rows, local);
+    motion.0.aabb = game::physics::Aabb::from_center_size(center, collision.size_vec());
+    motion.0.vel = Vec2::ZERO;
+    *done = true;
+    println!(
+        "[demo death] 已传送到 Hazard 瓦片（房间 ({col}, {row})，中心 {:.0}, {:.0}）",
+        center.x, center.y
+    );
+}
+
 /// 冒烟：每 20 帧轮流触发全部粒子种类，供截图与日志验证（不改变玩家位置）。
 fn drive_demo_fx(
     tick: Res<FrameTick>,
@@ -540,6 +611,14 @@ fn main() {
                     .run_if(in_state(game::state::GameState::Playing)),
             );
         }
+        Some("death") => {
+            // 冒烟：把玩家送到第一个 Hazard，验证「冻结 → 闪烁 → 重生」全链路；
+            // DemoPlugin 只负责把死亡闪烁的 sprite alpha 变化打成日志（空脚本不改输入）。
+            app.add_plugins(game::demo::DemoPlugin {
+                script: game::demo::DemoScript(Vec::new()),
+            });
+            app.add_systems(Update, drive_demo_death);
+        }
         Some("levels") => {
             app.add_systems(Update, drive_demo_levels);
         }
@@ -567,7 +646,7 @@ fn main() {
         }
         Some("menu") => {}
         Some(other) => eprintln!(
-            "未知 demo：{other}（可选 walk|jump|edge|hop|checkpoint|pause|goal|item|fx|menu|levels|settings|menu-start|load-save|restart|click|online）"
+            "未知 demo：{other}（可选 walk|jump|edge|hop|checkpoint|death|pause|goal|item|fx|menu|levels|settings|menu-start|load-save|restart|click|online）"
         ),
         None => {}
     }

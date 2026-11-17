@@ -26,6 +26,8 @@ pub struct PlayerSnap {
     pub vy: f32,
     pub grounded: bool,
     pub facing_right: bool,
+    /// 处于死亡表现/重生倒计时（客户端据此播放闪烁并冻结预测）。
+    pub dead: bool,
     /// 当前携带的道具（`None` = 空手）。
     pub item: Option<ItemKind>,
     /// 道具 buff 剩余时间（秒）；空手时为 0。
@@ -142,7 +144,8 @@ pub fn decode(bytes: &[u8]) -> Option<NetMessage> {
 //   item_spawners u16 | [zone u16] × n（只列**未激活**的生成器）
 //   checkpoint u8（0/1）| [col u16, row u16, x i16, y i16]
 //
-// flags: bit0 grounded，bit1 facing_right，bits2–3 air_jumps_used（夹取到 0..=3）。
+// flags: bit0 grounded，bit1 facing_right，bits2–3 air_jumps_used（夹取到 0..=3），
+//        bit4 dead（死亡表现中）。
 // item: 0 = 空手，1..=3 = `ItemKind::code()`。
 // 房间最大 64（`01` §1.8），果实数量 u16，实体编号 u16；越界值夹取而不是 panic。
 
@@ -161,7 +164,8 @@ fn encode_snapshot(snapshot: &Snapshot) -> Option<Vec<u8>> {
         }
         let flags = u8::from(player.grounded)
             | (u8::from(player.facing_right) << 1)
-            | ((player.air_jumps_used.min(3) as u8) << 2);
+            | ((player.air_jumps_used.min(3) as u8) << 2)
+            | (u8::from(player.dead) << 4);
         out.push(flags);
         out.push(player.item.map_or(0, ItemKind::code));
         out.extend_from_slice(&player.item_remaining.to_le_bytes());
@@ -288,6 +292,7 @@ fn decode_snapshot(bytes: &[u8]) -> Option<Snapshot> {
             vy,
             grounded: flags & 1 != 0,
             facing_right: flags & 2 != 0,
+            dead: flags & 16 != 0,
             item,
             item_remaining,
             air_jumps_used: u32::from((flags >> 2) & 3),
@@ -356,6 +361,7 @@ mod tests {
                 vy: -2.0,
                 grounded: true,
                 facing_right: false,
+                dead: true,
                 item: Some(ItemKind::DoubleJump),
                 item_remaining: 7.5,
                 air_jumps_used: 1,
@@ -442,6 +448,7 @@ mod tests {
                     vy: 560.0,
                     grounded: true,
                     facing_right: true,
+                    dead: true,
                     item: Some(ItemKind::SuperJump),
                     item_remaining: 10.0,
                     air_jumps_used: 1,

@@ -146,7 +146,7 @@ pub enum GameSet { Input, Physics, PostPhysics, Room, Camera, Fx, Snap }
 | 调度 | 集合/系统 | 说明 |
 |---|---|---|
 | `PreUpdate` | `GameSet::Input` | 采样输入为 `PlayerInput`（纯数据） |
-| `FixedUpdate` | `GameSet::Physics`：`apply_player_physics → pickup_items / collect_fruit / advance_run_clock / detect_goal_touch → activate_checkpoint → check_hazards → respawn_on_death`（依次排序） | 固定 60 Hz。**所有位移与碰撞只在这里发生**；存档点先于死亡判定，因此同一固定步里按 E 设置的点会立即生效 |
+| `FixedUpdate` | `GameSet::Physics`：`apply_player_physics → pickup_items / collect_fruit / advance_run_clock / detect_goal_touch → activate_checkpoint → check_hazards → advance_deaths`（依次排序） | 固定 60 Hz。**所有位移与碰撞只在这里发生**；存档点先于死亡判定，因此同一固定步里按 E 设置的点会立即生效。`check_hazards` 只发 `PlayerDied`；`advance_deaths` 负责死亡开始（挂 `Dying`、清道具/输入锁存）、倒计时与到期重生（`02` §2.5） |
 | `Update` | `GameSet::PostPhysics` | 把 `FixedUpdate` 结果同步到 `Transform`，触发一次性消息 |
 | `Update` | `GameSet::Room` | 当前房间判定、全员到达后的结算检查 |
 | `Update` | `GameSet::Camera` | 每个视图的相机直接跟随自己的玩家 AABB 中心（钳制在地图内，无平滑） |
@@ -232,7 +232,8 @@ flowchart TB
 | `LoadNotice` | 资源 | `Notice`（`NoSave` / `VersionMismatch` / `LevelNotFound` / `LoadFailed` / `NetRejected` / `NetDisconnected` / `NetTimeout` / `NetLevelMismatch`） | 加载/联机失败 → 主菜单状态行（按当前语言渲染） |
 | `GameSettings` | 资源 | `version`, `volume: f32`, `fullscreen: bool` | 设置界面 → `SettingsPlugin` |
 | `SettingsReturn` | 资源 | 目标 `GameState`（`MainMenu` / `Paused`） | 设置界面返回 |
-| `PlayerDied` | `Message` | `player_id: PlayerId`, `room_index: u32` | `player/death` → 音效/特效/HUD |
+| `PlayerDied` | `Message` | `player_id: PlayerId` | `player/death` → 音效；死亡**开始**时发一次（客户端在快照 `dead` 上升沿自行补发，`05` §5.15.3）。位置重置由 `Dying` 倒计时驱动 |
+| `Dying` | 组件 | `remaining: u32`（主机权威固定步）、`elapsed: f32`（表现层时钟） | 主机：死亡冻结与重生倒计时；客户端：仅表现。物理/ Hazard / 拾取 / 终点 / 存档点传感器都排除它（`02` §2.5） |
 | `CheckpointActivated` | `Message` | `point: CheckpointPoint`（房间 + 局部 `at`） | `checkpoint` → 存档（立即写盘）/粒子（`07` §7.14） |
 | `RoomEntered` | `Message` | `room_index: u32` | `room` → HUD/调试/编辑器 |
 | `ItemPicked` | `Message` | `player: PlayerId`, `kind: ItemKind`, `replaced: Option<ItemKind>` | `player/items` → HUD/音效/粒子 |
@@ -403,7 +404,7 @@ pub struct GameSettings {
   - 发现/加入/输入等低频消息：`TAG_RON` + RON 文本（与关卡/存档同一套 `serde`）。
   - 每固定步快照：`TAG_SNAPSHOT` + 定长小端二进制。布局见源码头注释；单包 ≤ `MAX_PACKET_BYTES = 1200`，
     超限直接丢弃（避免 IP 分片）。
-- 协议版本 `PROTOCOL_VERSION = 6`（v6：`PlayerSnap` 增加道具剩余时间；v5 增加 `inactive_item_spawners`；v4 已移除通关房间位图并增加计时/道具/通关时间）。发现响应带版本，不匹配不显示。
+- 协议版本 `PROTOCOL_VERSION = 7`（v7：`PlayerSnap` 增加 `dead`（flags bit4）；v6 增加道具剩余时间；v5 增加 `inactive_item_spawners`；v4 已移除通关房间位图并增加计时/道具/通关时间）。发现响应带版本，不匹配不显示。
 - `Input { samples: Vec<InputSample> }`：每个固定步发送最近 `INPUT_REDUNDANCY` 条未确认输入（按 `seq` 升序）。
   单个 UDP 包丢失时，后续包会补上；主机按 `seq` 去重。
 - 其余常量（`config/net.rs`，本文拥有）：`MAX_PLAYERS = 4`、`MAX_PACKETS_PER_FRAME = 64`、
@@ -417,7 +418,7 @@ pub struct GameSettings {
 | 方向 | 频率 | 内容 |
 |---|---|---|
 | 客户端 → 主机 `Input` | 每固定步（60 Hz） | 最近 `INPUT_REDUNDANCY` 条未确认输入（含序号与 `PlayerInput` 四个字段）；主机去重后排队 |
-| 主机 → 客户端 `Snapshot` | 每固定步（60 Hz） | `run_elapsed`；全部玩家 `(id, x, y, vx, vy, grounded, facing, item, item_remaining, air_jumps_used, finish, last_input_seq)`；果实计数、已拾取 `ZoneId`、未激活的道具生成器 `ZoneId`、当前存档点 |
+| 主机 → 客户端 `Snapshot` | 每固定步（60 Hz） | `run_elapsed`；全部玩家 `(id, x, y, vx, vy, grounded, facing, dead, item, item_remaining, air_jumps_used, finish, last_input_seq)`；果实计数、已拾取 `ZoneId`、未激活的道具生成器 `ZoneId`、当前存档点 |
 | `Join` / `Welcome` / `Reject` | 0.25 s 重试 / 事件 | 加入握手；`Join` 带持久 `client_id`。主机分配最小空闲 `PlayerId(1..MAX_PLAYERS)`，在**关卡出生点**生成角色；出生点被墙/已有玩家占用时就近找空位。**同一 `client_id` 从新端口重连时复用原玩家编号/实体**，不新增角色 |
 | `Discover` / `RoomInfo` | 1 s 查询 + 响应 | 房间搜索（§5.15.4） |
 | `Bye` / 超时 | 离开 / 5 s 静默 | 客户端收到 `WindowCloseRequested`（点击关闭按钮）或 `AppExit` 时主动发 `Bye`，主机立即移除；异常退出（崩溃/强杀）则 5 s 超时清理 |
@@ -435,6 +436,10 @@ pub struct GameSettings {
   丢弃 `seq ≤ last_input_seq` 的待确认输入，并从权威状态重放剩余输入（预测收敛）。
   因此输入→自己角色画面不再等待 RTT；偏差由快照纠正。
 - 快照是**完整状态**而非增量：丢包在下一帧自愈。
+- **死亡在客户端**：快照 `dead=true` 时挂 `Dying`（仅表现，不推进 `remaining`）并补发一次 `PlayerDied`
+  （死亡音效）；`dead=false` 时移除。死亡期间客户端**不重放/预测自己的移动**（仍上行输入），
+  位置直接取权威快照，避免 0.5 s 的「预测前进 → 被快照拉回」抖动；闪烁由 `player/death` 的表现系统
+  在所有端按 `elapsed` 播放（`02` §2.5）。
 - 客户端标识：`client_id` 持久化在存档目录的 `client_id` 文件；`ANIMJ_CLIENT_ID` 可覆盖（同机多开测试）。
 - 客户端不生成玩家：玩家实体由第一份快照创建；离开的玩家由快照差集销毁。
 - 客户端只对**远端玩家**在快照 `seq` 轴上做渲染插值（`RenderCenter`，只影响 `Transform`）：

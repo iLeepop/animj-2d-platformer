@@ -400,6 +400,7 @@ pub fn broadcast_snapshot(
         &PlayerMotion,
         &PlayerFacing,
         &crate::player::items::CarriedItem,
+        Option<&crate::player::death::Dying>,
     )>,
     spawners: Query<(&ZoneId, &crate::player::items::SpawnerItem)>,
 ) {
@@ -415,7 +416,7 @@ pub fn broadcast_snapshot(
 
     let mut snaps: Vec<PlayerSnap> = players
         .iter()
-        .map(|(id, motion, facing, item)| PlayerSnap {
+        .map(|(id, motion, facing, item, dying)| PlayerSnap {
             id: id.0,
             x: motion.0.aabb.center().x,
             y: motion.0.aabb.center().y,
@@ -423,6 +424,7 @@ pub fn broadcast_snapshot(
             vy: motion.0.vel.y,
             grounded: motion.0.grounded,
             facing_right: facing.0,
+            dead: dying.is_some(),
             item: item.kind,
             item_remaining: item.remaining,
             air_jumps_used: motion.0.air_jumps_used,

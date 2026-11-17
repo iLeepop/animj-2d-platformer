@@ -206,7 +206,7 @@ pub fn collect_fruit(
     loaded: Option<Res<LoadedLevel>>,
     progress: Option<ResMut<LevelProgress>>,
     mut picked_zones: ResMut<PickedZones>,
-    players: Query<&PlayerMotion>,
+    players: Query<&PlayerMotion, Without<crate::player::death::Dying>>,
     zones: Query<(Entity, &RoomZone, Option<&ZoneId>)>,
     mut commands: Commands,
     mut picked: MessageWriter<CollectiblePicked>,

@@ -93,7 +93,7 @@ fn activate_checkpoint(
     mut inputs: ResMut<PlayerInputs>,
     loaded: Option<Res<LoadedLevel>>,
     mut active: ResMut<ActiveCheckpoint>,
-    players: Query<(&PlayerId, &PlayerMotion)>,
+    players: Query<(&PlayerId, &PlayerMotion), Without<crate::player::death::Dying>>,
     zones: Query<&RoomZone>,
     mut activated: MessageWriter<CheckpointActivated>,
 ) {

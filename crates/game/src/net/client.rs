@@ -19,6 +19,7 @@ use crate::config::net::{
 use crate::config::physics::{COYOTE_STEPS, DEFAULT_PHYSICS, FIXED_DT};
 use crate::config::render::VIEWPORT_W;
 use crate::physics::{Body, StepInput, StepOutcome, step};
+use crate::player::death::{Dying, PlayerDied};
 use crate::player::spawn::{PlayerSheet, spawn_player};
 use crate::player::{
     PlayerFacing, PlayerId, PlayerInput, PlayerInputs, PlayerMotion, PlayerStepOutcome, next_facing,
@@ -336,6 +337,7 @@ pub fn apply_snapshot(
     mut active: Option<ResMut<ActiveCheckpoint>>,
     mut picked: Option<ResMut<PickedZones>>,
     run: Option<ResMut<crate::run::RunState>>,
+    mut died: MessageWriter<PlayerDied>,
     mut spawners: Query<(
         &ZoneId,
         &mut crate::player::items::SpawnerItem,
@@ -348,6 +350,7 @@ pub fn apply_snapshot(
         &mut PlayerStepOutcome,
         &mut PlayerFacing,
         &mut crate::player::items::CarriedItem,
+        Option<&Dying>,
     )>,
     zones: Query<(Entity, &ZoneId)>,
 ) {
@@ -367,7 +370,7 @@ pub fn apply_snapshot(
     let alive: BTreeSet<u8> = snapshot.players.iter().map(|player| player.id).collect();
     let existing: Vec<(u8, Entity)> = players
         .iter()
-        .map(|(entity, id, _, _, _, _)| (id.0, entity))
+        .map(|(entity, id, _, _, _, _, _)| (id.0, entity))
         .collect();
 
     for snap in &snapshot.players {
@@ -378,7 +381,7 @@ pub fn apply_snapshot(
         body.buffer_age = u32::MAX;
         body.air_jumps_used = snap.air_jumps_used;
         if let Some((_, entity)) = existing.iter().find(|(id, _)| *id == snap.id)
-            && let Ok((_, _, mut motion, mut outcome, mut facing, mut item)) =
+            && let Ok((_, _, mut motion, mut outcome, mut facing, mut item, dying)) =
                 players.get_mut(*entity)
         {
             motion.0 = body;
@@ -386,6 +389,20 @@ pub fn apply_snapshot(
             facing.0 = snap.facing_right;
             item.kind = snap.item;
             item.remaining = snap.item_remaining;
+            // 死亡表现：快照标记 `dead` 时挂上（只用于闪烁与冻结预测），复活后移除。
+            if snap.dead {
+                if dying.is_none() {
+                    commands.entity(*entity).insert(Dying::visual());
+                    died.write(PlayerDied {
+                        player_id: PlayerId(snap.id),
+                    });
+                    info!("联机：玩家 {} 进入死亡表现", snap.id);
+                }
+            } else if dying.is_some() {
+                commands
+                    .entity(*entity)
+                    .remove::<crate::player::death::Dying>();
+            }
             continue;
         }
         // 新加入的玩家：生成实体；速度在下一份快照补齐（位置已经正确）。
@@ -404,6 +421,13 @@ pub fn apply_snapshot(
                     .entity(entity)
                     .insert(RenderCenter(Vec2::new(snap.x, snap.y)));
             }
+            if snap.dead {
+                commands.entity(entity).insert(Dying::visual());
+                died.write(PlayerDied {
+                    player_id: PlayerId(snap.id),
+                });
+                info!("联机：玩家 {} 进入死亡表现", snap.id);
+            }
         }
     }
 
@@ -419,12 +443,15 @@ pub fn apply_snapshot(
         && let Some(local_snap) = snapshot.players.iter().find(|player| player.id == local_id)
     {
         drop_acked_inputs(&mut client.pending_inputs, local_snap.last_input_seq);
-        if let (Some(tiles), Some((_, _, mut motion, mut outcome, _, _))) = (
-            tiles.as_ref(),
-            players
-                .iter_mut()
-                .find(|(_, id, _, _, _, _)| id.0 == local_id),
-        ) {
+        // 死亡中不接受预测重放：权威位置冻结在死亡点，重放会让本地角色抖动。
+        if !local_snap.dead
+            && let (Some(tiles), Some((_, _, mut motion, mut outcome, _, _, _))) = (
+                tiles.as_ref(),
+                players
+                    .iter_mut()
+                    .find(|(_, id, _, _, _, _, _)| id.0 == local_id),
+            )
+        {
             // 与主机同一物理函数；玩家之间不碰撞（`06` §6.11），重放只受瓦片影响。
             let mut cfg = DEFAULT_PHYSICS;
             cfg.player_size = collision.size_vec();
@@ -577,6 +604,7 @@ pub fn advance_net_visuals(
 ///
 /// 预测让「按键 → 自己角色开始动」不再依赖快照往返；快照到达后
 /// [`apply_snapshot`] 用 `last_input_seq` 丢弃已确认输入并重放剩余输入，纠正偏差。
+#[allow(clippy::type_complexity)]
 pub fn send_input_and_predict(
     mut client: Option<ResMut<ClientNet>>,
     state: Res<State<GameState>>,
@@ -589,6 +617,7 @@ pub fn send_input_and_predict(
         &mut PlayerStepOutcome,
         &mut PlayerFacing,
         &crate::player::items::CarriedItem,
+        Option<&Dying>,
     )>,
 ) {
     let Some(client) = client.as_mut() else {
@@ -636,11 +665,16 @@ pub fn send_input_and_predict(
     let Some(tiles) = tiles.as_ref() else {
         return;
     };
-    let Some((_, mut motion, mut outcome, mut facing, carried)) =
-        players.iter_mut().find(|(id, _, _, _, _)| id.0 == local_id)
+    let Some((_, mut motion, mut outcome, mut facing, carried, dying)) = players
+        .iter_mut()
+        .find(|(id, _, _, _, _, _)| id.0 == local_id)
     else {
         return; // 本地玩家实体还没由第一份快照生成
     };
+    // 死亡中不预测：位置已由主机快照冻结在死亡点，继续推进会立刻被下一份快照拉回（抖动）。
+    if dying.is_some() {
+        return;
+    }
     let mut out = StepOutcome::default();
     let mut cfg = DEFAULT_PHYSICS;
     cfg.player_size = collision.size_vec();
@@ -679,6 +713,7 @@ mod tests {
                 vy: 0.0,
                 grounded: true,
                 facing_right: true,
+                dead: false,
                 item: None,
                 item_remaining: 0.0,
                 air_jumps_used: 0,

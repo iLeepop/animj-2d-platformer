@@ -3,54 +3,107 @@
 //! 物理侧只负责**发出信号**并提供一个干净的 `Body`；重置行为的规范在 `02` §2.5：
 //! 回到已激活的存档点；没有存档点时回到关卡出生点（`player_spawn` 所在房间）。
 
+use bevy::color::Alpha;
 use bevy::prelude::*;
 
-use super::{PlayerId, PlayerMotion, PlayerStepOutcome};
+use super::{PlayerId, PlayerInputs, PlayerMotion, PlayerStepOutcome};
 use crate::checkpoint::{ActiveCheckpoint, CheckpointPoint};
-use crate::config::physics::HAZARD_INSET;
-use crate::physics::{TileKind, overlaps_tile_kind};
-use crate::state::GameSet;
+use crate::config::physics::{FIXED_DT, HAZARD_INSET};
+use crate::config::render::player_tint;
+use crate::config::room::{DEATH_BLINK_SECS, DEATH_DELAY_STEPS, DEATH_FLASH_ALPHA};
+use crate::physics::{Body, StepOutcome, TileKind, overlaps_tile_kind};
+use crate::state::{GameSet, GameState};
 use crate::tiles::LevelTiles;
 use crate::world::CurrentRoom;
 use crate::world::load::LoadedLevel;
 
 /// 角色死亡（buffered 消息，命名与载荷见 `05` §5.6）。
 ///
-/// 多人时按玩家区分：只重置死亡的玩家，其他玩家继续（`01` §1.6）。
+/// 在**死亡开始**时发一次（用于音效等一次性反馈）；位置重置由 [`Dying`] 倒计时驱动。
+/// 多人时只影响死亡的玩家（`01` §1.6）。
 #[derive(Message, Debug, Clone, Copy)]
 pub struct PlayerDied {
     pub player_id: PlayerId,
-    pub room_index: u32,
+}
+
+/// 死亡状态：冻结在死亡点、播放闪烁，倒计时到期后重生（`02` §2.5）。
+///
+/// `remaining` 是**主机权威**的剩余固定步；客户端从快照 `dead` 标记挂上它时只用于表现，
+/// 不推进该字段。`elapsed` 是表现层时钟（`Update` 推进），让主机与客户端都能播完闪烁。
+#[derive(Component, Debug, Clone, Copy)]
+pub struct Dying {
+    pub remaining: u32,
+    pub elapsed: f32,
+}
+
+impl Dying {
+    /// 主机：新死亡，开始 [`DEATH_DELAY_STEPS`] 个固定步的倒计时。
+    pub fn new() -> Self {
+        Self {
+            remaining: DEATH_DELAY_STEPS,
+            elapsed: 0.0,
+        }
+    }
+
+    /// 客户端：仅表现；权威倒计时在主机，客户端靠快照移除它。
+    pub fn visual() -> Self {
+        Self {
+            remaining: 0,
+            elapsed: 0.0,
+        }
+    }
+}
+
+impl Default for Dying {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// 死亡闪烁 alpha（纯函数）：[`DEATH_BLINK_SECS`] 为半周期，交替满显与 [`DEATH_FLASH_ALPHA`]。
+pub fn death_flash_alpha(elapsed: f32) -> f32 {
+    let phase = (elapsed / DEATH_BLINK_SECS).floor().max(0.0) as u32;
+    if phase.is_multiple_of(2) {
+        1.0
+    } else {
+        DEATH_FLASH_ALPHA
+    }
 }
 
 pub struct PlayerDeathPlugin;
 
 impl Plugin for PlayerDeathPlugin {
     fn build(&self, app: &mut App) {
-        app.add_message::<PlayerDied>().add_systems(
-            FixedUpdate,
-            (check_hazards, respawn_on_death)
-                .chain()
-                .after(crate::player::apply_player_physics)
-                .in_set(GameSet::Physics)
-                .run_if(crate::net::not_client),
-        );
+        app.add_message::<PlayerDied>()
+            .add_systems(
+                FixedUpdate,
+                (check_hazards, advance_deaths)
+                    .chain()
+                    .after(crate::player::apply_player_physics)
+                    .in_set(GameSet::Physics)
+                    .run_if(crate::net::not_client),
+            )
+            .add_systems(
+                Update,
+                (tick_death_visual, apply_death_flash)
+                    .chain()
+                    .in_set(GameSet::Fx)
+                    .run_if(in_state(GameState::Playing)),
+            );
     }
 }
 
 /// Hazard 传感器：角色 AABB **内缩** `HAZARD_INSET` 后与尖刺相交即死亡（`06` §6.5.3）。
 ///
-/// 同一固定步只写一条消息（单角色场景天然满足）。
+/// 死亡中的玩家被冻结在死亡点，必须排除，否则每个固定步都会重复发消息（音效连播、倒计时重置）。
 pub fn check_hazards(
     tiles: Option<Res<LevelTiles>>,
-    loaded: Option<Res<LoadedLevel>>,
-    players: Query<(&PlayerId, &PlayerMotion)>,
+    players: Query<(&PlayerId, &PlayerMotion), Without<Dying>>,
     mut died: MessageWriter<PlayerDied>,
 ) {
-    let (Some(tiles), Some(loaded)) = (tiles, loaded) else {
+    let Some(tiles) = tiles else {
         return;
     };
-    let grid = (loaded.level.grid.cols, loaded.level.grid.rows);
     for (id, motion) in &players {
         if !overlaps_tile_kind(
             tiles.as_ref(),
@@ -60,14 +113,7 @@ pub fn check_hazards(
         ) {
             continue;
         }
-        // 死亡房间按**该玩家**当前位置算；多玩家可能分处不同房间。
-        let room_index = crate::coords::world_to_room(motion.0.aabb.center(), grid.0, grid.1)
-            .map(|pos| level_format::room_index(pos.col, pos.row, grid.0) as u32)
-            .unwrap_or(0);
-        died.write(PlayerDied {
-            player_id: *id,
-            room_index,
-        });
+        died.write(PlayerDied { player_id: *id });
     }
 }
 
@@ -105,47 +151,116 @@ pub fn respawn_target(
     }
 }
 
-/// 收到死亡信号后把角色放回**存档点**（无则关卡出生点），并清空速度与计时器（`02` §2.5）。
-pub fn respawn_on_death(
+/// 死亡开始 + 倒计时 + 到期重生（`02` §2.5）。
+///
+/// 收到 `PlayerDied` 时**不移动**角色：挂 [`Dying`]（冻结在死亡点）、清道具 buff、清输入锁存；
+/// 每固定步递减，归零后才把角色放回存档点/出生点。物理与 Hazard 传感器都排除 [`Dying`]，
+/// 因此死亡期间不会重复触发，也不会继续下坠。
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+pub fn advance_deaths(
+    mut commands: Commands,
     mut died: MessageReader<PlayerDied>,
     loaded: Option<Res<LoadedLevel>>,
     mut current: Option<ResMut<CurrentRoom>>,
     active: Option<Res<ActiveCheckpoint>>,
     tiles: Option<Res<LevelTiles>>,
     collision: Res<crate::player::collision::PlayerCollision>,
+    mut inputs: ResMut<PlayerInputs>,
     mut players: Query<(
+        Entity,
         &PlayerId,
         &mut PlayerMotion,
         &mut PlayerStepOutcome,
         &mut crate::player::items::CarriedItem,
+        Option<&mut Dying>,
     )>,
 ) {
-    let dead: Vec<PlayerId> = died.read().map(|message| message.player_id).collect();
-    if dead.is_empty() {
-        return;
-    }
+    // 没有关卡/房间资源时不消费消息：留给加载完成后的固定步。
     let (Some(loaded), Some(current)) = (loaded, current.as_mut()) else {
         return;
     };
-    let now = (current.col, current.row);
-    let checkpoint = active.and_then(|active| active.0);
-    let target = respawn_target(&loaded.level, checkpoint, collision.size.1);
-    if target.room != now {
-        // 存档点/出生点可能在别的房间：显式切房间，避免滞回判定让相机/裁剪滞后一帧以上。
-        current.col = target.room.0;
-        current.row = target.room.1;
-        info!(
-            "角色死亡：回到{}所在房间 ({}, {})",
-            if target.from_checkpoint {
-                "存档点"
-            } else {
-                "出生点"
-            },
-            target.room.0,
-            target.room.1
-        );
+    let started: Vec<PlayerId> = died.read().map(|message| message.player_id).collect();
+    if started.is_empty() && players.iter().all(|(_, _, _, _, _, dying)| dying.is_none()) {
+        return;
     }
-    for id in &dead {
+    let checkpoint = active.and_then(|active| active.0);
+    // 多人同时死亡时按 id 分列，避免两个盒子完全重叠（`02` §2.5）。
+    let count = players
+        .iter()
+        .map(|(_, id, ..)| id.index())
+        .max()
+        .unwrap_or(0)
+        + 1;
+
+    for (entity, id, mut motion, mut outcome, mut item, dying) in &mut players {
+        if started.contains(id) {
+            if dying.is_none() {
+                commands.entity(entity).insert(Dying::new());
+                // 死亡期间物理步不消费锁存；死亡瞬间与重生时各清一次，防止按键带进复活。
+                let slot = inputs.get_mut(*id);
+                slot.jump_pressed = false;
+                slot.interact_pressed = false;
+                // 死亡清除道具 buff（`01` §1.5）。
+                if item.kind.is_some() {
+                    info!("玩家 {} 死亡：道具 buff 已清除", id.0);
+                    item.clear();
+                }
+                info!(
+                    "玩家 {} 死亡：{:.2} 秒后重生",
+                    id.0,
+                    DEATH_DELAY_STEPS as f32 * FIXED_DT
+                );
+            }
+            continue;
+        }
+
+        let Some(mut dying) = dying else {
+            continue;
+        };
+        if dying.remaining > 0 {
+            dying.remaining -= 1;
+        }
+        if dying.remaining > 0 {
+            continue;
+        }
+
+        let target = respawn_target(&loaded.level, checkpoint, collision.size.1);
+        let center = tiles
+            .as_ref()
+            .and_then(|tiles| {
+                crate::player::spawn::player_spawn_centers(
+                    target.center,
+                    count,
+                    tiles.as_ref(),
+                    collision.size_vec(),
+                )
+                .get(id.index())
+                .copied()
+            })
+            .unwrap_or(target.center);
+        // `Body::at_center_with` 保证「土狼时间用尽」，因此重生后不得凭空起跳（`06` §6.5.3 / T21）
+        motion.0 = Body::at_center_with(center, collision.size_vec());
+        outcome.0 = StepOutcome::default();
+        let slot = inputs.get_mut(*id);
+        slot.jump_pressed = false;
+        slot.interact_pressed = false;
+        commands.entity(entity).remove::<Dying>();
+
+        if target.room != (current.col, current.row) {
+            // 存档点/出生点可能在别的房间：显式切房间，避免滞回判定让相机/裁剪滞后一帧以上。
+            current.col = target.room.0;
+            current.row = target.room.1;
+            info!(
+                "角色死亡：回到{}所在房间 ({}, {})",
+                if target.from_checkpoint {
+                    "存档点"
+                } else {
+                    "出生点"
+                },
+                target.room.0,
+                target.room.1
+            );
+        }
         if target.from_checkpoint {
             info!(
                 "玩家 {} 死亡：回到存档点 ({:.0}, {:.0})",
@@ -158,34 +273,25 @@ pub fn respawn_on_death(
             );
         }
     }
+}
 
-    // 多人同时死亡时按 id 分列，避免两个盒子完全重叠。
-    let count = dead.iter().map(|id| id.index()).max().unwrap_or(0) + 1;
-    let centers = tiles
-        .as_ref()
-        .map(|tiles| {
-            crate::player::spawn::player_spawn_centers(
-                target.center,
-                count,
-                tiles.as_ref(),
-                collision.size_vec(),
-            )
-        })
-        .unwrap_or_else(|| vec![target.center; count]);
+/// 推进死亡表现时钟（`Update`，主机与客户端共用；暂停时随 [`GameSet::Fx`] 冻结）。
+fn tick_death_visual(time: Res<Time>, mut dying: Query<&mut Dying>) {
+    for mut dying in &mut dying {
+        dying.elapsed += time.delta_secs();
+    }
+}
 
-    for (id, mut motion, mut outcome, mut item) in &mut players {
-        if !dead.contains(id) {
-            continue;
+/// 死亡闪烁：在**玩家分色**基础上交替 alpha（`02` §2.5）。
+///
+/// 不在死亡中的玩家写回基准色（重生后恢复）；只在颜色变化时写组件，避免每帧触发变更检测。
+fn apply_death_flash(mut players: Query<(&PlayerId, &mut Sprite, Option<&Dying>)>) {
+    for (id, mut sprite, dying) in &mut players {
+        let alpha = dying.map_or(1.0, |dying| death_flash_alpha(dying.elapsed));
+        let color = player_tint(id.0).with_alpha(alpha);
+        if sprite.color != color {
+            sprite.color = color;
         }
-        let center = centers.get(id.index()).copied().unwrap_or(target.center);
-        // `Body::at_center_with` 保证「土狼时间用尽」，因此重生后不得凭空起跳（`06` §6.5.3 / T21）
-        motion.0 = crate::physics::Body::at_center_with(center, collision.size_vec());
-        outcome.0 = crate::physics::StepOutcome::default();
-        // 死亡清除道具 buff（`01` §1.5）。
-        if item.kind.is_some() {
-            info!("玩家 {} 死亡：道具 buff 已清除", id.0);
-        }
-        item.clear();
     }
 }
 
@@ -288,24 +394,24 @@ mod tests {
         assert_eq!(target.center, center);
     }
 
-    /// 端到端：在**别的房间**死亡且没有存档点 ⇒ 角色与 `CurrentRoom` 都回到出生房间。
+    /// 端到端：死亡后**冻结在死亡点**，倒计时到期才回关卡出生点（`02` §2.5）。
     #[test]
-    fn dying_in_another_room_returns_to_the_level_spawn() {
-        use bevy::ecs::system::RunSystemOnce;
-
+    fn death_freezes_until_the_delay_then_returns_to_spawn() {
         use crate::physics::Body;
 
         let level = level_with_checkpoint(None);
         let (spawn_col, spawn_row, spawn_center) = level_spawn(&level);
         let mut app = App::new();
         app.add_message::<PlayerDied>()
+            .init_resource::<PlayerInputs>()
             .init_resource::<ActiveCheckpoint>()
             .insert_resource(crate::player::collision::PlayerCollision::default())
             .insert_resource(LoadedLevel {
                 level: level.clone(),
                 handle: Handle::default(),
             })
-            .insert_resource(CurrentRoom { col: 1, row: 0 });
+            .insert_resource(CurrentRoom { col: 1, row: 0 })
+            .add_systems(Update, advance_deaths);
         let player = app
             .world_mut()
             .spawn((
@@ -318,33 +424,164 @@ mod tests {
                 },
             ))
             .id();
+        app.world_mut().resource_mut::<PlayerInputs>().slots[0].jump_pressed = true;
         app.world_mut().write_message(PlayerDied {
             player_id: PlayerId(0),
-            room_index: 1,
         });
-        app.world_mut()
-            .run_system_once(respawn_on_death)
-            .expect("死亡重置系统应能运行");
 
-        let motion = &app.world().get::<PlayerMotion>(player).unwrap().0;
+        app.update(); // 死亡开始：只挂 Dying，不移动
+        let death_center = app
+            .world()
+            .get::<PlayerMotion>(player)
+            .unwrap()
+            .0
+            .aabb
+            .center();
+        assert_eq!(death_center, Vec2::new(700.0, 40.0), "死亡当步不得瞬移");
+        let dying = *app
+            .world()
+            .get::<Dying>(player)
+            .expect("死亡中必须挂 Dying");
+        assert_eq!(dying.remaining, DEATH_DELAY_STEPS);
         assert_eq!(
-            motion.aabb.center(),
-            spawn_center,
-            "无存档点时必须回关卡出生点，而不是死亡房间的重生点"
+            app.world()
+                .get::<crate::player::items::CarriedItem>(player)
+                .unwrap()
+                .kind,
+            None,
+            "死亡瞬间清除道具 buff"
         );
+        assert!(
+            !app.world().resource::<PlayerInputs>().slots[0].jump_pressed,
+            "死亡瞬间清除输入锁存，避免复活自动起跳"
+        );
+
+        for _ in 0..DEATH_DELAY_STEPS - 1 {
+            app.update();
+        }
+        assert_eq!(
+            app.world()
+                .get::<PlayerMotion>(player)
+                .unwrap()
+                .0
+                .aabb
+                .center(),
+            death_center,
+            "倒计时未结束时必须停在死亡点"
+        );
+        assert_eq!(
+            app.world().get::<Dying>(player).unwrap().remaining,
+            1,
+            "到期前最后一固定步仍应剩 1"
+        );
+
+        app.update(); // 到期
+        assert!(
+            app.world().get::<Dying>(player).is_none(),
+            "重生后移除 Dying"
+        );
+        let motion = &app.world().get::<PlayerMotion>(player).unwrap().0;
+        assert_eq!(motion.aabb.center(), spawn_center);
+        assert!(!motion.grounded, "重生后不得凭空 grounded");
         let current = app.world().resource::<CurrentRoom>();
         assert_eq!(
             (current.col, current.row),
             (spawn_col, spawn_row),
             "CurrentRoom 必须同步切回出生房间"
         );
-        // 死亡清除道具 buff（`01` §1.5）。
+    }
+
+    #[derive(Resource, Default)]
+    struct DiedCount(u32);
+
+    fn count_died(mut count: ResMut<DiedCount>, mut died: MessageReader<PlayerDied>) {
+        count.0 += died.read().count() as u32;
+    }
+
+    /// 死亡中的玩家仍停在 Hazard 上：传感器必须排除 `Dying`，否则每步重发消息/音效连播。
+    #[test]
+    fn dying_players_are_not_sensed_again() {
+        let mut level = level_with_checkpoint(None);
+        let mut tiles = vec![".".repeat(level_format::ROOM_TILES); level_format::ROOM_TILES];
+        tiles[level_format::ROOM_TILES - 1] = "#".repeat(level_format::ROOM_TILES);
+        let mut spike_row = ".".repeat(level_format::ROOM_TILES);
+        spike_row.replace_range(3..4, "^");
+        tiles[level_format::ROOM_TILES - 2] = spike_row;
+        level.rooms[0].tiles = tiles;
+
+        let center =
+            crate::coords::room_local_to_world(0, 0, level.grid.rows, Vec2::new(112.0, 460.0));
+        let mut app = App::new();
+        app.add_message::<PlayerDied>()
+            .init_resource::<DiedCount>()
+            .insert_resource(LevelTiles::from_level(&level))
+            .add_systems(Update, (check_hazards, count_died).chain());
+        let player = app
+            .world_mut()
+            .spawn((
+                PlayerId(0),
+                PlayerMotion(crate::physics::Body::at_center(center)),
+            ))
+            .id();
+
+        app.update();
         assert_eq!(
-            app.world()
-                .get::<crate::player::items::CarriedItem>(player)
-                .unwrap()
-                .kind,
-            None
+            app.world().resource::<DiedCount>().0,
+            1,
+            "第一次相交必须触发"
+        );
+        app.world_mut().entity_mut(player).insert(Dying::new());
+        app.update();
+        assert_eq!(
+            app.world().resource::<DiedCount>().0,
+            1,
+            "死亡中不得重复触发 Hazard"
+        );
+    }
+
+    /// 闪烁 alpha 由纯函数给出：只在两档之间交替，且不越界。
+    #[test]
+    fn death_flash_alpha_blinks_between_two_levels() {
+        assert_eq!(death_flash_alpha(0.0), 1.0);
+        assert_eq!(death_flash_alpha(DEATH_BLINK_SECS * 0.5), 1.0);
+        assert_eq!(death_flash_alpha(DEATH_BLINK_SECS), DEATH_FLASH_ALPHA);
+        assert_eq!(death_flash_alpha(DEATH_BLINK_SECS * 2.5), 1.0);
+        for step in 0..=60 {
+            let alpha = death_flash_alpha(step as f32 * 0.01);
+            assert!(
+                (DEATH_FLASH_ALPHA..=1.0).contains(&alpha),
+                "alpha 越界：{alpha}"
+            );
+        }
+    }
+
+    /// 闪烁必须保留玩家分色，并在死亡结束后恢复基准色。
+    #[test]
+    fn death_flash_keeps_player_tint_and_restores_it() {
+        let mut app = App::new();
+        app.add_systems(Update, apply_death_flash);
+        let player = app
+            .world_mut()
+            .spawn((
+                PlayerId(1),
+                Sprite::from_color(player_tint(1), Vec2::splat(32.0)),
+                Dying {
+                    remaining: 0,
+                    elapsed: DEATH_BLINK_SECS * 1.5,
+                },
+            ))
+            .id();
+        app.update();
+        assert_eq!(
+            app.world().get::<Sprite>(player).unwrap().color.alpha(),
+            DEATH_FLASH_ALPHA
+        );
+        app.world_mut().entity_mut(player).remove::<Dying>();
+        app.update();
+        assert_eq!(
+            app.world().get::<Sprite>(player).unwrap().color,
+            player_tint(1),
+            "重生后必须恢复玩家分色"
         );
     }
 }

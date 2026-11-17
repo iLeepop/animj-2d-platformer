@@ -28,3 +28,16 @@ pub const DEFAULT_SPAWN_LOCAL: Vec2 = Vec2::new(
 /// 房间切换滞回（px）：玩家 AABB 中心必须**深入**新房间超过该距离才承认切换。
 /// 只影响 `CurrentRoom`（HUD/目标判定），不影响相机跟随。见 `02` §2.2。
 pub const ROOM_SWITCH_HYSTERESIS: f32 = 8.0;
+
+/// 死亡表现时长（固定步，60 Hz ⇒ 0.50 s）：到期才把玩家放回存档点/出生点。见 `02` §2.5。
+///
+/// 用**固定步数**而不是秒，保证死亡延迟与物理、暂停状态一致且可无头测试。
+pub const DEATH_DELAY_STEPS: u32 = 30;
+
+/// 死亡闪烁的一个相位时长（秒）。见 `02` §2.5。
+///
+/// 0.1 s ⇒ 0.5 s 内约 2 次完整明暗交替，低于 3 次/秒的光敏性上限。
+pub const DEATH_BLINK_SECS: f32 = 0.1;
+
+/// 死亡闪烁「暗」相位的 alpha（保留角色轮廓与多人分色）。见 `02` §2.5。
+pub const DEATH_FLASH_ALPHA: f32 = 0.2;

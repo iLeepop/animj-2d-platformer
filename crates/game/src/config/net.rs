@@ -5,7 +5,7 @@
 /// 协议版本。客户端与主机不一致时拒绝加入（`05` §5.15.2）。
 ///
 /// v6：`PlayerSnap` 增加道具 buff 剩余时间。
-pub const PROTOCOL_VERSION: u16 = 6;
+pub const PROTOCOL_VERSION: u16 = 7;
 
 /// 局域网发现与游戏共用的 UDP 端口（`05` §5.15.2）。
 pub const NET_PORT: u16 = 42345;

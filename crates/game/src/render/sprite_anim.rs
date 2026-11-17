@@ -156,6 +156,7 @@ fn drive_player_animation(
             &mut AnimationTimer,
             &mut Sprite,
             &PlayerFacing,
+            Option<&crate::player::death::Dying>,
         ),
         Or<(
             Changed<PlayerMotion>,
@@ -165,7 +166,11 @@ fn drive_player_animation(
         )>,
     >,
 ) {
-    for (motion, mut current, mut frames, mut timer, mut sprite, facing) in players {
+    for (motion, mut current, mut frames, mut timer, mut sprite, facing, dying) in players {
+        // 死亡表现由 `player::death` 接管（闪烁）；这里不得按物理状态把它覆盖回 idle。
+        if dying.is_some() {
+            continue;
+        }
         let body = &motion.0;
         let row = select_row(body.grounded, body.vel);
         let state = anim.set.state(row);

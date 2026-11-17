@@ -721,11 +721,14 @@ match (nearest_standable_top_below(aabb, world), vel.y) {
   未自定义的地块 = 整格 32×32；自定义多边形时只在其栅格块内致死（空白半边安全）。
   内缩理由：角色擦到尖刺贴图的最外一列像素不应致死，减少"擦边即死"的挫败感。
 - **时机**：`FixedUpdate` 的 `check_hazards`，物理步**之后**执行（用本步最终 AABB）。
-- **输出**：写一条 buffered 消息 `PlayerDied`（0.20 的 buffered 消息类型是 `Message`，
+- **输出**：写一条 buffered 消息 `PlayerDied { player_id }`（0.20 的 buffered 消息类型是 `Message`，
   **不是** `Event`；`MessageWriter<T>::write(..)`【已验证】<https://docs.rs/bevy/0.20.0/bevy/ecs/message/index.html>）。
-- **同一固定步只写一次**：`check_hazards` 内部按实体去重（单角色场景天然满足）。
+  消息在**死亡开始**时发一次；同时挂 `Dying { remaining, elapsed }` 进入死亡表现，见下。
+- **同一固定步/整段死亡只写一次**：`check_hazards` 的查询排除 `Dying`，因此冻结在尖刺上的角色不会每步重发。
+- **死亡期间冻结**：`apply_player_physics` 的查询排除 `Dying` ⇒ 角色停在死亡点，不受重力、不会掉出世界；
+  拾取物/果实/终点/存档点等 AABB 传感器同样排除 `Dying`（`02` §2.5）。
 - **重置行为**（把角色放回**已激活的存档点**；没有存档点时回退到**关卡出生点**；清速度、清计时器）
-  由 `player::death` 在收到 `PlayerDied` 后执行（`02` §2.5）；
+  由 `player::death::advance_deaths` 在 `Dying.remaining` 归零后执行（`02` §2.5）；
   物理侧只负责"发出信号" + 提供一个干净的 `Body` 构造函数：
 
 ```

@@ -126,7 +126,7 @@ impl Plugin for PlayerPlugin {
 /// 输入 ⇒ [`PlayerFacing`]（表现层，`Update` 内；输入已在 `PreUpdate` 采样完成）。
 fn update_player_facing(
     inputs: Res<PlayerInputs>,
-    mut players: Query<(&PlayerId, &mut PlayerFacing)>,
+    mut players: Query<(&PlayerId, &mut PlayerFacing), Without<death::Dying>>,
 ) {
     for (id, mut facing) in &mut players {
         let move_x = inputs.get(*id).move_x;
@@ -148,13 +148,16 @@ pub fn apply_player_physics(
     mut inputs: ResMut<PlayerInputs>,
     collision: Res<collision::PlayerCollision>,
     tiles: Option<Res<LevelTiles>>,
-    mut players: Query<(
-        Entity,
-        &PlayerId,
-        &mut PlayerMotion,
-        &mut PlayerStepOutcome,
-        &items::CarriedItem,
-    )>,
+    mut players: Query<
+        (
+            Entity,
+            &PlayerId,
+            &mut PlayerMotion,
+            &mut PlayerStepOutcome,
+            &items::CarriedItem,
+        ),
+        Without<death::Dying>,
+    >,
 ) {
     // 关卡尚未加载时没有瓦片数据：物理不推进（此时 `GameState` 还在 Loading，本系统不会被门控触发，
     // 但保持 Option 以防编辑器/测试场景只加了 PlayerPlugin）。

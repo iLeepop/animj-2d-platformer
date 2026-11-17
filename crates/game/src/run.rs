@@ -99,7 +99,7 @@ fn advance_run_clock(mut run: ResMut<RunState>) {
 /// 玩家 AABB 与终点区域相交 ⇒ 记录该玩家的通关时间（每人只记一次）。
 fn detect_goal_touch(
     mut run: ResMut<RunState>,
-    players: Query<(&PlayerId, &PlayerMotion)>,
+    players: Query<(&PlayerId, &PlayerMotion), Without<crate::player::death::Dying>>,
     goals: Query<&RoomZone>,
     mut finished: MessageWriter<PlayerFinished>,
 ) {

@@ -114,7 +114,9 @@ impl Plugin for DemoPlugin {
             .add_systems(FixedPreUpdate, (tick_demo_step, drive_script_input).chain())
             .add_systems(FixedUpdate, log_physics_metrics)
             // 帧动画是纯视觉的：demo 模式下把行切换打成日志，作为可自动断言的证据
-            .add_systems(Update, log_animation_changes);
+            .add_systems(Update, log_animation_changes)
+            // 死亡闪烁同理：alpha 相位变化就是「死亡表现真的在播」的证据
+            .add_systems(Update, log_death_flash);
     }
 }
 
@@ -122,6 +124,26 @@ impl Plugin for DemoPlugin {
 fn log_animation_changes(players: Query<&CurrentAnimation, Changed<CurrentAnimation>>) {
     for current in &players {
         info!("动画：{:?}", current.0);
+    }
+}
+
+/// 死亡闪烁的 sprite alpha 变化（`02` §2.5）：demo 模式下作为视觉层真实运行的证据。
+fn log_death_flash(
+    players: Query<(
+        &crate::player::PlayerId,
+        &crate::player::death::Dying,
+        &Sprite,
+    )>,
+    mut last: Local<[Option<f32>; crate::config::net::MAX_PLAYERS]>,
+) {
+    use bevy::color::Alpha;
+    for (id, _dying, sprite) in &players {
+        let alpha = sprite.color.alpha();
+        let slot = &mut last[id.index()];
+        if *slot != Some(alpha) {
+            *slot = Some(alpha);
+            info!("[demo] 死亡闪烁：玩家 {} alpha = {:.2}", id.0, alpha);
+        }
     }
 }
 
