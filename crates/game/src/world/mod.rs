@@ -116,8 +116,14 @@ fn teardown_level(
     roots: Query<Entity, With<RoomRoot>>,
     zones: Query<Entity, With<RoomZone>>,
     players: Query<Entity, With<PlayerMotion>>,
+    particles: Query<Entity, With<crate::render::particles::Particle>>,
 ) {
-    for entity in roots.iter().chain(zones.iter()).chain(players.iter()) {
+    for entity in roots
+        .iter()
+        .chain(zones.iter())
+        .chain(players.iter())
+        .chain(particles.iter())
+    {
         commands.entity(entity).despawn();
     }
     commands.remove_resource::<LoadedLevel>();

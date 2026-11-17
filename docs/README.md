@@ -9,7 +9,7 @@ Bevy **0.20** 像素风 2D 平台跳跃游戏的规范文档集。**本目录是
 | 位置 | 内容 |
 |---|---|
 | `crates/level_format/` | 关卡数据结构、legend、`read`/`write`、V1–V18 校验（**零 bevy 依赖**，36 个测试） |
-| `crates/game/` | 玩法 crate：**主菜单 / 关卡选择 / 设置（音量、全屏、中/英语言，默认中文；UI 窗口相机）**、**存档读档**、暂停菜单、**角色帧动画**、双层像素相机、像素吸附、瓦片渲染 + 房间裁剪、关卡加载 + 校验 + 热重载、房间判定（8 px 滞回）、**相机跟随玩家（钳制在地图内）**、**道具拾取/覆盖、终点判定、计时与分数结算**、HUD（计时 + 道具 + 提示条 + 结算面板）、调试叠层；bin `animj` |
+| `crates/game/` | 玩法 crate：**主菜单 / 关卡选择 / 设置（音量、全屏、中/英语言，默认中文；UI 窗口相机）**、**存档读档**、暂停菜单、**角色帧动画**、**2D 序列帧粒子（跳跃/落地/拾取/存档/buff）**、双层像素相机、像素吸附、瓦片渲染 + 房间裁剪、关卡加载 + 校验 + 热重载、房间判定（8 px 滞回）、**相机跟随玩家（钳制在地图内）**、**道具拾取/覆盖、终点判定、计时与分数结算**、HUD（计时 + 道具 + 提示条 + 结算面板）、调试叠层；bin `animj` |
 | `crates/editor/` | lib `editor`（会话/撤销/相机/投影/Gizmos/工具/面板/试玩）+ bin `animj-editor`、bin `animj-dev`（`validate-levels` / `gen-placeholder-assets`） |
 | `assets/` | 占位资产（图集 + 3 张道具贴图 + 6 个音效 WAV + `anim/player.anim.ron`，规格符合 `04`）+ `world_01.level.ron`（10×3 = 30 房间；两处竖井带单向台阶可上行，保存即热重载） |
 
@@ -25,6 +25,7 @@ cargo game -- --frames 90 --screenshot target/m0 --hide-ui  # 直接进默认关
 cargo game -- --demo jump --frames 3000             # 脚本输入跑一段：日志给出每次跳跃的实测峰值
 cargo game -- --demo walk --frames 3000             # 走过房间边界：日志给出房间切换与计时
 cargo game -- --demo hop --frames 3000              # 连续小跳：检查平台/尖刺/果实几何（不是通关判据）
+cargo game -- --demo fx --frames 600 --screenshot target/fx  # 粒子冒烟：轮流触发全部粒子种类并截图
 cargo game -- --demo pause --frames 120 --screenshot target/pause  # 暂停菜单冒烟（Esc 在无头会话不可注入）
 cargo editor                                         # 打开编辑器（M5：画瓦片 / 放实体 / 改道具与终点 / 保存 / F5 试玩）
 cargo editor -- --frames 140 --demo-play             # 自动化：进入试玩→退出，并断言编辑缓冲未变

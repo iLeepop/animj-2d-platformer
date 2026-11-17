@@ -36,7 +36,7 @@ flowchart LR
 | 路径 | 内容 |
 |---|---|
 | `lib.rs` | `pub fn add_game_plugins(app: &mut App)` —— 注册全部玩法插件，**不含** `DefaultPlugins`/窗口/资产源/任何编辑器类型。两个 bin 各自负责外壳（`DefaultPlugins`、`AssetPlugin.file_path` 见 `09` §9.6） |
-| `config/{mod,physics,render,room,net,ui}.rs` | **所有运行时常量的唯一代码落点**（所有者文档见各文件头注释；`net` 归本文 §5.15，`ui` 归 `07` §7.10.5） |
+| `config/{mod,physics,render,room,net,ui,particle}.rs` | **所有运行时常量的唯一代码落点**（所有者文档见各文件头注释；`net` 归本文 §5.15，`ui` 归 `07` §7.10.5，`particle` 归 `07` §7.14） |
 | `coords.rs` | `room_local_to_world` / `world_to_room` / `room_center`（`00` §0.3 的唯一换算入口） |
 | `physics/{mod,aabb,tile,core,tests}.rs` | **纯函数物理内核**（`06`）：`Aabb`、`TileWorld`/`TileKind`、`step`、`overlaps_tile_kind`，以及 T1–T21 不变量测试 |
 | `player/{mod,input,spawn,death,collision}.rs` | ECS 适配层（`06` §6.1.5）：`PlayerMotion`/`PlayerInput`、输入采样、生成、Hazard 死亡与重生；`collision.rs` 是全局玩家碰撞配置（`06` §6.5.1） |
@@ -60,6 +60,7 @@ flowchart LR
 | `render/snap.rs` | 像素吸附 + `Aabb → Transform` 投影（`06` §6.8.2） |
 | `render/tiles.rs` | 瓦片 sprite 批量生成 + 房间可见性裁剪 |
 | `render/parallax.rs` | 2D 视差背景（`03` §3.10 / `07` §7.13）：贴图平铺、相位与滚动、编辑器预览覆盖、mtime 重载 |
+| `render/particles.rs` | 2D 序列帧粒子（`07` §7.14）：`ParticleBurst` 唯一生成入口、跳跃/落地/拾取/存档/buff 触发、Z 子带、上限、淡出、关卡切换清理 |
 | `render/sprite_anim.rs` | 自写帧动画（`04` §5） |
 | `render/hud.rs` | 屏幕空间 HUD（计时/道具药丸 / 独立提示条 / 结算面板） |
 | `render/pause.rs` | 暂停菜单（`Esc` 开关；含「设置」「主菜单」入口） |
@@ -69,11 +70,11 @@ flowchart LR
 | `anim_data.rs` | 角色动画数据（`assets/anim/player.anim.ron`，`04` §5.5）：类型/校验/加载器/内置回退 |
 | `save/mod.rs` | `SaveData` + `save_path()` + 原子写（M6） |
 
-> **当前进度（2026-11-08，M9）**：已落地 `lib.rs` / `config/{mod,physics,render,room,net}.rs` / `coords.rs` / `physics/**` /
+> **当前进度（2026-11-17，M9）**：已落地 `lib.rs` / `config/{mod,physics,render,room,net,particle}.rs` / `coords.rs` / `physics/**` /
 > `player/{mod,input,spawn,death,items,collision}.rs` / `run.rs` / `demo.rs` / `tiles.rs` / `state.rs` / `settings.rs` / `level_asset.rs` /
 > `world/{mod,load,progress}.rs`（加载 + 校验 + 热重载 + 进度）/ `room/mod.rs`（房间判定与传感器）/
 > `camera/{mod,rig}.rs` / `net/{mod,protocol,discovery,host,client}.rs` /
-> `render/{mod,pixel_camera,snap,tiles,hud,pause,menu,debug}.rs` / `save/mod.rs`。
+> `render/{mod,pixel_camera,snap,tiles,parallax,particles,sprite_anim,hud,pause,menu,debug}.rs` / `save/mod.rs`。
 > **尚未落地**：编辑器侧的区域框选（已明确移除，见 `08` §8.10.5）。
 > 不要去找不存在的文件。
 
@@ -122,6 +123,7 @@ flowchart LR
 | `PixelRenderPlugin` | 1–2 台内层 + 外层 + UI 相机、视图布局、窗口自适应、整数缩放、`UiScale` 同步 | 无 |
 | `TileRenderPlugin` | 瓦片 sprite 生成与可见性 | `WorldPlugin` |
 | `SpriteAnimPlugin` | 帧动画 + 按朝向水平翻转 sprite（`04` §4.5） | 无 |
+| `ParticlePlugin` | 2D 序列帧粒子：固定步跳跃/落地信号、拾取/存档/buff 触发；`GameSet::Fx` 内生成/更新/淡出/销毁；Z 子带、全局上限、关卡切换清理（`07` §7.14） | `PlayerPlugin`（消息/组件）、`CheckpointPlugin`（消息） |
 | `SavePlugin` | 读档（版本/地图/存档点校验）+ 设置存档点/果实拾取/退出即存。**客户端 `run_if(not_client)` 全部跳过** | `WorldPlugin` |
 | `NetPlugin` | `SessionMode` 资源、主机/客户端生命周期、UDP 收包、快照广播/应用、`OnlineMenu` 房间搜索（本文 §5.15） | 无（只依赖 `std::net` + `serde`/`ron`） |
 | `HudPlugin` | HUD（计时/道具药丸 / 独立提示条 / 结算面板） | `CorePlugin`、`UiKitPlugin` |
@@ -148,10 +150,11 @@ pub enum GameSet { Input, Physics, PostPhysics, Room, Camera, Fx, Snap }
 | `Update` | `GameSet::PostPhysics` | 把 `FixedUpdate` 结果同步到 `Transform`，触发一次性消息 |
 | `Update` | `GameSet::Room` | 当前房间判定、全员到达后的结算检查 |
 | `Update` | `GameSet::Camera` | 每个视图的相机直接跟随自己的玩家 AABB 中心（钳制在地图内，无平滑） |
-| `Update` | `GameSet::Fx` | 动画、粒子、音效触发 |
+| `Update` | `GameSet::Fx` | 动画、粒子生成/积分/淡出、音效触发（粒子见 `07` §7.14） |
 | `PostUpdate` | `GameSet::Snap`：`.before(TransformSystems::Propagate)`（`.after` 会延迟一帧，见 `07` §7.6.3） | 像素吸附（`07`） |
 
 - `Time<Fixed>` 的配置（**已验证**，且 0.20 官方示例即用此写法）：`insert_resource(Time::<Fixed>::from_hz(60.0))`。
+- 粒子：`emit_player_bursts` 在 `FixedUpdate` 的 `GameSet::Physics` 内 `.after(apply_player_physics)`，**每固定步**读一次 `PlayerStepOutcome` 并写 `ParticleBurst`；消息在 `Update` 的 `GameSet::Fx` 消费（避免 `Changed` 在一帧多步时丢掉中间步，见 `07` §7.14.3）。
 - 输入在 `PreUpdate` 采样 → `FixedUpdate` 消费：单帧内多次物理步会复用同一份输入（这正是平台跳跃想要的确定性）。
 - **禁止**在 `Update` 里直接改位置；渲染层的插值/吸附是唯一例外，且不得回写逻辑 `Aabb`。
 
@@ -230,10 +233,11 @@ flowchart TB
 | `GameSettings` | 资源 | `version`, `volume: f32`, `fullscreen: bool` | 设置界面 → `SettingsPlugin` |
 | `SettingsReturn` | 资源 | 目标 `GameState`（`MainMenu` / `Paused`） | 设置界面返回 |
 | `PlayerDied` | `Message` | `player_id: PlayerId`, `room_index: u32` | `player/death` → 音效/特效/HUD |
-| `CheckpointActivated` | `Message` | `point: CheckpointPoint`（房间 + 局部 `at`） | `checkpoint` → 存档（立即写盘） |
+| `CheckpointActivated` | `Message` | `point: CheckpointPoint`（房间 + 局部 `at`） | `checkpoint` → 存档（立即写盘）/粒子（`07` §7.14） |
 | `RoomEntered` | `Message` | `room_index: u32` | `room` → HUD/调试/编辑器 |
-| `ItemPicked` | `Message` | `player: PlayerId`, `kind: ItemKind`, `replaced: Option<ItemKind>` | `player/items` → HUD/音效 |
-| `CarriedItem` | 组件 | `kind: Option<ItemKind>`, `remaining: f32`（按关卡 `items` 配置倒计时，默认 10 秒） | 拾取/死亡/到期写；HUD 与客户端预测读 |
+| `ItemPicked` | `Message` | `player: PlayerId`, `kind: ItemKind`, `replaced: Option<ItemKind>` | `player/items` → HUD/音效/粒子 |
+| `ParticleBurst` | `Message` | `kind: ParticleKind`, `origin: Vec2` | `render/particles` 的固定步/拾取/存档/buff 发射器 → `spawn_bursts`（`07` §7.14） |
+| `CarriedItem` | 组件 | `kind: Option<ItemKind>`, `remaining: f32`（按关卡 `items` 配置倒计时，默认 10 秒） | 拾取/死亡/到期写；HUD、客户端预测与 buff 粒子读 |
 | `SpawnerItem` | 组件 | `active: bool`, `respawn_left: f32` | `item_spawner` 生成的道具；主机倒计时，客户端按快照同步 |
 | `PlayerFinished` | `Message` | `player: PlayerId`, `time: f32` | `run::detect_goal_touch` → HUD/音效 |
 | `CollectiblePicked` | `Message` | `room_index: u32` | `room` 传感器 → 音效（`06` §6.5.4） |

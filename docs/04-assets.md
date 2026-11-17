@@ -40,6 +40,9 @@ assets/
 │  │  └─ <item>.png                 # 道具贴图（§6）；关卡 sprite 字段引用
 │  ├─ backgrounds/
 │  │  └─ <name>.png                 # 视差背景层（`03` §3.10 / `07` §7.13）；尺寸自定
+│  ├─ effects/
+│  │  ├─ dust.png                   # 粒子烟尘序列帧（§3.3 / `07` §7.14）
+│  │  └─ spark.png                  # 粒子火花序列帧（§3.3 / `07` §7.14）
 │  └─ ui/
 │     ├─ ui_atlas.png               # UI 图标图集（可选，§9）
 │     └─ <name>.png                 # UI 单图（可选，§9）
@@ -146,9 +149,11 @@ index(row, col) = row * COLUMNS + col        // 0-based
 | 角色 | `assets/sprites/player/cat_sheet.png` | `6 × 4` | `192 × 128` | 见 §5 |
 | 瓦片 | `assets/sprites/tiles/tileset.png` | `TILESET_COLUMNS × N`（§10） | `(32·TILESET_COLUMNS) × (32·N)` | 由 `03` legend 固定 |
 | 道具（当前占位） | `assets/sprites/items/<item>.png`（生成器输出）；关卡 `sprite` 可指向任意 `assets/` 下的 PNG | 1 张 | `32 × 32` | 背景透明的单帧；运行时按 32×32 显示 |
+| 粒子烟尘 | `assets/sprites/effects/dust.png` | `4 × 1` | `128 × 32` | 4 帧 32×32 序列帧；近白 + 透明底，运行时按效果染色；**不画索引数字** |
+| 粒子火花 | `assets/sprites/effects/spark.png` | `4 × 1` | `128 × 32` | 4 帧 32×32 序列帧；近白 + 透明底，运行时按效果染色；**不画索引数字** |
 | UI | `assets/sprites/ui/ui_atlas.png` | 由 §9 决定 | 同上规则 | UI 专用 |
 
-验证整除：`192 = 32×6`，`128 = 32×4` ✓。
+验证整除：`192 = 32×6`，`128 = 32×4` ✓；粒子序列帧 `128 = 32×4` ✓。
 
 ---
 
@@ -410,6 +415,8 @@ v3 起**没有装饰品图层**（`01` §1.5）：角色不叠加任何外观配
 |---|---|---|
 | `cat_sheet.png` | `192 × 128` | `6 × 4`；行 = `idle/run/jump/fall`；有效帧 `4/6/2/2`，其余格**全透明** |
 | `tileset.png` | `256 × 32` | `8 × 1`；格 `0..3` = `solid/oneway/spike/decor`（顺序不可变）；其余格全透明 |
+| `effects/dust.png` | `128 × 32` | `4 × 1`；32×32 格；烟尘逐帧扩散；近白 + 透明底；**不画索引数字** |
+| `effects/spark.png` | `128 × 32` | `4 × 1`；32×32 格；火花逐帧收缩；近白 + 透明底；**不画索引数字** |
 | `ui_atlas.png` | `128 × 64` | `4 × 2` |
 | `audio/<cue>.wav` | ≤ 0.3 s | PCM 16-bit / 单声道 / 44.1 kHz；cue 见 §6.9.1 |
 | `fonts/<name>.ttf` | — | 可选；入库即优先启用（未入库时回退系统 CJK 字体，见 §9） |
@@ -444,7 +451,7 @@ animj-dev gen-placeholder-assets [--out assets] [--force]
 - 行为：
   - 若目标文件已存在且未传 `--force`，则**跳过**并打印 `skip`（保护手工替换过的真美术）。
   - 写出**确定性** PNG（同一版本同参数 → 逐字节相同的输出），便于 diff。
-  - 使用 §7.4 调色板，按主题给不同区域上色并标注帧号（帧号用调色板中的高对比色渲染在角落，仅占位用）。
+  - 使用 §7.4 调色板，按主题给不同区域上色并标注帧号（帧号用调色板中的高对比色渲染在角落，仅占位用）。**粒子序列帧例外**：在粒子上画帧号会污染特效本身，因此 `effects/*.png` 不画索引/帧号。
   - 输出**必须**满足 §7.1 的四条约束。
 
 ### 7.3 输出清单
@@ -455,10 +462,13 @@ animj-dev gen-placeholder-assets [--out assets] [--force]
 | `assets/sprites/tiles/tileset.png` | `TILESET_COLUMNS × N` | `(32·TILESET_COLUMNS) × (32·N)` | `TILESET_COLUMNS × N` | 每格带索引数字；`N` 由 `03` §3.3 的**可渲染**条目数决定（算法见 §10）。**轮廓必须表达物理语义**（`06` §6.4.5）：`#` 实心 = 满格纯色；`=` 单向平台 = 顶部 8 px 薄板（下方全透明）；`^` 尖刺 = 锯齿；装饰 = 内缩小块。历史上四类都画成满格方块，导致玩家把单向平台当成实心块、误以为"跳跃穿模" |
 | `assets/sprites/ui/ui_atlas.png` | 见 §9 | 同规则 | — | UI 图标占位 |
 | `assets/sprites/items/{super_jump,speed,double_jump}.png` | `1 × 1` | `32 × 32` | 1 | 道具占位贴图（背景透明）；关卡 `sprite` 字段引用 |
+| `assets/sprites/effects/dust.png` | `4 × 1` | `128 × 32` | 4 | 粒子烟尘序列帧：近白 + 透明底，运行时染色；**不画索引数字**（`07` §7.14） |
+| `assets/sprites/effects/spark.png` | `4 × 1` | `128 × 32` | 4 | 粒子火花序列帧：近白 + 透明底，运行时染色；**不画索引数字**（`07` §7.14） |
 | `assets/fonts/<font_name>.ttf` | — | — | — | **不生成**；字体为随仓库提交的静态资产 |
 
 - `tileset.png` 的行数 `N` 与索引**语义**由 `03` 的 legend 唯一决定；生成器**读取 legend**（或由 `03` 提供的等价表）后输出，**不得**内置一套独立映射（§10）。
 - v3 起不再生成装饰品贴图；道具占位图由生成器输出，运行时优先使用关卡 `sprite` 字段。
+- 粒子序列帧按 `config/particle.rs` 的帧数生成；运行时用 `TextureAtlasLayout` 按 `TILE_PX` 切格，帧序 = 列主序（`07` §7.14）。
 
 ### 7.4 占位调色板（8 色）
 

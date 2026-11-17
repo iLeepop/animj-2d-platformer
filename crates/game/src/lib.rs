@@ -89,6 +89,8 @@ pub fn add_game_plugins(app: &mut App) {
         render::sprite_anim::SpriteAnimPlugin,
         checkpoint::CheckpointPlugin,
         (audio::AudioFxPlugin, anim_data::AnimDataPlugin),
+        // 粒子是纯表现层（`07` §7.14）：编辑器试玩也必须看到，因此放进共用插件。
+        render::particles::ParticlePlugin,
     ));
     // 背景视差：编辑器与游戏共用（`07` §7.13）。
     app.add_plugins(render::parallax::ParallaxPlugin);

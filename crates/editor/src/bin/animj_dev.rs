@@ -245,6 +245,7 @@ mod placeholder {
     use crate::glyph;
     use crate::palette::{ACCENT, BG, MARKER, OUTLINE, PRIMARY, Rgba, SECONDARY, SKIN, VOID};
     use crate::raster::Raster;
+    use game::config::particle::{DUST_FRAMES, SPARK_FRAMES};
     use level_format::{RENDERABLE_TILE_KINDS, TILE_PX};
 
     /// 网格单元边长（像素）= `TILE_PX`。见 `docs/00-conventions.md` §0.3。
@@ -431,6 +432,83 @@ mod placeholder {
         raster
     }
 
+    /// 粒子烟尘：`DUST_FRAMES` 帧 × 32×32，近白 + 透明底，运行时按效果染色。
+    /// 见 `docs/04-assets.md` §3.3 / §7.3。**不画索引数字**：那会污染粒子本身。
+    pub fn particle_dust() -> Raster {
+        let mut raster = Raster::new((DUST_FRAMES * CELL_PX as u32).max(1), CELL_PX as u32);
+        for frame in 0..DUST_FRAMES as i32 {
+            let progress = if DUST_FRAMES > 1 {
+                frame as f32 / (DUST_FRAMES - 1) as f32
+            } else {
+                0.0
+            };
+            let cx = frame * CELL_PX + CELL_PX / 2;
+            // 内容贴底：底边锚点落在脚底时，烟尘才像从地面扬起。
+            let cy = CELL_PX - 10 - (progress * 2.0) as i32;
+            let radius = 3 + (progress * 7.0) as i32;
+            if frame == 0 {
+                disc(&mut raster, cx, cy, radius, OUTLINE);
+            } else {
+                ring(&mut raster, cx, cy, radius, 2, OUTLINE);
+            }
+            // 四向飞溅的小点，让占位图在缩小时也有“尘”的轮廓。
+            let spread = radius + 2;
+            for (dx, dy) in [(0, -spread), (spread, 0), (0, spread), (-spread, 0)] {
+                raster.set(cx + dx, cy + dy, OUTLINE);
+            }
+        }
+        raster
+    }
+
+    /// 粒子火花：`SPARK_FRAMES` 帧 × 32×32，近白 + 透明底。
+    /// 见 `docs/04-assets.md` §3.3 / §7.3；同样不画索引数字。
+    pub fn particle_spark() -> Raster {
+        let mut raster = Raster::new((SPARK_FRAMES * CELL_PX as u32).max(1), CELL_PX as u32);
+        for frame in 0..SPARK_FRAMES as i32 {
+            let cx = frame * CELL_PX + CELL_PX / 2;
+            let cy = CELL_PX / 2;
+            // 十字星逐帧收缩；帧 0 最大、帧 3 最小。
+            let arm = (10 - frame * 2).max(2);
+            raster.fill_rect(cx - arm, cy, arm * 2 + 1, 1, OUTLINE);
+            raster.fill_rect(cx, cy - arm, 1, arm * 2 + 1, OUTLINE);
+            let diagonal = (arm / 2).max(1);
+            for (dx, dy) in [
+                (diagonal, diagonal),
+                (diagonal, -diagonal),
+                (-diagonal, diagonal),
+                (-diagonal, -diagonal),
+            ] {
+                raster.set(cx + dx, cy + dy, OUTLINE);
+            }
+            raster.fill_rect(cx - 1, cy - 1, 2, 2, OUTLINE);
+        }
+        raster
+    }
+
+    /// 纯色实心圆（纯色块，不做抗锯齿，`04` §7.4）。
+    fn disc(raster: &mut Raster, cx: i32, cy: i32, radius: i32, color: Rgba) {
+        for dy in -radius..=radius {
+            for dx in -radius..=radius {
+                if dx * dx + dy * dy <= radius * radius {
+                    raster.set(cx + dx, cy + dy, color);
+                }
+            }
+        }
+    }
+
+    /// 纯色圆环（半径 `radius`、环宽 `thickness`）。
+    fn ring(raster: &mut Raster, cx: i32, cy: i32, radius: i32, thickness: i32, color: Rgba) {
+        let inner = (radius - thickness).max(0);
+        for dy in -radius..=radius {
+            for dx in -radius..=radius {
+                let d2 = dx * dx + dy * dy;
+                if d2 <= radius * radius && d2 >= inner * inner {
+                    raster.set(cx + dx, cy + dy, color);
+                }
+            }
+        }
+    }
+
     /// UI 图集：4 列 × 2 行 = 128×64。见 `docs/04-assets.md` §9（M0 只需确定性的占位格）。
     pub fn ui_atlas() -> Raster {
         let mut raster = Raster::new(
@@ -455,6 +533,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::exit::ExitCode;
+use game::config::particle::{DUST_IMAGE, SPARK_IMAGE};
 
 /// 默认资产根目录（相对仓库根）。见 `docs/08-level-editor.md` §8.10.3 的 `--out` 默认值。
 const DEFAULT_ASSETS_DIR: &str = "assets";
@@ -713,6 +792,15 @@ fn plan_jobs() -> Result<Vec<(String, Vec<u8>)>, String> {
             raster::encode_png(&placeholder::item_icon(kind, index as u32))?,
         ));
     }
+    // 粒子序列帧（`04` §3.3）：32×32 格 × 4 帧，近白透明底，运行时染色。
+    jobs.push((
+        SPARK_IMAGE.to_owned(),
+        raster::encode_png(&placeholder::particle_spark())?,
+    ));
+    jobs.push((
+        DUST_IMAGE.to_owned(),
+        raster::encode_png(&placeholder::particle_dust())?,
+    ));
     // 音效占位（`04` §6.9）：cue → (频率, 时长, 方波?)
     for (cue, freq, secs, square) in [
         ("jump", 660.0, 0.09, true),

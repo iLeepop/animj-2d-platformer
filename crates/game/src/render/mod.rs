@@ -4,6 +4,7 @@ pub mod debug;
 pub mod hud;
 pub mod menu;
 pub mod parallax;
+pub mod particles;
 pub mod pause;
 pub mod pixel_camera;
 pub mod snap;

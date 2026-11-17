@@ -16,7 +16,7 @@
 //! - `--seconds N`：按墙钟秒数退出（联机验证要两个进程同时存活）。
 //! - `--local-players 2`：本地双人；`--host`：开房；`--join <host:port>`：加入主机。
 //! - `--demo menu|levels|settings|menu-start|load-save|click|online`：界面冒烟，从主菜单开始。
-//! - `--demo walk|jump|hop|checkpoint|edge|pause|goal|item|restart`：玩法冒烟，直接进默认关卡。
+//! - `--demo walk|jump|hop|checkpoint|edge|pause|goal|item|fx|restart`：玩法冒烟，直接进默认关卡。
 //!
 //! **入口规则**：带任何验证开关或 `--demo`（菜单类除外）时用 `StartupFlow::Direct`
 //! （`LoadMode::Auto`，与旧验证命令语义一致）；无参数启动才走主菜单。
@@ -435,6 +435,44 @@ fn drive_demo_item(
     }
 }
 
+/// 冒烟：每 20 帧轮流触发全部粒子种类，供截图与日志验证（不改变玩家位置）。
+fn drive_demo_fx(
+    tick: Res<FrameTick>,
+    players: Query<&game::player::PlayerMotion>,
+    mut bursts: MessageWriter<game::render::particles::ParticleBurst>,
+    mut cursor: Local<usize>,
+) {
+    use game::render::particles::{ParticleBurst, ParticleKind};
+
+    const KINDS: [ParticleKind; 10] = [
+        ParticleKind::Jump,
+        ParticleKind::AirJump,
+        ParticleKind::Land,
+        ParticleKind::Item(level_format::ItemKind::SuperJump),
+        ParticleKind::Item(level_format::ItemKind::Speed),
+        ParticleKind::Item(level_format::ItemKind::DoubleJump),
+        ParticleKind::Checkpoint,
+        ParticleKind::Buff(level_format::ItemKind::SuperJump),
+        ParticleKind::Buff(level_format::ItemKind::Speed),
+        ParticleKind::Buff(level_format::ItemKind::DoubleJump),
+    ];
+
+    if tick.0 < 40 || !tick.0.is_multiple_of(20) {
+        return;
+    }
+    let Some(motion) = players.iter().next() else {
+        return;
+    };
+    let kind = KINDS[*cursor % KINDS.len()];
+    *cursor += 1;
+    let origin = match kind {
+        ParticleKind::Jump | ParticleKind::AirJump | ParticleKind::Land => motion.0.aabb.min,
+        _ => motion.0.aabb.center(),
+    };
+    bursts.write(ParticleBurst { kind, origin });
+    println!("[demo fx] 粒子：{kind:?} @ {origin:?}");
+}
+
 fn main() {
     let cli = Cli::parse();
     println!("animj 启动：assets = {}", game::assets::asset_file_path());
@@ -493,6 +531,15 @@ fn main() {
             // 冒烟：把玩家送到第一个道具，验证拾取 → 10 秒 buff → 自动清除。
             app.add_systems(Update, drive_demo_item);
         }
+        Some("fx") => {
+            // 冒烟：每 20 帧轮流触发全部粒子种类，供截图与日志验证；不改玩家位置。
+            app.add_systems(
+                Update,
+                drive_demo_fx
+                    .before(game::state::GameSet::Fx)
+                    .run_if(in_state(game::state::GameState::Playing)),
+            );
+        }
         Some("levels") => {
             app.add_systems(Update, drive_demo_levels);
         }
@@ -520,7 +567,7 @@ fn main() {
         }
         Some("menu") => {}
         Some(other) => eprintln!(
-            "未知 demo：{other}（可选 walk|jump|edge|hop|checkpoint|pause|goal|item|menu|levels|settings|menu-start|load-save|restart|click|online）"
+            "未知 demo：{other}（可选 walk|jump|edge|hop|checkpoint|pause|goal|item|fx|menu|levels|settings|menu-start|load-save|restart|click|online）"
         ),
         None => {}
     }
@@ -652,6 +699,7 @@ type CameraQuery<'w, 's> = Query<
 /// 这些条件是「无插值模糊」的**充分条件**：最近邻采样 + 整数倍缩放 + 所有渲染位置为整像素。
 /// 逐条机器校验比肉眼看截图可靠。
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::type_complexity)]
 fn self_check(
     cli: Res<Cli>,
     tick: Res<FrameTick>,
@@ -663,7 +711,13 @@ fn self_check(
     tileset: Option<Res<Tileset>>,
     cameras: CameraQuery,
     snap_targets: Query<&Transform, With<PixelSnap>>,
-    sprites: Query<(&Sprite, Option<&game::room::RoomZone>), Without<game::player::PlayerMotion>>,
+    sprites: Query<
+        (&Sprite, Option<&game::room::RoomZone>),
+        (
+            Without<game::player::PlayerMotion>,
+            Without<game::render::particles::Particle>,
+        ),
+    >,
     tiles: Option<Res<LevelTiles>>,
     loaded: Option<Res<LoadedLevel>>,
     current: Option<Res<CurrentRoom>>,

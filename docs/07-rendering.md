@@ -71,7 +71,7 @@
 | `z::ENEMY` | 敌人 | 见 `00` §0.4 |
 | `z::PLAYER` / `z::player_z(id)` | **角色本体**：`40.0 + 0.1 × 玩家编号` | 见 `00` §0.4；多人会互相重叠，必须不同 Z。每个视图的相机跟随自己的玩家（`02` §2.2）；视野仍小于一个房间 |
 | `z::GOAL` | 终点 sprite 的 Z；取值见 `00` §0.4 | 见 `00` §0.4 |
-| `z::PARTICLE` | 粒子 / 特效 | 见 `00` §0.4 |
+| `z::PARTICLE` | 粒子 / 特效的**基值**；每个粒子实际取子带 `[60.0, 60.9)`（§7.14） | 见 `00` §0.4 |
 | `z::TILE_FOREGROUND` | 前景瓦片 | 见 `00` §0.4 |
 | `z::TEXT2D` | 世界空间文字（`Text2d`） | 见 `00` §0.4 |
 | `z::CANVAS` | **外层视图**里那张离屏纹理 sprite 的 Z | `0.0`（**本文定义**，不属于 `00` §0.4 的游戏 Z 表） |
@@ -1078,6 +1078,130 @@ size   = v + 2 * p
 
 ---
 
+## 7.14 2D 粒子与特效
+
+> 代码落点：`crates/game/src/render/particles.rs`、`crates/game/src/config/particle.rs`。
+> 资产规格归 `04` §3.3；本节的数值是**运行时行为常量**的唯一所有者。
+
+### 7.14.1 目标与边界
+
+- 只服务**表现**：跳跃/落地/二段跳烟尘、道具拾取火花、存档点激活火花、三种 buff 的持续粒子。
+- 粒子**不参与物理、不写 `Aabb`、不影响计时/判定/联机权威**；逻辑真相仍是 `Aabb`（`00` §0.3）。
+- 不引入第三方粒子库（`09` §3.2）；实现是「每粒子一个 sprite 实体 + 序列帧 + 手写积分」。
+- 不提供关闭开关（本期决策）：性能由全局上限兜底。
+
+### 7.14.2 资产与序列帧
+
+| 项 | 约定 |
+|---|---|
+| 文件 | `assets/sprites/effects/dust.png`（烟尘）、`spark.png`（火花） |
+| 格子 | 边长 = `TILE_PX`（见 `00` §0.3）；帧数与总尺寸见 `04` §3.3 |
+| 内容 | 近白 + 透明底（straight alpha），运行时用 `Sprite.color` **按效果染色**；占位图**不画索引数字**（`04` §7.2 的例外） |
+| 切格 | `TextureAtlasLayout::from_grid(UVec2::splat(TILE_PX), 帧数, 1, None, None)`；**不新增布局常量** |
+| 播放 | 非循环：`frame = min(age × fps, frames−1)`，最后一帧保持到销毁；帧率见 §7.14.5 |
+| 采样 | 全局 nearest（`07` §7.3.1）；不做抗锯齿、不做旋转/非整数缩放 |
+
+锚点：烟尘 `Anchor::BOTTOM_CENTER`（脚底/地面），火花 `Anchor::CENTER`（实体中心）。与 `04` §4 的全局锚点约定一致。
+
+### 7.14.3 触发与调度
+
+```
+FixedUpdate / GameSet::Physics
+  apply_player_physics
+    → emit_player_bursts        # 每固定步读 PlayerStepOutcome，写 ParticleBurst
+Update / GameSet::Fx
+  emit_item_bursts (ItemPicked)
+  emit_checkpoint_bursts (CheckpointActivated)
+  emit_buff_aura (CarriedItem + 每玩家计时器)
+    → spawn_bursts              # 唯一生成入口：消费 ParticleBurst
+    → update_particles          # 积分 / 序列帧 / 淡出 / 销毁
+```
+
+- **为什么不在 `Update` 用 `Changed<PlayerStepOutcome>`**：`PlayerStepOutcome` 每个固定步整体覆盖；一帧跑多个固定步时，中间那一步的 `jumped/landed` 会被后一步覆盖，`Update` 永远看不到（现有音效链路有同样的潜在丢帧面）。粒子必须在固定步逐次读并写消息，保证每步一簇。
+- `emit_player_bursts` 只在 `not_client` 运行（客户端不跑权威物理）；`ItemPicked` / `CheckpointActivated` 本身也是主机/单机消息。
+- 存档点爆发只在 `CheckpointActivated` 真正写出时触发（同一存档点重复按 `E` 不会重复触发，见 `02` §2.5 / `checkpoint.rs` 的 `active != point` 判断）。
+- buff 持续粒子由 `CarriedItem.kind` 驱动：首次看到某种 buff 只初始化计时器（拾取瞬间已有 `ItemPicked` 爆发），之后每 `BUFF_AURA_INTERVAL` 发一粒；`kind = None` 立即停止并复位。
+- 物理结果到粒子簇的映射：`jumped` → 起跳；`air_jumped` → 二段跳；`landed` → 落地；三者同一步出现时各自成簇（不合并、不重复）。
+
+### 7.14.4 渲染规则
+
+| 项 | 取值 / 规则 |
+|---|---|
+| 实体归属 | **世界根**，不是 `RoomRoot` 子实体（`07` §7.8.2：会移动的实体不能随房间整体位移） |
+| Z | `z::PARTICLE + (seq % Z_SLOTS) × Z_STEP`，即 `[60.0, 60.9)`；见 `00` §0.4 的粒子子带 |
+| 像素吸附 | 挂 `PixelSnap`，由 `PostUpdate` 的 `GameSet::Snap` 统一取整；积分本身用 `f32`（`07` §7.6） |
+| 透明 | `SpriteAlphaMode::Blend`（默认）；淡出只改 `Sprite.color` 的 alpha，不换材质 |
+| 旋转/缩放 | **禁止**：非整数旋转会破坏像素网格；贴图内容已按 32×32 格设计 |
+| 渲染层 | `PIXEL_PERFECT_LAYERS`（layer 0），与瓦片/角色同一内层相机 |
+
+### 7.14.5 预算与常量
+
+| 常量（`config::particle`） | 值 | 说明 |
+|---|---|---|
+| `MAX_PARTICLES` | 192 | 同屏总数上限；超限的爆发被截断 |
+| `MAX_BURST` | 24 | 单条 `ParticleBurst` 的上限（预置都低于它） |
+| `MAX_DT` | 1/30 s | 积分步长上限，避免卡顿后瞬移 |
+| `Z_STEP` / `Z_SLOTS` | 见 `00` §0.4 | 粒子 Z 子带的步长与槽位数，本文不复制 |
+| `BUFF_AURA_INTERVAL` | 0.15 s | 每玩家持续粒子的发射间隔 |
+| `FRAME_FPS_DUST` / `FRAME_FPS_SPARK` | 12 / 15 | 序列帧播放帧率 |
+| `DUST_COLOR` | `Color::srgb(0.93, 0.93, 0.87)` | 烟尘基色；火花按道具/存档点色染色 |
+
+| 爆发 | 数量 | 速度（px/s） | 角度（°） | 寿命（s） | 重力（px/s²） | 阻力 | 抖动（px） |
+|---|---|---|---|---|---|---|---|
+| 起跳 | 10 | 45–95 | 25–155 | 0.42 | −260 | 1.6 | 5 |
+| 二段跳 | 8 | 35–75 | 30–150 | 0.35 | −240 | 1.8 | 5 |
+| 落地 | 8 | 25–60 | 10–170 | 0.32 | −180 | 2.4 | 6 |
+| 拾取道具 | 14 | 70–150 | 0–360 | 0.50 | −80 | 1.0 | 3 |
+| 存档点 | 18 | 60–140 | 0–360 | 0.65 | −60 | 0.8 | 3 |
+| `SuperJump` aura | 1 / 0.15 s | 20–45 | 70–110 | 0.60 | −10 | 0.5 | 6 |
+| `Speed` aura | 1 / 0.15 s | 35–65 | 0–360 | 0.35 | 0 | 3.0 | 6 |
+| `DoubleJump` aura | 1 / 0.15 s | 15–40 | 0–360 | 0.70 | −30 | 0.6 | 7 |
+
+- 颜色：烟尘 `DUST_COLOR`；道具/buff 复用 `player::items::item_color(kind)`；存档点复用 `checkpoint::ACTIVE_COLOR`（不新建第二套调色板）。
+- 规模估算：4 名玩家同时带 buff ⇒ 约 27 粒/秒持续发射，寿命 < 0.7 s ⇒ 稳态 < 20 粒；单次爆发叠加后峰值通常 < 100，192 的上限留有截断余量。
+- **性能未取证**：0.20 的 `Sprite` 走 `Mesh2d`/`SpriteMaterial` 后端（`10` C4），逐实体批次行为未测。先按 192 上限实测；只有 p99 帧时间 > 16.6 ms 才考虑池化/单 mesh，禁止提前优化（`AGENTS` §8）。
+
+### 7.14.6 联机与暂停
+
+- 主机/单人/本地双人：全部粒子可见。
+- **客户端不要求一致**：客户端不跑拾取/存档/权威物理，因此一次性爆发（跳跃/落地/拾取/存档）不保证出现；持续 buff 粒子由快照同步的 `CarriedItem` 驱动，**客户端可见**。
+- 不新增网络字段、不改协议（`05` §5.15）；粒子纯表现，任何差异都不得回写权威状态。
+- `GameSet::Fx` 统一以 `in_state(Playing)` 门控（`05` §5.5）：暂停时粒子冻结，恢复后继续；`Paused` 不额外清粒子。
+
+### 7.14.7 清理与热重载
+
+- `world::teardown_level` 额外销毁带 `Particle` 的实体：否则回主菜单/下一关会残留上一局的粒子。
+- 关卡热重载不专门重建粒子：粒子寿命 ≤ 0.7 s，自然消散；不写盘、不影响 `doc`/undo。
+- 贴图改动走 Bevy `file_watcher`（`dev` feature）；贴图尺寸/帧数变化必须同时改 `config/particle.rs` 与 `04` §3.3（属于破坏性资产变更）。
+
+### 7.14.8 验证
+
+```bash
+cargo test -p game
+cargo dev-cli -- gen-placeholder-assets --check
+cargo game -- --demo jump --frames 3000
+cargo game -- --demo item --seconds 12
+cargo game -- --demo checkpoint --frames 3000
+cargo game -- --demo fx --frames 600 --screenshot target/fx
+```
+
+- 日志：一次性爆发出现 `粒子：<kind> ×N（当前 M）`；`--demo fx` 出现 `[demo fx] 粒子：…`；无 panic。
+- 截图：`target/fx-canvas.png` / `target/fx-window.png` 中有可见粒子像素；`--demo fx` 每 20 帧触发一次，截图固定在 `frames/2`，因此不依赖瞬时事件（现有跳/拾取 demo 的截图时机会碰运气）。
+- 单测锁定：预置范围/预算、确定性采样、帧下标钳制、alpha 淡出、Z 子带、物理结果映射、持续粒子计时、全局上限、生成/过期。
+
+### 7.14.9 与其它文档的接口
+
+| 依赖 | 内容 |
+|---|---|
+| `00` §0.3 / §0.4 | `TILE_PX`、Z 表与粒子子带 |
+| `04` §1 / §3.3 / §7.3 | `effects/` 目录、32×32 格 × 4 帧、占位生成清单 |
+| `05` §5.2–§5.6 | `render/particles.rs`、`ParticlePlugin`、`ParticleBurst`、`GameSet::Fx` |
+| `06` §6.1 | `PlayerStepOutcome` 的 `jumped/landed/air_jumped` 语义 |
+| `10` §10.2.9 | `Sprite::from_atlas_image` / `Sprite.color` / `alpha_mode` / `TextureAtlas.index` |
+| 本文 | §7.1.3 Z 基值、§7.3.1 nearest、§7.6 像素吸附、§7.8.2 世界根归属 |
+
+---
+
 ## 7.11 验收检查表（渲染部分）
 
 | # | 检查项 | 通过标准 |
@@ -1106,8 +1230,8 @@ size   = v + 2 * p
 | `02` | 相机跟随与地图边界、当前房间判定、房间无缝衔接的语义 |
 | `03` §3.3 | legend → 瓦片语义、`Air` 不生成实体、`tileset.png` 索引语义 |
 | `03` §3.10 | `Level.background` 的字段形状、层数上限与 V20 校验 |
-| `04` §3.1 / §7.1 / §8 / §10 | 图集零 padding/零 margin、PNG 规格与 sRGB、字体资源、`tileset.png` 物理布局 |
-| `05` §5.x | 模块划分（`render/pixel_camera.rs`、`render/snap.rs`、`render/tiles.rs`、`render/parallax.rs`）、`GameSet::Snap` |
+| `04` §3.1 / §3.3 / §7.1 / §8 / §10 | 图集零 padding/零 margin、PNG 规格与 sRGB、字体资源、`tileset.png` 物理布局、粒子序列帧规格 |
+| `05` §5.x | 模块划分（`render/pixel_camera.rs`、`render/snap.rs`、`render/tiles.rs`、`render/parallax.rs`、`render/particles.rs`）、`GameSet::Snap`、`ParticleBurst` |
 | `06` §6.1 / §6.8 | `Aabb` 是逻辑真相、投影单向、取整用 `f32::round`、本地物理实体不做位置插值（联机客户端快照插值例外，§7.6.5） |
 | `09` §9.2 / §9.4 / §9.5 | 依赖矩阵（瓦片/像素相机 crate 不可用）、feature 集合、`dev` feature |
 | `10` §10.2.8 / §10.2.9 / §10.2.10 | `Sprite` / 相机的 0.20 精确字段与黑名单（C5/C6/C7 与本文章节一一对应） |

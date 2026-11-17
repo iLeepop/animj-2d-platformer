@@ -3,6 +3,7 @@
 
 pub mod item;
 pub mod net;
+pub mod particle;
 pub mod physics;
 pub mod render;
 pub mod room;
